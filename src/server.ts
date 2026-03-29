@@ -68,9 +68,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
-import { SERVER_CONFIG, SESSION_MEMORY_ENABLED, PRISM_USER_ID, PRISM_ENABLE_HIVEMIND } from "./config.js";
+import {
+  SERVER_CONFIG,
+  SESSION_MEMORY_ENABLED,
+  PRISM_USER_ID,
+  PRISM_ENABLE_HIVEMIND,
+  PRISM_MCP_TRANSPORT,
+} from "./config.js";
 import { getSyncBus } from "./sync/factory.js";
-import type { SyncBus, SyncEvent } from "./sync/index.js";
+import type { SyncEvent } from "./sync/index.js";
 import { startDashboardServer } from "./dashboard/server.js";
 import { acquireLock, registerShutdownHandlers } from "./lifecycle.js";
 
@@ -250,39 +256,121 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
   ];
 }
 
-// ─── v0.4.0: Resource Subscription Tracking ──────────────────────
-// REVIEWER NOTE: We track which project URIs clients have subscribed
-// to. When sessionSaveHandoffHandler successfully updates a project,
-// it calls notifyResourceUpdate() to push a refresh notification
-// to any Claude Desktop instance that has that project's memory
-// resource attached via paperclip.
-//
-// This is a simple in-memory set. If the server restarts, clients
-// will re-subscribe on reconnect (per MCP spec behavior).
-const activeSubscriptions = new Set<string>();
-
-// Module-level promise for the async storage pre-warm fired in startServer().
+// Module-level promise for the async storage pre-warm fired in initializeRuntime().
 // Resource handlers check storageIsReady (synchronous) instead of awaiting
 // the promise, so they never block the MCP stdio pipe during startup.
 let storageReady: Promise<void> | null = null;
 let storageIsReady = false;
+let runtimeInitialization: Promise<void> | null = null;
+let syncBusStartup: Promise<void> | null = null;
+let dashboardStartupScheduled = false;
+let keepAliveHandle: NodeJS.Timeout | null = null;
 
-/**
- * Notifies subscribed clients that a resource has changed.
- *
- * Called from sessionSaveHandoffHandler after a successful save.
- * This triggers Claude Desktop to silently re-fetch the attached
- * memory resource, keeping the paperclipped context up-to-date
- * without the user doing anything.
- */
-export function notifyResourceUpdate(project: string, server: Server) {
-  const uri = `memory://${project}/handoff`;
-  if (activeSubscriptions.has(uri)) {
-    server.notification({
-      method: "notifications/resources/updated",
-      params: { uri },
-    });
+const notificationTargets = new Set<Server>();
+
+function ensureStoragePrewarm() {
+  if (!SESSION_MEMORY_ENABLED || storageReady) {
+    return;
   }
+
+  const STORAGE_TIMEOUT_MS = 10_000;
+  storageReady = Promise.race([
+    getStorage().then(() => { storageIsReady = true; }),
+    new Promise<void>(resolve => setTimeout(() => {
+      if (!storageIsReady) {
+        console.error(`[Prism] Storage pre-warm timed out after ${STORAGE_TIMEOUT_MS}ms (non-fatal)`);
+      }
+      resolve();
+    }, STORAGE_TIMEOUT_MS)),
+  ]).catch(err => {
+    console.error(`[Prism] Storage pre-warm failed (non-fatal): ${err}`);
+  });
+}
+
+function scheduleDashboardStartup() {
+  if (dashboardStartupScheduled) {
+    return;
+  }
+
+  dashboardStartupScheduled = true;
+  setTimeout(() => {
+    startDashboardServer().catch(err => {
+      console.error(`[Dashboard] Mind Palace startup failed (non-fatal): ${err}`);
+    });
+  }, 0);
+}
+
+async function startSyncBusListener() {
+  if (!SESSION_MEMORY_ENABLED) {
+    return;
+  }
+
+  if (syncBusStartup) {
+    await syncBusStartup;
+    return;
+  }
+
+  syncBusStartup = (async () => {
+    try {
+      const syncBus = await getSyncBus();
+      await syncBus.startListening();
+
+      syncBus.on("update", (event: SyncEvent) => {
+        for (const server of notificationTargets) {
+          try {
+            server.sendLoggingMessage({
+              level: "info",
+              data: `[Prism Telepathy] \u{1F9E0} Another agent just updated the memory for ` +
+                `'${event.project}' to version ${event.version}. ` +
+                `You may want to run session_load_context to sync up.`,
+            });
+          } catch (err) {
+            console.error(`[Telepathy] Failed to send notification: ${err}`);
+          }
+        }
+      });
+    } catch (err) {
+      console.error(`[Telepathy] SyncBus init failed (non-fatal): ${err}`);
+    }
+  })();
+
+  await syncBusStartup;
+}
+
+export function registerServerNotificationTarget(server: Server): () => void {
+  notificationTargets.add(server);
+
+  return () => {
+    notificationTargets.delete(server);
+  };
+}
+
+export async function initializeRuntime() {
+  if (runtimeInitialization) {
+    await runtimeInitialization;
+    return;
+  }
+
+  runtimeInitialization = (async () => {
+    acquireLock();
+    await initConfigStorage();
+    initTelemetry();
+    ensureStoragePrewarm();
+    scheduleDashboardStartup();
+    await startSyncBusListener();
+  })();
+
+  await runtimeInitialization;
+}
+
+function ensureKeepAlive() {
+  if (keepAliveHandle) {
+    return;
+  }
+
+  keepAliveHandle = setInterval(() => {
+    // Heartbeat to keep the stdio process running.
+  }, 10000);
 }
 
 // ─── Server Factory ──────────────────────────────────────────────
@@ -297,6 +385,8 @@ export function notifyResourceUpdate(project: string, server: Server) {
  *                with subscribe support for live refresh
  */
 export function createServer() {
+  const activeSubscriptions = new Set<string>();
+
   // ─── v4.1 FIX: Auto-Load via Dynamic Tool Descriptions ────────
   // Read auto-load projects EXCLUSIVELY from dashboard config
   // (available after initConfigStorage() in startServer).
@@ -349,6 +439,16 @@ export function createServer() {
       instructions: `Prism MCP — The Mind Palace for AI Agents. This server provides persistent session memory, knowledge search, and context management tools. Use session_load_context to recover previous work state, session_save_ledger to log completed work, and session_save_handoff to preserve state for the next session.`,
     }
   );
+
+  const notifyResourceUpdate = (project: string) => {
+    const uri = `memory://${project}/handoff`;
+    if (activeSubscriptions.has(uri)) {
+      server.notification({
+        method: "notifications/resources/updated",
+        params: { uri },
+      });
+    }
+  };
 
   // ── Handler: Initialize ──
   // NOTE: The SDK's built-in _oninitialize() handles the Initialize request.
@@ -733,7 +833,7 @@ export function createServer() {
             // REVIEWER NOTE: v0.4.0 passes the server reference so the
             // handler can trigger resource update notifications after
             // a successful save. See notifyResourceUpdate() above.
-            result = await sessionSaveHandoffHandler(args, server); break;
+            result = await sessionSaveHandoffHandler(args, notifyResourceUpdate); break;
 
           case "session_load_context":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
@@ -959,115 +1059,38 @@ export function createSandboxServer() {
  * responses to stdout. Log messages go to stderr.
  */
 export async function startServer() {
-  // MUST BE FIRST: Kill any zombie processes and acquire the singleton PID lock
-  // before touching SQLite. This prevents lock contention on prism-config.db.
-  acquireLock();
-
-  // Pre-warm the config settings cache BEFORE connecting the MCP transport.
-  // This ensures getSettingSync() returns real values (agent_name, default_role)
-  // during the Initialize handshake — zero extra latency for resource reads.
-  // initConfigStorage() is local SQLite only (~5ms), safe to await.
-  await initConfigStorage();
-
-  // v4.6.0: Initialize OTel AFTER the settings cache is warm so that
-  // initTelemetry() can read otel_enabled/otel_endpoint from getSettingSync()
-  // synchronously. This is a synchronous call — no await needed.
-  // No-op when otel_enabled=false (the default).
-  initTelemetry();
+  await initializeRuntime();
 
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  registerServerNotificationTarget(server);
 
   // Register graceful shutdown handlers (SIGTERM, SIGINT, SIGHUP, stdin close).
   // The stdin close handler is critical — when MCP clients disconnect, they
   // often just close the pipe without sending a signal, leaving zombie processes.
   registerShutdownHandlers();
 
-  // Pre-warm storage AFTER connecting — fired async so we never block the
-  // stdio handshake. Supabase REST initialization can take 500ms–5s; blocking
-  // on it before server.connect() was the root cause of the 1m 56s CLI delay.
-  // By the time the first real tool/resource call arrives, the singleton is warm.
-  if (SESSION_MEMORY_ENABLED) {
-    const STORAGE_TIMEOUT_MS = 10_000;
-    storageReady = Promise.race([
-      getStorage().then(() => { storageIsReady = true; }),
-      new Promise<void>(resolve => setTimeout(() => {
-        if (!storageIsReady) {
-          console.error(`[Prism] Storage pre-warm timed out after ${STORAGE_TIMEOUT_MS}ms (non-fatal)`);
-        }
-        resolve();
-      }, STORAGE_TIMEOUT_MS)),
-    ]).catch(err => {
-      console.error(`[Prism] Storage pre-warm failed (non-fatal): ${err}`);
-    });
-
-    // ─── v4.1: Auto-Load is handled via dynamic tool descriptions ──
-    // The session_load_context tool description is dynamically modified
-    // in createServer() → buildSessionMemoryTools() to include the
-    // auto-load projects list. This is the ONLY universally reliable
-    // mechanism — tool descriptions are surfaced by ALL MCP clients.
-    //
-    // Previous approaches that FAILED:
-    //   - sendLoggingMessage: goes to debug logs, not AI conversation
-    //   - instructions field: not supported by Claude Code or Claude CLI
-    //
-    // No runtime code needed here — the instruction is baked into the
-    // tool schema returned by ListTools.
-  }
-
-  // ─── v2.0 Step 6: Initialize SyncBus (Telepathy) ───
-  // Fire-and-forget — SyncBus is non-critical for startup.
-  // Awaiting getSyncBus() + startListening() could block the event loop
-  // if Supabase Realtime is slow, delaying MCP request processing.
-  if (SESSION_MEMORY_ENABLED) {
-    (async () => {
-      try {
-        const syncBus = await getSyncBus();
-        await syncBus.startListening();
-
-        syncBus.on("update", (event: SyncEvent) => {
-          // Send an MCP logging notification to the IDE
-          try {
-            server.sendLoggingMessage({
-              level: "info",
-              data: `[Prism Telepathy] \u{1F9E0} Another agent just updated the memory for ` +
-                `'${event.project}' to version ${event.version}. ` +
-                `You may want to run session_load_context to sync up.`,
-            });
-          } catch (err) {
-            console.error(`[Telepathy] Failed to send notification: ${err}`);
-          }
-        });
-
-      } catch (err) {
-        console.error(`[Telepathy] SyncBus init failed (non-fatal): ${err}`);
-      }
-    })();
-  }
-
-  // ─── v2.0 Step 8: Mind Palace Dashboard ───
-  // Deferred to next tick — yields the event loop so the MCP stdio
-  // transport processes the initialize handshake before dashboard
-  // init spawns child processes (lsof) and awaits storage.
-  setTimeout(() => {
-    startDashboardServer().catch(err => {
-      console.error(`[Dashboard] Mind Palace startup failed (non-fatal): ${err}`);
-    });
-  }, 0);
-
   // Keep the process alive — without this, Node.js would exit
   // because there are no active event loop handles after the
   // synchronous setup completes.
-  setInterval(() => {
-    // Heartbeat to keep the process running
-  }, 10000);
+  ensureKeepAlive();
+}
+
+export async function startConfiguredServer() {
+  if (PRISM_MCP_TRANSPORT === "http") {
+    const { startHttpServer } = await import("./http/server.js");
+    await startHttpServer();
+    return;
+  }
+
+  await startServer();
 }
 
 // Only auto-start when this module is executed directly (not imported by Smithery scanner)
 const isDirectExecution = process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.ts');
 if (isDirectExecution) {
-  startServer().catch((error) => {
+  startConfiguredServer().catch((error) => {
     console.error('Fatal error running server:', error);
     process.exit(1);
   });

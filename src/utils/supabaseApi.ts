@@ -1,4 +1,4 @@
-import { SUPABASE_URL, SUPABASE_KEY } from "../config.js";
+import { SUPABASE_URL, SUPABASE_KEY, SUPABASE_API_PREFIX } from "../config.js";
 
 /**
  * Lightweight Supabase REST API client.
@@ -28,6 +28,35 @@ interface SupabaseRequestOptions {
   headers?: Record<string, string>;  // Extra headers (e.g., upsert preferences)
 }
 
+const DEFAULT_SUPABASE_API_PREFIX = "/rest/v1";
+
+function normalizeApiPrefix(prefix: string): string {
+  if (!prefix || prefix === "/") {
+    return "";
+  }
+
+  const withLeadingSlash = prefix.startsWith("/") ? prefix : `/${prefix}`;
+  return withLeadingSlash.endsWith("/") ? withLeadingSlash.slice(0, -1) : withLeadingSlash;
+}
+
+function applyApiPrefix(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const normalizedPrefix = normalizeApiPrefix(SUPABASE_API_PREFIX);
+
+  if (!normalizedPath.startsWith(DEFAULT_SUPABASE_API_PREFIX)) {
+    return `${normalizedPrefix}${normalizedPath}` || "/";
+  }
+
+  const suffix = normalizedPath.slice(DEFAULT_SUPABASE_API_PREFIX.length);
+  return `${normalizedPrefix}${suffix || ""}` || "/";
+}
+
+function buildSupabaseUrl(path: string): URL {
+  const normalizedBaseUrl = SUPABASE_URL!.endsWith("/") ? SUPABASE_URL! : `${SUPABASE_URL!}/`;
+  const normalizedPath = applyApiPrefix(path).replace(/^\//, "");
+  return new URL(normalizedPath, normalizedBaseUrl);
+}
+
 /**
  * Makes a single authenticated HTTP request to the Supabase REST API.
  * All public functions below delegate to this.
@@ -39,7 +68,7 @@ async function supabaseRequest(opts: SupabaseRequestOptions): Promise<unknown> {
   }
 
   // Build the full URL with any query parameters
-  const url = new URL(`${SUPABASE_URL}${opts.path}`);
+  const url = buildSupabaseUrl(opts.path);
   if (opts.params) {
     for (const [k, v] of Object.entries(opts.params)) {
       url.searchParams.set(k, v);

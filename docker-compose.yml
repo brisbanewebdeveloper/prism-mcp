@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ═══════════════════════════════════════════════════════════════════
 # Prism MCP — Local PostgreSQL Development Stack
 #
@@ -7,16 +5,25 @@ version: '3.8'
 # This provides the same database backend with pgvector support.
 #
 # Usage:
-#   docker compose up -d        # Start PostgreSQL + pgvector
+#   docker compose up -d        # Start PostgreSQL + pgvector + Prism app
 #   docker compose down         # Stop and preserve data
 #   docker compose down -v      # Stop and delete all data
+#
+# Port and credential values are read from .env (with safe defaults).
+# See .env.example for all supported variables.
+#
+# The checked-in `pg_hba.conf` overrides the image default peer map so
+# local startup connections can authenticate custom database roles.
+# A one-shot bootstrap container also backfills the configured app role
+# and database when an existing volume predates the current `.env`.
 #
 # After starting, run all migrations in order:
 #   cat supabase/migrations/*.sql | docker compose exec -T db psql -U prism -d prism_mcp
 #
-# Then configure your MCP client to use this local instance:
-#   SUPABASE_URL=http://localhost:3000
-#   SUPABASE_KEY=your-local-anon-key
+# The `prism` service publishes the Mind Palace dashboard and can also
+# publish MCP Streamable HTTP when PRISM_MCP_TRANSPORT=http. It talks to
+# PostgREST over the internal Compose network using PRISM_SUPABASE_URL
+# and PRISM_SUPABASE_KEY.
 #
 # NOTE: This stack uses Supabase's open-source self-hosted images
 # which include PostgREST (the REST API that Prism MCP communicates
@@ -30,19 +37,41 @@ services:
     image: supabase/postgres:15.8.1.060
     container_name: prism-mcp-db
     ports:
-      - "5432:5432"
+      - "${PRISM_DB_HOST_PORT:-5432}:${PRISM_DB_PORT:-5432}"
     environment:
-      POSTGRES_USER: prism
-      POSTGRES_PASSWORD: prism_secret_change_me
-      POSTGRES_DB: prism_mcp
+      POSTGRES_USER: ${PRISM_DB_USER:-prism}
+      POSTGRES_PASSWORD: ${PRISM_DB_PASSWORD:-prism_secret_change_me}
+      POSTGRES_DB: ${PRISM_DB_NAME:-prism_mcp}
+      TZ: Australia/Brisbane
     volumes:
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - pgsocket:/run/postgresql
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prism -d prism_mcp"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p ${PRISM_DB_PORT:-5432}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # ─── Bootstrap app role + database for existing volumes ───────
+  db-bootstrap:
+    image: supabase/postgres:15.8.1.060
+    container_name: prism-mcp-db-bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+    user: postgres
+    environment:
+      PRISM_DB_USER: ${PRISM_DB_USER:-prism}
+      PRISM_DB_PASSWORD: ${PRISM_DB_PASSWORD:-prism_secret_change_me}
+      PRISM_DB_NAME: ${PRISM_DB_NAME:-prism_mcp}
+      PRISM_REST_DB_ANON_ROLE: ${PRISM_REST_DB_ANON_ROLE:-prism}
+    volumes:
+      - ./docker-bootstrap-db.sh:/usr/local/bin/docker-bootstrap-db.sh:ro
+      - pgsocket:/run/postgresql
+    entrypoint: ["/bin/sh", "/usr/local/bin/docker-bootstrap-db.sh"]
+    restart: "no"
 
   # ─── PostgREST — REST API over PostgreSQL ──────────────────────
   # This provides the same REST API that Supabase Cloud offers.
@@ -51,17 +80,54 @@ services:
     image: postgrest/postgrest:v12.2.3
     container_name: prism-mcp-rest
     ports:
-      - "3000:3000"
+      - "${PRISM_REST_HOST_PORT:-3000}:${PRISM_REST_PORT:-3000}"
     environment:
-      PGRST_DB_URI: postgres://prism:prism_secret_change_me@db:5432/prism_mcp
-      PGRST_DB_SCHEMAS: public
-      PGRST_DB_ANON_ROLE: prism
-      PGRST_JWT_SECRET: super-secret-jwt-token-for-local-dev-only-change-in-production
+      PGRST_DB_URI: postgres://${PRISM_DB_USER:-prism}:${PRISM_DB_PASSWORD:-prism_secret_change_me}@db:${PRISM_DB_PORT:-5432}/${PRISM_DB_NAME:-prism_mcp}
+      PGRST_DB_SCHEMAS: ${PRISM_REST_DB_SCHEMAS:-public}
+      PGRST_DB_ANON_ROLE: ${PRISM_REST_DB_ANON_ROLE:-prism}
+      PGRST_JWT_SECRET: ${PRISM_REST_JWT_SECRET:-super-secret-jwt-token-for-local-dev-only-change-in-production}
+      PGRST_SERVER_PORT: ${PRISM_REST_PORT:-3000}
     depends_on:
       db:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ─── Prism MCP + Dashboard ───────────────────────────────────
+  prism:
+    build:
+      context: .
+      target: builder
+    container_name: prism-mcp-app
+    entrypoint: ["/bin/sh", "/usr/local/bin/docker-start-prism.sh"]
+    environment:
+      PRISM_MCP_TRANSPORT: ${PRISM_MCP_TRANSPORT:-stdio}
+      PRISM_MCP_PORT: ${PRISM_MCP_PORT:-3002}
+      PRISM_MCP_PATH: ${PRISM_MCP_PATH:-/mcp}
+      PRISM_DASHBOARD_PORT: ${PRISM_DASHBOARD_PORT:-3001}
+      PRISM_DB_USER: ${PRISM_DB_USER:-prism}
+      PRISM_SUPABASE_URL: ${PRISM_SUPABASE_URL:-http://rest:3000}
+      PRISM_SUPABASE_API_PREFIX: ${PRISM_SUPABASE_API_PREFIX-}
+      PRISM_SUPABASE_KEY: ${PRISM_SUPABASE_KEY:-}
+      PRISM_REST_JWT_SECRET: ${PRISM_REST_JWT_SECRET:-super-secret-jwt-token-for-local-dev-only-change-in-production}
+    ports:
+      - "${PRISM_MCP_HOST_PORT:-3002}:${PRISM_MCP_PORT:-3002}"
+      - "${PRISM_DASHBOARD_PORT:-3001}:${PRISM_DASHBOARD_PORT:-3001}"
+    depends_on:
+      rest:
+        condition: service_started
+    volumes:
+      - ./docker-start-prism.sh:/usr/local/bin/docker-start-prism.sh:ro
+      - prism_state:/root/.prism-mcp
+    stdin_open: true
+    tty: true
     restart: unless-stopped
 
 volumes:
   pgdata:
+    driver: local
+  pgsocket:
+    driver: local
+  prism_state:
     driver: local

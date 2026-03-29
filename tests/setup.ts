@@ -36,6 +36,9 @@ process.env.PRISM_DATA_DIR = TEMP_DIR;
 // Disable the dashboard server during tests to avoid port conflicts
 process.env.PRISM_DASHBOARD_PORT = "0";
 
+// Prefer ephemeral HTTP MCP ports in tests to avoid collisions
+process.env.PRISM_MCP_PORT = "0";
+
 // Disable Hivemind by default — individual test suites enable it as needed
 process.env.PRISM_ENABLE_HIVEMIND = "false";
 

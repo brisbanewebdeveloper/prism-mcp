@@ -20,13 +20,13 @@
 import * as http from "http";
 import { exec } from "child_process";
 import { getStorage } from "../storage/index.js";
-import { PRISM_USER_ID, SERVER_CONFIG } from "../config.js";
+import { PRISM_DASHBOARD_PORT, PRISM_USER_ID, SERVER_CONFIG } from "../config.js";
 import { renderDashboardHTML } from "./ui.js";
 import { getAllSettings, setSetting, getSetting } from "../storage/configStorage.js";
 import { compactLedgerHandler } from "../tools/compactionHandler.js";
 
 
-const PORT = parseInt(process.env.PRISM_DASHBOARD_PORT || "3000", 10);
+const PORT = PRISM_DASHBOARD_PORT;
 
 /** Read HTTP request body as string */
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -84,6 +84,11 @@ async function killPortHolder(port: number): Promise<void> {
 }
 
 export async function startDashboardServer(): Promise<void> {
+  if (PORT <= 0) {
+    console.error("[Dashboard] Disabled (PRISM_DASHBOARD_PORT <= 0)");
+    return;
+  }
+
   // Fire-and-forget port cleanup — don't block server start.
   // Previously awaiting this added 300ms+ delay from lsof + setTimeout,
   // starving the MCP stdio transport during the init handshake.

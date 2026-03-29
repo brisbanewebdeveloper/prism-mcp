@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,11 @@ import { fileURLToPath } from "node:url";
  *   BRAVE_ANSWERS_API_KEY  — (optional) API key for Brave Answers (AI grounding). Enables brave_answers tool.
  *   SUPABASE_URL           — (optional) Your Supabase project URL. Enables session memory tools.
  *   SUPABASE_KEY           — (optional) Your Supabase anon/service key. Enables session memory tools.
+ *   SUPABASE_API_PREFIX    — (optional) REST path prefix. Defaults to "/rest/v1"; set to empty for raw PostgREST.
+ *   PRISM_MCP_TRANSPORT    — (optional) MCP transport mode: "stdio" (default) or "http".
+ *   PRISM_MCP_PORT         — (optional) HTTP MCP listen port when PRISM_MCP_TRANSPORT=http. Defaults to 3002.
+ *   PRISM_MCP_PATH         — (optional) HTTP MCP endpoint path. Defaults to "/mcp".
+ *   PRISM_DASHBOARD_PORT   — (optional) Mind Palace dashboard HTTP port. Defaults to 3000.
  *   PRISM_USER_ID          — (optional) Unique tenant ID for multi-user Supabase instances.
  *                            Defaults to "default". Set per-user in Claude Desktop config.
  *
@@ -77,12 +83,34 @@ if (!BRAVE_ANSWERS_API_KEY) {
 
 export const SUPABASE_URL = process.env.SUPABASE_URL;
 export const SUPABASE_KEY = process.env.SUPABASE_KEY;
+export const SUPABASE_API_PREFIX = process.env.SUPABASE_API_PREFIX ?? "/rest/v1";
 export const SESSION_MEMORY_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
 // Note: debug() is defined at the bottom of this file; these lines
 // execute at import time after the full module is loaded by Node.
 if (!SESSION_MEMORY_ENABLED) {
   console.error("Info: Session memory disabled (set SUPABASE_URL + SUPABASE_KEY to enable)");
 }
+
+// ─── Optional: MCP Transport Mode ──────────────────────────────
+
+const MCP_TRANSPORT = process.env.PRISM_MCP_TRANSPORT;
+export const PRISM_MCP_TRANSPORT: "stdio" | "http" = MCP_TRANSPORT === "http" ? "http" : "stdio";
+
+const parsedMcpPort = parseInt(process.env.PRISM_MCP_PORT || "3002", 10);
+export const PRISM_MCP_PORT = Number.isInteger(parsedMcpPort) && parsedMcpPort >= 0 && parsedMcpPort <= 65535
+  ? parsedMcpPort
+  : 3002;
+
+const configuredMcpPath = (process.env.PRISM_MCP_PATH || "/mcp").trim();
+const normalizedMcpPath = configuredMcpPath.startsWith("/") ? configuredMcpPath : `/${configuredMcpPath}`;
+export const PRISM_MCP_PATH = normalizedMcpPath.length > 1
+  ? normalizedMcpPath.replace(/\/+$/, "")
+  : normalizedMcpPath;
+
+const parsedDashboardPort = parseInt(process.env.PRISM_DASHBOARD_PORT || "3000", 10);
+export const PRISM_DASHBOARD_PORT = Number.isInteger(parsedDashboardPort)
+  ? parsedDashboardPort
+  : 3000;
 
 // ─── v2.0: Storage Backend Selection ─────────────────────────
 // REVIEWER NOTE: Step 1 of v2.0 introduces a storage abstraction.

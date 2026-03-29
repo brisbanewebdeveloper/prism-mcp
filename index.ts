@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { startServer, createSandboxServer } from "./src/server.js";
+import { startConfiguredServer, createSandboxServer } from "./src/server.js";
 
 // Re-export for Smithery capability scanning
 export { createSandboxServer };
@@ -22,7 +22,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Run the server
-startServer().catch((error) => {
+startConfiguredServer().catch((error) => {
   console.error("Fatal error running server:", error);
   process.exit(1);
 });

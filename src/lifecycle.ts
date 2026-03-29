@@ -9,7 +9,6 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { execSync } from "child_process";
 import { closeConfigStorage } from "./storage/configStorage.js";
 import { getStorage } from "./storage/index.js";
 import { shutdownTelemetry } from "./utils/telemetry.js";
@@ -29,36 +28,72 @@ function log(msg: string) {
   console.error(`[Prism Lifecycle] ${msg}`);
 }
 
-/**
- * Checks if a process is an orphan (adopted by init/launchd, PPID=1).
- * Returns false on Windows (PID logic is different there).
- */
-function isOrphanProcess(pid: number): boolean {
+export interface ShutdownHandlerOptions {
+  watchStdin?: boolean;
+  onShutdown?: () => Promise<void> | void;
+}
+
+let shutdownHandlersRegistered = false;
+
+type ProcessParentState = "managed" | "orphaned" | "missing" | "unknown";
+
+function inspectLinuxParentState(pid: number): ProcessParentState {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8").trim();
+    const closingParen = stat.lastIndexOf(")");
+
+    if (closingParen === -1) {
+      return "unknown";
+    }
+
+    const fields = stat.slice(closingParen + 2).trim().split(/\s+/);
+    const ppid = fields[1];
+
+    if (!ppid) {
+      return "unknown";
+    }
+
+    return ppid === "1" ? "orphaned" : "managed";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "missing";
+    }
+
+    log(`Warning: Failed to inspect parent for PID ${pid}: ${error}`);
+    return "unknown";
+  }
+}
+
+function inspectUnixParentState(pid: number): ProcessParentState {
   if (process.platform === "win32") {
-    // Windows doesn't have reliable PPID checks via 'ps'. 
-    // Safer to assume it's NOT an orphan to avoid killing valid instances.
-    return false;
+    return "managed";
   }
 
-  try {
-    // 'ps -o ppid= -p PID' returns just the parent PID
-    const ppid = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8" }).trim();
-    return ppid === "1";
-  } catch {
-    // If ps fails (e.g. process gone), assume it's safe to claim
-    return true;
+  if (process.platform === "linux") {
+    return inspectLinuxParentState(pid);
   }
+
+  return "unknown";
+}
+
+/**
+ * Checks if a process is an orphan (adopted by init/launchd, PPID=1).
+ * Returns a safe state so unknown parent inspection never becomes a blind kill.
+ */
+function getParentState(pid: number): ProcessParentState {
+  return inspectUnixParentState(pid);
 }
 
 /**
  * Ensures valid server execution state.
- * 
+ *
  * LOGIC:
  * 1. If --no-lock is passed, skip everything (testing mode).
  * 2. If PID file exists:
  *    - If process is dead: Overwrite lock.
  *    - If process is alive AND is an orphan (PPID=1): Kill it (Zombie), then overwrite.
  *    - If process is alive AND has a parent: Log warning, allow coexistence (don't kill).
+ *    - If process inspection is inconclusive: Preserve the lock and avoid blind cleanup.
  */
 export function acquireLock() {
   if (process.argv.includes("--no-lock")) {
@@ -73,7 +108,7 @@ export function acquireLock() {
   if (fs.existsSync(PID_FILE)) {
     try {
       const oldPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
-      
+
       if (oldPid && oldPid !== process.pid) {
         let isAlive = false;
         try {
@@ -84,8 +119,9 @@ export function acquireLock() {
         }
 
         if (isAlive) {
-          // Process exists. Is it a zombie?
-          if (isOrphanProcess(oldPid)) {
+          const parentState = getParentState(oldPid);
+
+          if (parentState === "orphaned") {
             log(`Found zombie process (PID ${oldPid}, PPID=1). Terminating...`);
             try {
               process.kill(oldPid, "SIGTERM");
@@ -96,13 +132,16 @@ export function acquireLock() {
             } catch (e) {
               log(`Failed to kill zombie: ${e}`);
             }
-          } else {
+          } else if (parentState === "managed") {
             // It has a parent (e.g., another VS Code window or Claude Desktop)
             log(`Existing server (PID ${oldPid}) is active and managed. Coexisting...`);
-            // We do NOT overwrite the PID file here. 
-            // If we overwrite it, the *active* server will fail to clean up 
+            // We do NOT overwrite the PID file here.
+            // If we overwrite it, the *active* server will fail to clean up
             // the PID file when it eventually shuts down.
-            return; 
+            return;
+          } else if (parentState === "unknown") {
+            log(`Warning: Could not verify parent for active PID ${oldPid}. Preserving existing lock.`);
+            return;
           }
         }
       }
@@ -123,7 +162,12 @@ export function acquireLock() {
 /**
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
-export function registerShutdownHandlers() {
+export function registerShutdownHandlers(options: ShutdownHandlerOptions = {}) {
+  if (shutdownHandlersRegistered) {
+    return;
+  }
+
+  shutdownHandlersRegistered = true;
   let shuttingDown = false;
 
   const shutdown = async (reason: string) => {
@@ -132,6 +176,8 @@ export function registerShutdownHandlers() {
     log(`Shutting down gracefully (${reason})...`);
 
     try {
+      await options.onShutdown?.();
+
       // 0. Flush OTel span buffer FIRST — before any DBs are closed.
       //    BatchSpanProcessor holds spans in memory (up to 5s). If we close
       //    DBs first, spans that reference DB operations lose their context.
@@ -171,7 +217,9 @@ export function registerShutdownHandlers() {
   process.on("SIGHUP", () => shutdown("SIGHUP"));
 
   // MCP Client Disconnect (CRITICAL)
-  process.stdin.on("close", () => {
-    shutdown("CLIENT_DISCONNECTED_STDIN_CLOSED");
-  });
+  if (options.watchStdin !== false) {
+    process.stdin.on("close", () => {
+      shutdown("CLIENT_DISCONNECTED_STDIN_CLOSED");
+    });
+  }
 }

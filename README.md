@@ -114,7 +114,11 @@ Add to your MCP client config (`claude_desktop_config.json`, `.cursor/mcp.json`,
 }
 ```
 
-**That's it.** Restart your client. All 30+ tools are available. Dashboard at `http://localhost:3000`.
+**That's it.** Restart your client. All 30+ tools are available. Dashboard at `http://localhost:<PRISM_DASHBOARD_PORT>` (default `3000`).
+
+For the local Docker stack, copy `.env.example` to `.env` and adjust `PRISM_DB_HOST_PORT`, `PRISM_REST_HOST_PORT`, and `PRISM_DASHBOARD_PORT`. Running `docker compose up -d` now starts `db`, `rest`, and a `prism` app container that serves the dashboard on `PRISM_DASHBOARD_PORT`. Keep `PRISM_SUPABASE_URL=http://rest:3000` and `PRISM_SUPABASE_API_PREFIX=` because the raw PostgREST container serves APIs at the root rather than `/rest/v1`. If `PRISM_SUPABASE_KEY` is unset, the container auto-generates a local JWT signed by `PRISM_REST_JWT_SECRET` and uses `PRISM_DB_USER` as the role claim so the PostgREST-backed session-memory APIs can authenticate with the same local database role used by the stack. The Compose stack now persists Prism's local state directory under a named volume, so dashboard settings and other `~/.prism-mcp` artifacts survive `docker compose down` and `./restart.sh`; use `docker compose down -v` when you intentionally want to reset them.
+
+For HTTP-native MCP clients, Prism can also expose a Streamable HTTP endpoint. Set `PRISM_MCP_TRANSPORT=http`, then connect to `http://localhost:<PRISM_MCP_HOST_PORT><PRISM_MCP_PATH>` in Docker or `http://localhost:<PRISM_MCP_PORT><PRISM_MCP_PATH>` when running the Node process directly. The default remains stdio when `PRISM_MCP_TRANSPORT` is unset.
 
 > **Optional API keys:** `GOOGLE_API_KEY` for semantic search + Morning Briefings, `BRAVE_API_KEY` for web search. See [Environment Variables](#environment-variables).
 
@@ -512,7 +516,13 @@ Requires `PRISM_ENABLE_HIVEMIND=true`.
 | `PRISM_AUTO_CAPTURE` | No | `"true"` to auto-snapshot dev servers |
 | `PRISM_CAPTURE_PORTS` | No | Comma-separated ports (default: `3000,3001,5173,8080`) |
 | `PRISM_DEBUG_LOGGING` | No | `"true"` for verbose logs |
+| `PRISM_MCP_TRANSPORT` | No | `"stdio"` (default) or `"http"` |
+| `PRISM_MCP_PORT` | No | Prism MCP HTTP listen port (default: `3002`) |
+| `PRISM_MCP_PATH` | No | Prism MCP HTTP path (default: `/mcp`) |
+| `PRISM_MCP_HOST_PORT` | No | Local Docker host port for HTTP MCP (default: `3002`) |
 | `PRISM_DASHBOARD_PORT` | No | Dashboard port (default: `3000`) |
+| `PRISM_DB_HOST_PORT` | No | Local Docker Postgres host port (default: `5432`) |
+| `PRISM_REST_HOST_PORT` | No | Local Docker PostgREST host port (default: `3000`) |
 
 </details>
 

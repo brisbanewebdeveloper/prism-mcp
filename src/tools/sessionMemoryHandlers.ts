@@ -66,9 +66,7 @@ import { join, dirname, resolve, isAbsolute, sep } from "node:path";
 const activeCompactions = new Set<string>();
 
 
-// ─── v0.4.0: Import server type for resource notifications ───
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { notifyResourceUpdate } from "../server.js";
+type ResourceUpdateNotifier = (project: string) => void;
 
 // ─── Save Ledger Handler ──────────────────────────────────────
 
@@ -223,7 +221,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 /**
  * Upserts the latest project handoff state with OCC.
  */
-export async function sessionSaveHandoffHandler(args: unknown, server?: Server) {
+export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpdate?: ResourceUpdateNotifier) {
   if (!isSessionSaveHandoffArgs(args)) {
     throw new Error("Invalid arguments for session_save_handoff");
   }
@@ -339,9 +337,9 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   }
 
   // ─── Trigger resource subscription notification ───
-  if (server && (data.status === "created" || data.status === "updated")) {
+  if (notifyResourceUpdate && (data.status === "created" || data.status === "updated")) {
     try {
-      notifyResourceUpdate(project, server);
+      notifyResourceUpdate(project);
     } catch (err) {
       console.error(`[session_save_handoff] Resource notification failed (non-fatal): ${err}`);
     }
@@ -644,7 +642,7 @@ export async function sessionLoadContextHandler(args: unknown) {
   if (d.last_summary) formattedContext += `📝 Last Summary: ${d.last_summary}\n`;
   if (d.active_branch) formattedContext += `🌿 Active Branch: ${d.active_branch}\n`;
   if (d.key_context) formattedContext += `💡 Key Context: ${d.key_context}\n`;
-  
+
   if (d.pending_todo?.length) {
     formattedContext += `\n✅ Open TODOs:\n` + d.pending_todo.map((t: string) => `  - ${t}`).join("\n") + `\n`;
   }

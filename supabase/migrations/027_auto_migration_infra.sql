@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS prism_schema_versions (
 ALTER TABLE prism_schema_versions ENABLE ROW LEVEL SECURITY;
 
 -- Only service_role can write; anon/authenticated can read
+DROP POLICY IF EXISTS "Service role full access" ON prism_schema_versions;
 CREATE POLICY "Service role full access"
   ON prism_schema_versions
   FOR ALL
@@ -30,6 +31,7 @@ CREATE POLICY "Service role full access"
   USING (true)
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Authenticated read access" ON prism_schema_versions;
 CREATE POLICY "Authenticated read access"
   ON prism_schema_versions
   FOR SELECT
