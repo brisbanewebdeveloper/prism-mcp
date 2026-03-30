@@ -27,7 +27,7 @@
 |---|---|---|
 | **StateGraph** | `build_research_agent()` in `agent.py` | Directed graph of processing nodes with typed shared state |
 | **Conditional Edges** | `should_continue()` — agent decides to loop or answer | Autonomous decision-making based on research quality |
-| **Tool Use** | 3 tools: Prism KB, MCP glossary, Brave web search | Multi-source information gathering |
+| **Tool Use** | 3 tools: Prism KB, MCP glossary, Google-backed web search | Multi-source information gathering |
 | **Autonomous Looping** | Searches again if results are INCOMPLETE | Self-evaluating research quality |
 | **Agentic Memory** | `save_session_node` persists to ledger | Agent doesn't just answer and forget — it commits findings |
 | **MCP Integration** | `PrismMCPBridge` — raw JSON-RPC over stdio | Deep protocol understanding, decoupled architecture |
@@ -95,7 +95,7 @@ Desktop manage their connections.
 
 The agent's `search_node` is **tool-source agnostic**:
 
-- **Standalone**: `python main.py "query"` → uses built-in Prism KB (12 entries) + Brave API
+- **Standalone**: `python main.py "query"` → uses built-in Prism KB (12 entries) + Google Programmable Search
 - **MCP-connected**: `python main.py --prism "query"` → routes through live Prism MCP tools
 
 This proves the architecture is **decoupled** — the LangGraph agent orchestrates reasoning (Plan → Analyze → Decide), while tool execution is abstracted by the MCP protocol.
@@ -106,7 +106,7 @@ This proves the architecture is **decoupled** — the LangGraph agent orchestrat
 - **LLM**: Google Gemini 2.5 Flash Lite (`langchain-google-genai`)
 - **MCP Protocol**: Raw JSON-RPC 2.0 over stdio (no SDK, Python 3.9+)
 - **Knowledge Base**: Curated Prism MCP documentation (12 entries, 13 glossary terms)
-- **Web Search**: Brave Search API (optional, via `BRAVE_API_KEY`)
+- **Web Search**: Google Programmable Search (optional, via `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX`)
 - **Memory**: Local JSON ledger + Prism MCP `session_save_ledger`
 
 ## Environment Variables
@@ -114,7 +114,8 @@ This proves the architecture is **decoupled** — the LangGraph agent orchestrat
 | Variable | Required | Description |
 |---|---|---|
 | `GOOGLE_API_KEY` | ✅ | Google Gemini API key (free tier available) |
-| `BRAVE_API_KEY` | Optional | Brave Search API key for web search |
+| `GOOGLE_SEARCH_API_KEY` | Optional | Google Programmable Search API key for web search |
+| `GOOGLE_SEARCH_CX` | Optional | Google Custom Search Engine ID paired with `GOOGLE_SEARCH_API_KEY` |
 
 ## Integration with Prism MCP
 

@@ -31,7 +31,7 @@ import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 
 // Code Mode: Search + JavaScript extraction
 // The "code mode" pattern works like this:
-//   1. Perform a regular Brave search to get raw API JSON
+//   1. Perform a regular web search to get raw API JSON
 //   2. Run user-provided JavaScript code against that JSON in a QuickJS sandbox
 //   3. Return only the extracted/transformed output (much smaller than the full response)
 // This dramatically reduces token usage when the AI only needs specific fields from search results.
@@ -39,7 +39,7 @@ import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 export const BRAVE_WEB_SEARCH_CODE_MODE_TOOL: Tool = {
   name: "brave_web_search_code_mode",
   description:
-    "Performs a web search using the Brave Search API, and then runs a custom JavaScript code string against the RAW API RESPONSE in a secure QuickJS sandbox. " +
+    "Performs a web search using Google Programmable Search, and then runs a custom JavaScript code string against the RAW API RESPONSE in a secure QuickJS sandbox. " +
     "This drastically reduces context window usage by only returning the output of your script. " +
     "Use this for broad information gathering, recent events, or when you need diverse web sources and only need specific parts of the result. " +
     "Your script should read the 'DATA' global variable (a JSON string of the API response), process it, and use console.log() to print the desired output.",
@@ -79,10 +79,10 @@ export const BRAVE_WEB_SEARCH_CODE_MODE_TOOL: Tool = {
 export const WEB_SEARCH_TOOL: Tool = {
   name: "brave_web_search",
   description:
-    "Performs a web search using the Brave Search API, ideal for general queries, news, articles, and online content. " +
+    "Performs a web search using Google Programmable Search, ideal for general queries, news, articles, and online content. " +
     "Use this for broad information gathering, recent events, or when you need diverse web sources. " +
-    "Supports pagination, content filtering, and freshness controls. " +
-    "Maximum 20 results per request, with offset for pagination. ",
+    "Supports pagination with offset translation to Google start-index semantics. " +
+    "Maximum 10 results per request, with offset for pagination. ",
   inputSchema: {
     type: "object",
     properties: {

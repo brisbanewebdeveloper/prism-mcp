@@ -10,7 +10,14 @@ import { fileURLToPath } from "node:url";
  * validates required ones, and exports them for use throughout the server.
  *
  * Environment variable guide:
- *   BRAVE_API_KEY          — (required) API key for Brave Search Pro. Get one at https://brave.com/search/api/
+ *   GOOGLE_SEARCH_API_KEY  — (optional) API key for Google Programmable Search (single credential mode).
+ *   GOOGLE_SEARCH_CX       — (optional) Custom Search Engine ID paired with GOOGLE_SEARCH_API_KEY.
+ *   GOOGLE_SEARCH_CREDENTIALS — (optional) JSON array of credential pairs for ordered failover,
+ *                               or a JSON object with { "strategy", "credentials" }.
+ *                               Each entry: { "apiKey": "...", "cx": "..." }.
+ *                               Supported strategies: "failover" and "random".
+ *                               The alias field "channel" is also accepted instead of "cx".
+ *   BRAVE_API_KEY          — (optional) API key for Brave local search endpoints.
  *   GOOGLE_API_KEY         — (optional) API key for Google AI Studio / Gemini. Enables paper analysis.
  *   BRAVE_ANSWERS_API_KEY  — (optional) API key for Brave Answers (AI grounding). Enables brave_answers tool.
  *   SUPABASE_URL           — (optional) Your Supabase project URL. Enables session memory tools.
@@ -51,11 +58,256 @@ export const SERVER_CONFIG = {
   version: resolveServerVersion(),
 };
 
-// ─── Required: Brave Search API Key ───────────────────────────
+export interface GoogleSearchCredential {
+  apiKey: string;
+  cx: string;
+}
+
+export type GoogleSearchCredentialSelectionStrategy =
+  | "failover"
+  | "random";
+
+interface GoogleSearchCredentialParseResult {
+  credentials: GoogleSearchCredential[];
+  selectionStrategy: GoogleSearchCredentialSelectionStrategy;
+  warnings: string[];
+}
+
+function normalizeEnvValue(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseStructuredGoogleSearchCredentials(
+  raw: string
+): GoogleSearchCredentialParseResult {
+  const warnings: string[] = [];
+  const credentials: GoogleSearchCredential[] = [];
+  let selectionStrategy: GoogleSearchCredentialSelectionStrategy = "failover";
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      credentials,
+      selectionStrategy,
+      warnings: [
+        "GOOGLE_SEARCH_CREDENTIALS is not valid JSON and will be ignored.",
+      ],
+    };
+  }
+
+  let entries: unknown[];
+  if (Array.isArray(parsed)) {
+    entries = parsed;
+  } else if (typeof parsed === "object" && parsed !== null) {
+    const candidate = parsed as {
+      strategy?: unknown;
+      credentials?: unknown;
+    };
+
+    if (candidate.strategy !== undefined) {
+      const rawStrategy =
+        typeof candidate.strategy === "string"
+          ? candidate.strategy.trim().toLowerCase()
+          : undefined;
+
+      if (rawStrategy === "failover" || rawStrategy === "random") {
+        selectionStrategy = rawStrategy;
+      } else {
+        warnings.push(
+          'GOOGLE_SEARCH_CREDENTIALS.strategy must be "failover" or "random"; defaulting to failover.'
+        );
+      }
+    }
+
+    if (!Array.isArray(candidate.credentials)) {
+      return {
+        credentials,
+        selectionStrategy: "failover",
+        warnings: [
+          ...warnings,
+          "GOOGLE_SEARCH_CREDENTIALS.credentials must be a JSON array and will be ignored.",
+        ],
+      };
+    }
+
+    entries = candidate.credentials;
+  } else {
+    return {
+      credentials,
+      selectionStrategy,
+      warnings: [
+        "GOOGLE_SEARCH_CREDENTIALS must be a JSON array or object and will be ignored.",
+      ],
+    };
+  }
+
+  entries.forEach((entry, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      warnings.push(
+        `GOOGLE_SEARCH_CREDENTIALS[${index}] must be an object and was ignored.`
+      );
+      return;
+    }
+
+    const candidate = entry as {
+      apiKey?: unknown;
+      cx?: unknown;
+      channel?: unknown;
+    };
+
+    const apiKey =
+      typeof candidate.apiKey === "string"
+        ? normalizeEnvValue(candidate.apiKey)
+        : undefined;
+    const cxField =
+      typeof candidate.cx === "string"
+        ? candidate.cx
+        : typeof candidate.channel === "string"
+          ? candidate.channel
+          : undefined;
+    const cx = normalizeEnvValue(cxField);
+
+    if (!apiKey || !cx) {
+      warnings.push(
+        `GOOGLE_SEARCH_CREDENTIALS[${index}] is missing apiKey/cx and was ignored.`
+      );
+      return;
+    }
+
+    credentials.push({ apiKey, cx });
+  });
+
+  return { credentials, selectionStrategy, warnings };
+}
+
+function parseIndexedGoogleSearchCredentials(
+  env: Record<string, string | undefined>
+): GoogleSearchCredentialParseResult {
+  const warnings: string[] = [];
+  const indexed = new Map<number, { apiKey?: string; cx?: string }>();
+
+  for (const [name, rawValue] of Object.entries(env)) {
+    const value = normalizeEnvValue(rawValue);
+    if (!value) {
+      continue;
+    }
+
+    const keyMatch = name.match(/^GOOGLE_SEARCH_API_KEY_(\d+)$/);
+    if (keyMatch) {
+      const idx = Number.parseInt(keyMatch[1], 10);
+      const current = indexed.get(idx) ?? {};
+      current.apiKey = value;
+      indexed.set(idx, current);
+      continue;
+    }
+
+    const cxMatch = name.match(/^GOOGLE_SEARCH_CX_(\d+)$/);
+    if (cxMatch) {
+      const idx = Number.parseInt(cxMatch[1], 10);
+      const current = indexed.get(idx) ?? {};
+      current.cx = value;
+      indexed.set(idx, current);
+    }
+  }
+
+  const credentials: GoogleSearchCredential[] = [];
+  for (const idx of [...indexed.keys()].sort((a, b) => a - b)) {
+    const entry = indexed.get(idx);
+    if (!entry) {
+      continue;
+    }
+
+    if (entry.apiKey && entry.cx) {
+      credentials.push({ apiKey: entry.apiKey, cx: entry.cx });
+      continue;
+    }
+
+    warnings.push(
+      `GOOGLE_SEARCH_API_KEY_${idx} and GOOGLE_SEARCH_CX_${idx} must both be set; index ${idx} was ignored.`
+    );
+  }
+
+  return { credentials, selectionStrategy: "failover", warnings };
+}
+
+export function parseGoogleSearchCredentials(
+  env: Record<string, string | undefined>
+): GoogleSearchCredentialParseResult {
+  const warnings: string[] = [];
+
+  const structuredRaw = normalizeEnvValue(env.GOOGLE_SEARCH_CREDENTIALS);
+  if (structuredRaw) {
+    const structured = parseStructuredGoogleSearchCredentials(structuredRaw);
+    warnings.push(...structured.warnings);
+    if (structured.credentials.length > 0) {
+      return {
+        credentials: structured.credentials,
+        selectionStrategy: structured.selectionStrategy,
+        warnings,
+      };
+    }
+
+    warnings.push(
+      "Falling back to GOOGLE_SEARCH_API_KEY[_N] and GOOGLE_SEARCH_CX[_N] variables because GOOGLE_SEARCH_CREDENTIALS had no valid entries."
+    );
+  }
+
+  const indexed = parseIndexedGoogleSearchCredentials(env);
+  warnings.push(...indexed.warnings);
+
+  const singleApiKey = normalizeEnvValue(env.GOOGLE_SEARCH_API_KEY);
+  const singleCx = normalizeEnvValue(env.GOOGLE_SEARCH_CX);
+  if ((singleApiKey && !singleCx) || (!singleApiKey && singleCx)) {
+    warnings.push(
+      "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must both be set for single-credential mode; the incomplete single credential was ignored."
+    );
+  }
+
+  const combined: GoogleSearchCredential[] = [...indexed.credentials];
+  if (singleApiKey && singleCx) {
+    combined.push({ apiKey: singleApiKey, cx: singleCx });
+  }
+
+  const seen = new Set<string>();
+  const credentials = combined.filter((credential) => {
+    const id = `${credential.apiKey}::${credential.cx}`;
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+
+  return { credentials, selectionStrategy: "failover", warnings };
+}
+
+const googleSearchCredentialResult = parseGoogleSearchCredentials(process.env);
+for (const warning of googleSearchCredentialResult.warnings) {
+  console.error(`Warning: ${warning}`);
+}
+
+export const GOOGLE_SEARCH_CREDENTIALS = googleSearchCredentialResult.credentials;
+export const GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY =
+  googleSearchCredentialResult.selectionStrategy;
+if (GOOGLE_SEARCH_CREDENTIALS.length === 0) {
+  console.error(
+    "Warning: Google Search credentials are missing. Configure GOOGLE_SEARCH_CREDENTIALS or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX for web search tools."
+  );
+}
+
+// ─── Optional: Brave Search API Key ───────────────────────────
+// Used by brave_local_search and brave_local_search_code_mode only.
 
 export const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 if (!BRAVE_API_KEY) {
-  console.error("Warning: BRAVE_API_KEY environment variable is missing. Search tools will return errors when called.");
+  console.error("Warning: BRAVE_API_KEY environment variable is missing. Brave local search tools will be unavailable.");
 }
 
 // ─── Optional: Google Gemini API Key ──────────────────────────

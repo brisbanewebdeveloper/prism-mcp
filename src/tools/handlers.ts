@@ -12,7 +12,7 @@
  *   - All logging goes to console.error (stderr) to avoid corrupting the MCP protocol on stdout
  *
  * Code Mode handlers follow a 3-step pipeline:
- *   Step 1: Fetch raw API data (full JSON response from Brave Search)
+ *   Step 1: Fetch raw API data (full JSON response from the configured search backend)
  *   Step 2: Run user-provided JavaScript against that data in a QuickJS sandbox
  *   Step 3: Return only the script's output + size reduction metrics
  *
@@ -97,7 +97,7 @@ export async function braveWebSearchCodeModeHandler(args: unknown) {
 
 /**
  * Local search + JavaScript extraction.
- * Same pattern as web search code mode, but uses Brave's local/POI search.
+ * Same pattern as web search code mode, but uses Brave local/POI search.
  */
 export async function braveLocalSearchCodeModeHandler(args: unknown) {
   if (!isBraveLocalSearchCodeModeArgs(args)) {

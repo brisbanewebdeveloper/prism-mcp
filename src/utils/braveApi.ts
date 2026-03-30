@@ -1,14 +1,14 @@
 /**
- * Brave Search API Client
+ * Search API Client
  *
- * This module handles all communication with Brave's Search APIs.
- * Brave offers three search endpoints used by this server:
+ * This module handles internet search integrations used by this server.
+ * Current endpoint usage:
  *
- *   1. Web Search API (/v1/web/search)
- *      - Standard internet search returning titles, descriptions, URLs
+ *   1. Google Programmable Search API (/customsearch/v1)
+ *      - Standard web search returning titles, snippets, and URLs
  *      - Used by: brave_web_search, brave_web_search_code_mode
  *
- *   2. Local/POI Search API (/v1/local/pois + /v1/local/descriptions)
+ *   2. Brave Local/POI Search API (/v1/local/pois + /v1/local/descriptions)
  *      - Business/place search returning addresses, ratings, hours, etc.
  *      - Uses a 3-step pipeline:  web search (to get location IDs)
  *                                  → POI details (address, phone, hours)
@@ -25,11 +25,20 @@
  *   - "Formatted" version (e.g., performWebSearch): Returns human-readable text
  *     Used by standard search handlers
  *
- * Authentication: All requests use the BRAVE_API_KEY via X-Subscription-Token header.
- * The Brave Answers endpoint uses a separate BRAVE_ANSWERS_API_KEY via Bearer token.
+ * Authentication:
+ *   - Google web search uses GOOGLE_SEARCH_CREDENTIALS (or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX)
+ *   - Brave local search uses BRAVE_API_KEY via X-Subscription-Token header
+ *   - Brave Answers uses BRAVE_ANSWERS_API_KEY via Bearer token
  */
 
-import { BRAVE_API_KEY, BRAVE_ANSWERS_API_KEY } from "../config.js";
+import {
+  BRAVE_API_KEY,
+  BRAVE_ANSWERS_API_KEY,
+  GOOGLE_SEARCH_CREDENTIALS,
+  GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY,
+  type GoogleSearchCredential,
+  type GoogleSearchCredentialSelectionStrategy,
+} from "../config.js";
 
 // ─── TypeScript Interfaces for Brave API Responses ────────────
 // These types match the shape of Brave's JSON responses so we get
@@ -100,6 +109,96 @@ interface BraveAnswersResponse {
   }>;
 }
 
+interface GoogleWebSearchResponse {
+  items?: Array<{
+    title?: string;
+    snippet?: string;
+    link?: string;
+  }>;
+  error?: {
+    code?: number;
+    message?: string;
+    errors?: Array<{
+      reason?: string;
+      message?: string;
+    }>;
+  };
+}
+
+function normalizeGooglePagination(count: number, offset: number): {
+  num: number;
+  start: number;
+} {
+  const boundedCount = Math.max(1, Math.min(Math.floor(count), 10));
+  const boundedOffset = Math.max(0, Math.floor(offset));
+  const start = Math.min(91, boundedOffset + 1);
+  const maxNumAtStart = 101 - start;
+
+  return {
+    num: Math.max(1, Math.min(boundedCount, maxNumAtStart)),
+    start,
+  };
+}
+
+function normalizeGoogleWebSearchData(rawResponse: string): BraveWeb {
+  const parsed = JSON.parse(rawResponse) as GoogleWebSearchResponse;
+  return {
+    web: {
+      results: (parsed.items || []).map((item) => ({
+        title: item.title || "",
+        description: item.snippet || "",
+        url: item.link || "",
+      })),
+    },
+  };
+}
+
+function shouldFailoverGoogleCredential(status: number, rawResponse: string): boolean {
+  if (status === 401 || status === 403 || status === 429) {
+    return true;
+  }
+
+  if (status !== 400) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(rawResponse) as GoogleWebSearchResponse;
+    const reasons = (parsed.error?.errors || [])
+      .map((entry) => (entry.reason || "").toLowerCase())
+      .filter(Boolean);
+    return reasons.some((reason) =>
+      ["keyinvalid", "accessnotconfigured", "dailylimitexceeded", "userratelimitexceeded"].includes(reason)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function summarizeGoogleError(rawResponse: string): string {
+  try {
+    const parsed = JSON.parse(rawResponse) as GoogleWebSearchResponse;
+    const reason = parsed.error?.errors?.[0]?.reason;
+    const message = parsed.error?.message || parsed.error?.errors?.[0]?.message;
+    const combined = [reason, message].filter(Boolean).join(": ");
+    return combined || rawResponse;
+  } catch {
+    return rawResponse;
+  }
+}
+
+function selectGoogleSearchCredentials(
+  credentials: GoogleSearchCredential[],
+  strategy: GoogleSearchCredentialSelectionStrategy
+): GoogleSearchCredential[] {
+  if (strategy !== "random" || credentials.length <= 1) {
+    return credentials;
+  }
+
+  const index = Math.floor(Math.random() * credentials.length);
+  return [credentials[index] ?? credentials[0]];
+}
+
 // Brave Answers API call (AI Grounding/OpenAI-compatible)
 export async function performBraveAnswers(
   query: string,
@@ -144,32 +243,74 @@ export async function performBraveAnswers(
 }
 
 // Raw web search API call
+export async function performWebSearchRawWithCredentials(
+  query: string,
+  count: number = 10,
+  offset: number = 0,
+  credentials: GoogleSearchCredential[] = GOOGLE_SEARCH_CREDENTIALS,
+  strategy: GoogleSearchCredentialSelectionStrategy =
+    GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY
+): Promise<string> {
+  if (credentials.length === 0) {
+    throw new Error(
+      "Google Search credentials are not configured. Set GOOGLE_SEARCH_CREDENTIALS or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX."
+    );
+  }
+
+  const { num, start } = normalizeGooglePagination(count, offset);
+  const selectedCredentials = selectGoogleSearchCredentials(credentials, strategy);
+  const errors: string[] = [];
+
+  for (const [index, credential] of selectedCredentials.entries()) {
+    const url = new URL("https://www.googleapis.com/customsearch/v1");
+    url.searchParams.set("q", query);
+    url.searchParams.set("num", num.toString());
+    url.searchParams.set("start", start.toString());
+    url.searchParams.set("key", credential.apiKey);
+    url.searchParams.set("cx", credential.cx);
+
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip",
+      },
+    });
+
+    const rawResponse = await response.text();
+    if (response.ok) {
+      return JSON.stringify(normalizeGoogleWebSearchData(rawResponse));
+    }
+
+    const errorSummary = summarizeGoogleError(rawResponse);
+    const shouldFailover = shouldFailoverGoogleCredential(
+      response.status,
+      rawResponse
+    );
+    const isLastCredential = index === selectedCredentials.length - 1;
+
+    if (shouldFailover && !isLastCredential) {
+      errors.push(
+        `credential ${index + 1} failed (${response.status} ${response.statusText}): ${errorSummary}`
+      );
+      continue;
+    }
+
+    throw new Error(
+      `Google Search API error: ${response.status} ${response.statusText}\n${errorSummary}`
+    );
+  }
+
+  throw new Error(
+    `Google Search credential failover exhausted. ${errors.join(" | ")}`
+  );
+}
+
 export async function performWebSearchRaw(
   query: string,
   count: number = 10,
   offset: number = 0
 ): Promise<string> {
-  const url = new URL("https://api.search.brave.com/res/v1/web/search");
-  url.searchParams.set("q", query);
-  url.searchParams.set("count", Math.min(count, 20).toString()); // API limit
-  url.searchParams.set("offset", offset.toString());
-
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "Accept-Encoding": "gzip",
-      "X-Subscription-Token": BRAVE_API_KEY!,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Brave API error: ${response.status} ${response.statusText
-      }\n${await response.text()}`
-    );
-  }
-
-  return await response.text();
+  return performWebSearchRawWithCredentials(query, count, offset);
 }
 
 // Web search API call

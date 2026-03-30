@@ -120,7 +120,7 @@ For the local Docker stack, copy `.env.example` to `.env` and adjust `PRISM_DB_H
 
 For HTTP-native MCP clients, Prism can also expose a Streamable HTTP endpoint. Set `PRISM_MCP_TRANSPORT=http`, then connect to `http://localhost:<PRISM_MCP_HOST_PORT><PRISM_MCP_PATH>` in Docker or `http://localhost:<PRISM_MCP_PORT><PRISM_MCP_PATH>` when running the Node process directly. The default remains stdio when `PRISM_MCP_TRANSPORT` is unset.
 
-> **Optional API keys:** `GOOGLE_API_KEY` for semantic search + Morning Briefings, `BRAVE_API_KEY` for web search. See [Environment Variables](#environment-variables).
+> **Optional API keys:** `GOOGLE_API_KEY` for semantic search + Morning Briefings, `GOOGLE_SEARCH_CREDENTIALS` (or `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX`) for web search, and `BRAVE_API_KEY` for Brave local search tools. See [Environment Variables](#environment-variables).
 
 ---
 
@@ -193,7 +193,8 @@ Add to your Continue `config.json` or Cline MCP settings:
       "args": ["-y", "prism-mcp-server"],
       "env": {
         "PRISM_STORAGE": "local",
-        "BRAVE_API_KEY": "your-brave-api-key"
+        "GOOGLE_SEARCH_API_KEY": "your-google-search-api-key",
+        "GOOGLE_SEARCH_CX": "your-google-cse-id"
       }
     }
   }
@@ -385,7 +386,8 @@ Then add to your MCP config:
       "command": "node",
       "args": ["/path/to/prism-mcp/dist/server.js"],
       "env": {
-        "BRAVE_API_KEY": "your-key",
+        "GOOGLE_SEARCH_API_KEY": "your-google-search-api-key",
+        "GOOGLE_SEARCH_CX": "your-google-cse-id",
         "GOOGLE_API_KEY": "your-gemini-key"
       }
     }
@@ -472,7 +474,7 @@ Then add to your MCP config:
 
 | Tool | Purpose |
 |------|---------|
-| `brave_web_search` | Real-time internet search |
+| `brave_web_search` | Real-time internet search (Google Programmable Search) |
 | `brave_local_search` | Location-based POI discovery |
 | `brave_web_search_code_mode` | JS extraction over web search results |
 | `brave_local_search_code_mode` | JS extraction over local search results |
@@ -504,7 +506,10 @@ Requires `PRISM_ENABLE_HIVEMIND=true`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BRAVE_API_KEY` | No | Brave Search Pro API key |
+| `GOOGLE_SEARCH_CREDENTIALS` | No | JSON array of ordered Google search credential pairs for failover, or JSON object with `strategy` + `credentials` for failover or random single-request selection |
+| `GOOGLE_SEARCH_API_KEY` | No | Google Programmable Search API key (single-pair mode) |
+| `GOOGLE_SEARCH_CX` | No | Google Custom Search Engine ID paired with `GOOGLE_SEARCH_API_KEY` |
+| `BRAVE_API_KEY` | No | Brave API key for `brave_local_search` tools |
 | `PRISM_STORAGE` | No | `"local"` (default) or `"supabase"` — restart required |
 | `PRISM_ENABLE_HIVEMIND` | No | `"true"` to enable multi-agent tools — restart required |
 | `PRISM_INSTANCE` | No | Instance name for multi-server PID isolation |
@@ -523,6 +528,13 @@ Requires `PRISM_ENABLE_HIVEMIND=true`.
 | `PRISM_DASHBOARD_PORT` | No | Dashboard port (default: `3000`) |
 | `PRISM_DB_HOST_PORT` | No | Local Docker Postgres host port (default: `5432`) |
 | `PRISM_REST_HOST_PORT` | No | Local Docker PostgREST host port (default: `3000`) |
+
+Indexed credential pairs are also supported for direct runtime env injection: `GOOGLE_SEARCH_API_KEY_1` + `GOOGLE_SEARCH_CX_1`, `GOOGLE_SEARCH_API_KEY_2` + `GOOGLE_SEARCH_CX_2`, etc.
+
+`GOOGLE_SEARCH_CREDENTIALS` supports both of these JSON forms:
+
+- Ordered failover: `[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]`
+- Random per request: `{"strategy":"random","credentials":[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]}`
 
 </details>
 
