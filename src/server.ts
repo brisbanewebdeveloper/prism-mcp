@@ -70,6 +70,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import {
   SERVER_CONFIG,
+  BRAVE_ANSWERS_API_KEY,
   SESSION_MEMORY_ENABLED,
   PRISM_USER_ID,
   PRISM_ENABLE_HIVEMIND,
@@ -181,8 +182,8 @@ import {
 
 // ─── Dynamic Tool Registration ───────────────────────────────────
 
-// Base tools: always available regardless of configuration
-const BASE_TOOLS: Tool[] = [
+// Base tools that scanners can enumerate without real credentials.
+const ALL_BASE_TOOLS: Tool[] = [
   WEB_SEARCH_TOOL,                    // brave_web_search — general internet search
   BRAVE_WEB_SEARCH_CODE_MODE_TOOL,    // brave_web_search_code_mode — search + JS extraction
   LOCAL_SEARCH_TOOL,                  // brave_local_search — location/business search
@@ -191,6 +192,16 @@ const BASE_TOOLS: Tool[] = [
   BRAVE_ANSWERS_TOOL,                 // brave_answers — AI-grounded answers
   RESEARCH_PAPER_ANALYSIS_TOOL,       // gemini_research_paper_analysis — paper analysis
 ];
+
+export function buildRuntimeBaseTools(): Tool[] {
+  return ALL_BASE_TOOLS.filter((tool) => {
+    if (tool.name === BRAVE_ANSWERS_TOOL.name) {
+      return Boolean(BRAVE_ANSWERS_API_KEY);
+    }
+
+    return true;
+  });
+}
 
 // ─── v4.1 FIX: Build Session Memory Tools dynamically ────────
 // The session_load_context tool description is dynamically modified
@@ -414,7 +425,7 @@ export function createServer() {
   // can enumerate the full capability set. Runtime guards in the CallTool handler
   // still prevent execution without valid Supabase credentials.
   const ALL_TOOLS: Tool[] = [
-    ...BASE_TOOLS,
+    ...buildRuntimeBaseTools(),
     ...SESSION_MEMORY_TOOLS,
     // v3.0: Agent Hivemind tools — only when PRISM_ENABLE_HIVEMIND=true
     ...(PRISM_ENABLE_HIVEMIND ? AGENT_REGISTRY_TOOLS : []),
@@ -1002,7 +1013,7 @@ export function createSandboxServer() {
 
   // Register all tool listings unconditionally
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...BASE_TOOLS, ...buildSessionMemoryTools([]), ...AGENT_REGISTRY_TOOLS],
+    tools: [...ALL_BASE_TOOLS, ...buildSessionMemoryTools([]), ...AGENT_REGISTRY_TOOLS],
   }));
 
   // Register prompts listing so scanners see resume_session

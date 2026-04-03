@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
  *   BRAVE_API_KEY          — (optional) API key for Brave local search endpoints.
  *   GOOGLE_API_KEY         — (optional) API key for Google AI Studio / Gemini. Enables paper analysis.
  *   BRAVE_ANSWERS_API_KEY  — (optional) API key for Brave Answers (AI grounding). Enables brave_answers tool.
+ *   PRISM_BRAVE_ANSWERS_API_KEY — (optional) Prism-scoped alias for Brave Answers credentials.
  *   SUPABASE_URL           — (optional) Your Supabase project URL. Enables session memory tools.
  *   SUPABASE_KEY           — (optional) Your Supabase anon/service key. Enables session memory tools.
  *   SUPABASE_API_PREFIX    — (optional) REST path prefix. Defaults to "/rest/v1"; set to empty for raw PostgREST.
@@ -323,9 +324,13 @@ if (!GOOGLE_API_KEY) {
 // Used by the brave_answers tool for AI-grounded answers.
 // This is a separate API key from the main Brave Search key.
 
-export const BRAVE_ANSWERS_API_KEY = process.env.BRAVE_ANSWERS_API_KEY;
+export const BRAVE_ANSWERS_API_KEY =
+  normalizeEnvValue(process.env.BRAVE_ANSWERS_API_KEY) ??
+  normalizeEnvValue(process.env.PRISM_BRAVE_ANSWERS_API_KEY);
 if (!BRAVE_ANSWERS_API_KEY) {
-  console.error("Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Brave Answers tool will be unavailable.");
+  console.error(
+    "Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Set BRAVE_ANSWERS_API_KEY or PRISM_BRAVE_ANSWERS_API_KEY to enable Brave Answers."
+  );
 }
 
 // ─── Optional: Supabase (Session Memory Module) ───────────────

@@ -480,7 +480,7 @@ Then add to your MCP config:
 | `brave_local_search_code_mode` | JS extraction over local search results |
 | `code_mode_transform` | Universal post-processing with 8 built-in templates |
 | `gemini_research_paper_analysis` | Academic paper analysis via Gemini |
-| `brave_answers` | AI-grounded answers from Brave |
+| `brave_answers` | AI-grounded answers from Brave; requires `BRAVE_ANSWERS_API_KEY` or `PRISM_BRAVE_ANSWERS_API_KEY` |
 
 </details>
 
@@ -510,11 +510,12 @@ Requires `PRISM_ENABLE_HIVEMIND=true`.
 | `GOOGLE_SEARCH_API_KEY` | No | Google Programmable Search API key (single-pair mode) |
 | `GOOGLE_SEARCH_CX` | No | Google Custom Search Engine ID paired with `GOOGLE_SEARCH_API_KEY` |
 | `BRAVE_API_KEY` | No | Brave API key for `brave_local_search` tools |
+| `PRISM_BRAVE_ANSWERS_API_KEY` | No | Prism-scoped alias for `BRAVE_ANSWERS_API_KEY` |
 | `PRISM_STORAGE` | No | `"local"` (default) or `"supabase"` — restart required |
 | `PRISM_ENABLE_HIVEMIND` | No | `"true"` to enable multi-agent tools — restart required |
 | `PRISM_INSTANCE` | No | Instance name for multi-server PID isolation |
 | `GOOGLE_API_KEY` | No | Gemini — enables semantic search, Briefings, compaction |
-| `BRAVE_ANSWERS_API_KEY` | No | Separate Brave Answers key |
+| `BRAVE_ANSWERS_API_KEY` | No | Separate Brave Answers key; not used by `brave_web_search` or `GOOGLE_SEARCH_CREDENTIALS` |
 | `SUPABASE_URL` | If cloud | Supabase project URL |
 | `SUPABASE_KEY` | If cloud | Supabase anon/service key |
 | `PRISM_USER_ID` | No | Multi-tenant user isolation (default: `"default"`) |
@@ -535,6 +536,8 @@ Indexed credential pairs are also supported for direct runtime env injection: `G
 
 - Ordered failover: `[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]`
 - Random per request: `{"strategy":"random","credentials":[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]}`
+
+`brave_answers` is configured separately. Set `BRAVE_ANSWERS_API_KEY` directly for non-Docker setups, or `PRISM_BRAVE_ANSWERS_API_KEY` when using the checked-in Docker Compose launcher path. Google search credential JSON does not affect Brave Answers.
 
 </details>
 

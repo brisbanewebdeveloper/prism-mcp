@@ -230,7 +230,9 @@ export const BRAVE_ANSWERS_TOOL: Tool = {
   name: "brave_answers",
   description:
     "Returns direct AI answers grounded in Brave Search using Brave AI Grounding. " +
-    "Uses an OpenAI-compatible chat completions endpoint and is best for concise answer generation with live web grounding.",
+    "Uses an OpenAI-compatible chat completions endpoint and is best for concise answer generation with live web grounding. " +
+    "Requires BRAVE_ANSWERS_API_KEY (or PRISM_BRAVE_ANSWERS_API_KEY in Prism-scoped setups). " +
+    "This tool does not use GOOGLE_SEARCH_CREDENTIALS.",
   inputSchema: {
     type: "object",
     properties: {

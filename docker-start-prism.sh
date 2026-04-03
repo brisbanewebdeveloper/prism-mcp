@@ -53,6 +53,10 @@ if [ -z "${GOOGLE_SEARCH_CX:-}" ] && [ -n "${PRISM_GOOGLE_SEARCH_CX:-}" ]; then
   export GOOGLE_SEARCH_CX="${PRISM_GOOGLE_SEARCH_CX}"
 fi
 
+if [ -z "${BRAVE_ANSWERS_API_KEY:-}" ] && [ -n "${PRISM_BRAVE_ANSWERS_API_KEY:-}" ]; then
+  export BRAVE_ANSWERS_API_KEY="${PRISM_BRAVE_ANSWERS_API_KEY}"
+fi
+
 node <<'EOF'
 const target = '/rpc/prism_apply_ddl';
 const baseUrl = process.env.SUPABASE_URL;

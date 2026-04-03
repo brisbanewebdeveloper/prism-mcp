@@ -89,6 +89,17 @@ describe("parseGoogleSearchCredentials", () => {
       )
     ).toBe(true);
   });
+
+  it("does not treat the Brave Answers alias as Google search credentials", () => {
+    const env = {
+      PRISM_BRAVE_ANSWERS_API_KEY: "brave-answers-only",
+    };
+
+    const result = parseGoogleSearchCredentials(env);
+
+    expect(result.credentials).toEqual([]);
+    expect(result.selectionStrategy).toBe("failover");
+  });
 });
 
 describe("performWebSearchRawWithCredentials", () => {
