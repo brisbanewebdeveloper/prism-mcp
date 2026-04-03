@@ -186,7 +186,7 @@ export function renderDashboardHTML(version: string): string {
       header { flex-direction: column; align-items: flex-start; gap: 1rem; }
       .selector { width: 100%; flex-wrap: wrap; }
       .selector select { flex: 1; min-width: 0; }
-      
+
       /* Swipeable Columns via CSS Scroll Snap */
       .grid-main {
         display: flex;
@@ -811,7 +811,7 @@ export function renderDashboardHTML(version: string): string {
           </div>
 
           <div id="network-container">Loading nodes...</div>
-          
+
           <!-- Graph Maintenance Actions -->
           <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-glass); display: flex; gap: 0.5rem; flex-wrap: wrap;">
             <button onclick="triggerEdgeSynthesis()" class="input-modern" style="font-size:0.75rem; padding:0.3rem 0.65rem; cursor:pointer; border:1px solid var(--accent-purple); background:transparent; color:var(--text-primary); border-radius:6px; transition:all 0.2s;">
@@ -825,19 +825,19 @@ export function renderDashboardHTML(version: string): string {
               <h4 id="nodeEditorTitle" style="margin:0; font-size:0.9rem; color:var(--text-primary);">Node Name</h4>
               <span id="nodeEditorGroup" class="badge">category</span>
             </div>
-            
+
             <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.3rem">Rename (Or leave empty to delete)</label>
             <div style="display:flex; gap:0.5rem; margin-bottom:0.6rem;">
               <input type="text" id="nodeEditorInput" class="input-modern" style="flex:1; font-size:0.8rem; padding:0.3rem 0.6rem" placeholder="New keyword name...">
               <button onclick="submitNodeEdit()" class="btn-modern" style="padding:0.3rem 0.8rem; font-size:0.8rem">Apply</button>
               <button onclick="document.getElementById('nodeEditorPanel').style.display='none'" class="btn-modern" style="background:transparent; border-color:var(--border-subtle); padding:0.3rem 0.8rem; font-size:0.8rem">Cancel</button>
             </div>
-            
+
             <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.3rem">Or merge into existing:</label>
             <select id="nodeMergeSelect" class="input-modern" style="width:100%; font-size:0.8rem; padding:0.3rem 0.5rem" onchange="if(this.value) document.getElementById('nodeEditorInput').value = this.value">
               <option value="">-- Select node --</option>
             </select>
-            
+
             <hr style="border:none; border-top:1px solid var(--border-subtle); margin:1rem 0;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
               <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">Active Recall</span>
@@ -1377,11 +1377,11 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       document.getElementById('mtab-project').classList.toggle('active', tabId === 'project');
       document.getElementById('mtab-search').classList.toggle('active', tabId === 'search');
       document.getElementById('mtab-factory').classList.toggle('active', tabId === 'factory');
-      
+
       document.getElementById('content').style.display = tabId === 'project' ? '' : 'none';
       document.getElementById('search-content').style.display = tabId === 'search' ? 'block' : 'none';
       document.getElementById('factory-content').style.display = tabId === 'factory' ? 'block' : 'none';
-      
+
       if (tabId === 'search') {
         document.getElementById('searchInput').focus();
       }
@@ -1437,7 +1437,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
               html += '<div style="font-size:0.72rem;color:var(--accent-rose);margin-top:0.35rem;padding:0.3rem 0.5rem;background:rgba(244,63,94,0.08);border-radius:4px">⚠ ' + p.error.slice(0, 200) + '</div>';
             }
             if (isActive) {
-              html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(\'' + p.id + '\')" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
+              html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(\\'' + p.id + '\\')" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
             }
             html += '</div>';
           }
@@ -1476,42 +1476,42 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
     var searchTimeout = null;
     var searchAbortController = null;
-    
+
     async function performSearch() {
       var input = document.getElementById('searchInput');
       var boost = document.getElementById('searchContextBoost');
       var resultsDiv = document.getElementById('searchResults');
       var query = input.value.trim();
-      
+
       if (!query) {
         if (searchAbortController) searchAbortController.abort();
         resultsDiv.innerHTML = '<div style="color:var(--text-muted); font-size:0.9rem; padding: 2rem; text-align:center;">Enter a query to search the neural ledger via embeddings...</div>';
         return;
       }
-      
+
       resultsDiv.innerHTML = '<div class="loading" style="padding:2rem;"><span class="spinner"></span> Searching neural memory via embeddings...</div>';
-      
+
       var project = document.getElementById('projectSelect').value;
       var url = '/api/search?q=' + encodeURIComponent(query);
       if (project) url += '&project=' + encodeURIComponent(project);
       if (boost.checked) url += '&boost=true';
-      
+
       if (searchAbortController) searchAbortController.abort();
       searchAbortController = new AbortController();
-      
+
       try {
         var res = await fetch(url, { signal: searchAbortController.signal });
         var data = await res.json();
         if (data.error) throw new Error(data.error);
-        
+
         if (!data.results || data.results.length === 0) {
           resultsDiv.innerHTML = '<div style="color:var(--text-muted); padding: 2rem; text-align:center;">No matching memories found for this query.</div>';
           return;
         }
-        
+
         // Extract searchable terms for highlighting (length > 2)
         var queryTerms = query.split(/\\s+/).filter(function(w) { return w.length > 2; });
-        var termRegex = queryTerms.length > 0 
+        var termRegex = queryTerms.length > 0
           ? new RegExp('(' + queryTerms.map(function(w) { return w.replace(/[.*+?^$()|[\\]\\\\{}]/g, '\\\\$&'); }).join('|') + ')', 'gi')
           : null;
 
@@ -1522,7 +1522,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           }
           return escaped;
         }
-        
+
         resultsDiv.innerHTML = data.results.map(function(r) {
           var isGraduated = r.importance >= 7;
           var opacity = isGraduated ? 1 : 0.8;
@@ -1597,7 +1597,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         if (data.projects && data.projects.length > 0) {
           select.innerHTML = '<option value="">— Select a project —</option>' +
             data.projects.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
-            
+
           var gp = document.getElementById('graphProjectFilter');
           if (gp) {
             gp.innerHTML = '<option value="">All Projects</option>' +
@@ -2223,7 +2223,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       var proj = document.getElementById('graphProjectFilter') ? document.getElementById('graphProjectFilter').value : '';
       var days = document.getElementById('graphDaysFilter') ? document.getElementById('graphDaysFilter').value : '';
       var imp = document.getElementById('graphImportanceFilter') ? document.getElementById('graphImportanceFilter').value : '';
-      
+
       var qs = [];
       if (proj) qs.push('project=' + encodeURIComponent(proj));
       if (days) qs.push('days=' + encodeURIComponent(days));
@@ -2339,28 +2339,28 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           }
 
           var clickedId = params.nodes[0];
-          
+
           // Display Node Editor Panel for keywords and categories
           var nodeData = allNodes.find(function(n) { return n.id === clickedId; });
           if (nodeData && (nodeData.group === 'keyword' || nodeData.group === 'category')) {
             document.getElementById('nodeEditorTitle').textContent = nodeData.label;
             document.getElementById('nodeEditorGroup').textContent = nodeData.group;
-            
+
             var input = document.getElementById('nodeEditorInput');
             input.value = nodeData.label;
             input.dataset.oldId = clickedId;
             input.dataset.group = nodeData.group;
-            
+
             // Populate merge dropdown
             var mergeSelect = document.getElementById('nodeMergeSelect');
             if (mergeSelect) {
               var sameGroupNodes = allNodes.filter(function(n) { return n.group === nodeData.group && n.id !== clickedId; });
               sameGroupNodes.sort(function(a, b) { return a.label.localeCompare(b.label); });
-              mergeSelect.innerHTML = '<option value="">-- Select node to merge into --</option>' + 
+              mergeSelect.innerHTML = '<option value="">-- Select node to merge into --</option>' +
                 sameGroupNodes.map(function(n) { return '<option value="' + escapeHtml(n.label) + '">' + escapeHtml(n.label) + '</option>'; }).join('');
               mergeSelect.value = "";
             }
-            
+
             var tmBtn = document.getElementById('testMeBtn');
             var tmCont = document.getElementById('testMeContainer');
             if (tmCont) tmCont.innerHTML = '';
@@ -2369,7 +2369,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
               tmBtn.textContent = '📝 Test Me';
               tmBtn.style.opacity = '1';
             }
-            
+
             document.getElementById('nodeEditorPanel').style.display = 'block';
           } else {
             var panel = document.getElementById('nodeEditorPanel');
@@ -2438,12 +2438,12 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ oldId: oldId, newId: newId, group: group })
         });
-        
+
         if (!res.ok) throw new Error('Failed to update node');
-        
+
         showToast(newId ? 'Node renamed successfully' : 'Node deleted successfully');
         document.getElementById('nodeEditorPanel').style.display = 'none';
-        
+
         // Refresh graph and lists
         loadGraph();
         if (document.getElementById('projectSelect').value) {
@@ -2465,19 +2465,19 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         alert("Please select an active project first.");
         return;
       }
-      
+
       var btn = document.querySelector('button[onclick="triggerEdgeSynthesis()"]');
       var status = document.getElementById('synthesisStatus');
       if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
       if (status) status.textContent = 'running...';
-      
+
       try {
         var res = await fetch('/api/graph/synthesize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ project: project, randomize_selection: true, max_entries: 50 })
         });
-        
+
         var data = await res.json();
         if (res.ok && data.success) {
           if (status) status.textContent = '✅ Created ' + data.newLinks + ' links (Scanned: ' + data.entriesScanned + ')';
@@ -2564,9 +2564,9 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       var _gpf = document.getElementById('graphProjectFilter');
       var _ps = document.getElementById('projectSelect');
       var project = (_gpf ? _gpf.value : '') || (_ps ? _ps.value : '');
-      
+
       if (!oldId || !project) return;
-      
+
       var btn = document.getElementById('testMeBtn');
       var container = document.getElementById('testMeContainer');
       if (btn) {
@@ -2576,11 +2576,11 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       if (container) {
         container.innerHTML = '<div style="font-size:0.75rem; color:var(--text-muted); text-align:center; padding:1rem 0;">Generating questions...</div>';
       }
-      
+
       try {
         var res = await fetch('/api/graph/test-me?id=' + encodeURIComponent(oldId) + '&project=' + encodeURIComponent(project));
         var data = await res.json();
-        
+
         if (data.reason === 'no_api_key') {
           if (btn) {
             btn.disabled = true;
@@ -2598,7 +2598,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           }
           return;
         }
-        
+
         if (container) {
           container.innerHTML = '';
           data.questions.forEach(function(qa) {
@@ -2607,18 +2607,18 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             card.style.border = '1px solid var(--border-subtle)';
             card.style.borderRadius = '6px';
             card.style.padding = '0.6rem';
-            
-            card.innerHTML = 
+
+            card.innerHTML =
               '<div style="font-size:0.8rem; font-weight:600; color:var(--text-primary); margin-bottom:0.4rem;">' + escapeHtml(qa.q) + '</div>' +
               '<div class="testme-ans" style="display:none; font-size:0.75rem; color:var(--text-secondary); margin-top:0.4rem; padding-top:0.4rem; border-top:1px dashed var(--border-subtle);">' +
-                escapeHtml(qa.a) + 
+                escapeHtml(qa.a) +
               '</div>' +
               '<button onclick="this.previousElementSibling.style.display=&apos;block&apos;; this.style.display=&apos;none&apos;" style="background:transparent; border:none; color:var(--accent-purple); font-size:0.7rem; cursor:pointer; padding:0; margin-top:0.3rem;">Show Answer</button>';
-              
+
             container.appendChild(card);
           });
         }
-        
+
       } catch (err) {
         showToast('Error generating quiz', true);
         if (container) container.innerHTML = '';
@@ -2901,7 +2901,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         else document.getElementById('toggle-hivemind').classList.remove('active');
         if (s.task_router_enabled === 'true') document.getElementById('toggle-task-router').classList.add('active');
         else document.getElementById('toggle-task-router').classList.remove('active');
-        
+
         // Storage Backend
         if (s.PRISM_STORAGE) {
           document.getElementById('storageBackendSelect').value = s.PRISM_STORAGE;
@@ -3465,7 +3465,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('/sw.js').then(function(reg) {
           console.log('[Dashboard] Service Worker registered with scope:', reg.scope);
-          
+
           reg.addEventListener('updatefound', function() {
             var newWorker = reg.installing;
             newWorker.addEventListener('statechange', function() {
@@ -3473,7 +3473,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
                 var toast = document.createElement('div');
                 toast.style.cssText = 'position:fixed;bottom:2rem;right:2rem;background:var(--bg-glass);backdrop-filter:blur(12px);border:1px solid var(--border-glass);padding:1rem 1.5rem;border-radius:12px;display:flex;align-items:center;gap:1.5rem;z-index:9999;box-shadow:0 10px 30px rgba(0,0,0,0.5);transform:translateY(0);transition:transform 0.3s, opacity 0.3s;';
                 toast.innerHTML = '<div><p style="font-weight:600;margin-bottom:0.25rem;color:var(--text-primary);">Update Available</p><p style="color:var(--text-secondary);font-size:0.85rem;">A new version of Prism is ready.</p></div><button style="background:linear-gradient(135deg, var(--accent-purple), var(--accent-blue));color:white;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-weight:600;">Refresh</button>';
-                
+
                 toast.querySelector('button').addEventListener('click', function() {
                   newWorker.postMessage({ action: 'skipWaiting' });
                   toast.style.opacity = '0';

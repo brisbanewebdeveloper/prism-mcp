@@ -635,6 +635,10 @@ export const PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY = parseInt(
   process.env.PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY || "4", 10
 );
 
+/** Hide and reject the web-search code-mode tool when explicitly disabled. */
+export const PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE =
+  process.env.PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE === "true";
+
 // ─── v7.2: Verification Harness ──────────────────────────────
 
 /** Master switch for the v7.2.0 enhanced verification harness. */

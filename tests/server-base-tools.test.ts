@@ -8,14 +8,16 @@ vi.mock("../src/config.js", async () => {
   return {
     ...actual,
     BRAVE_ANSWERS_API_KEY: undefined,
+    PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE: true,
   };
 });
 
 describe("buildRuntimeBaseTools", () => {
-  it("hides brave_answers when no Brave Answers key is configured", () => {
+  it("hides disabled or unavailable base tools from normal runtime discovery", () => {
     const tools = buildRuntimeBaseTools();
 
     expect(tools.some((tool) => tool.name === "brave_answers")).toBe(false);
+    expect(tools.some((tool) => tool.name === "brave_web_search_code_mode")).toBe(false);
     expect(tools.some((tool) => tool.name === "brave_web_search")).toBe(true);
   });
 });

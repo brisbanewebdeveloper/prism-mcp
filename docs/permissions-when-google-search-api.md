@@ -18,6 +18,7 @@ If your MCP client uses explicit permission IDs, the permission string is usuall
 ## Important Runtime Behavior
 
 - Most base search and analysis tools are listed by the server even when their API keys are missing.
+- `brave_web_search_code_mode` is hidden from the normal runtime tool list and rejects direct calls when `PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE=true`.
 - `brave_answers` is only listed when `BRAVE_ANSWERS_API_KEY` or `PRISM_BRAVE_ANSWERS_API_KEY` is configured.
 - Permission alone is not enough. The matching environment variable must also be set or the tool call will fail at runtime.
 - Hivemind tools are different: they are only added to the tool list when `PRISM_ENABLE_HIVEMIND=true`.
@@ -48,6 +49,7 @@ Notes:
 
 - These tools now use Google Programmable Search, not Brave web search.
 - `brave_web_search_code_mode` is the same search backend plus a JavaScript extraction step.
+- If `PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE=true`, only `brave_web_search` remains in the normal runtime tool list.
 
 ### Brave Local Search
 

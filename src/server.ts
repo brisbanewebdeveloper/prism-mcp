@@ -74,6 +74,7 @@ import {
   SESSION_MEMORY_ENABLED,
   PRISM_USER_ID,
   PRISM_ENABLE_HIVEMIND,
+  PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE,
   PRISM_MCP_TRANSPORT,
   WATCHDOG_INTERVAL_MS, WATCHDOG_STALE_MIN, WATCHDOG_FROZEN_MIN,
   WATCHDOG_OFFLINE_MIN, WATCHDOG_LOOP_THRESHOLD,
@@ -226,6 +227,10 @@ const ALL_BASE_TOOLS: Tool[] = [
 
 export function buildRuntimeBaseTools(): Tool[] {
   return ALL_BASE_TOOLS.filter((tool) => {
+    if (tool.name === BRAVE_WEB_SEARCH_CODE_MODE_TOOL.name) {
+      return !PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE;
+    }
+
     if (tool.name === BRAVE_ANSWERS_TOOL.name) {
       return Boolean(BRAVE_ANSWERS_API_KEY);
     }
@@ -1002,6 +1007,12 @@ export function createServer() {
             result = await webSearchHandler(args); break;
 
           case "brave_web_search_code_mode":
+            if (PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE) {
+              throw new Error(
+                "brave_web_search_code_mode is disabled. " +
+                "Set PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE=false to enable it."
+              );
+            }
             result = await braveWebSearchCodeModeHandler(args); break;
 
           case "brave_local_search":
