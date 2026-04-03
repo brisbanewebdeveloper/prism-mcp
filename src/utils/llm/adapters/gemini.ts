@@ -20,7 +20,7 @@
  *   All consumers call getLLMProvider() instead of touching the SDK directly.
  *
  * MODELS:
- *   Text:      gemini-2.0-flash       — fast, matches all prior hardcoded usages
+ *   Text:      gemini-2.5-flash       — fast, stable successor to deprecated 2.0-flash
  *   Embedding: gemini-embedding-001   — replaced text-embedding-004 (deprecated 2026-01)
  *              Uses Matryoshka Representation Learning (MRL) at 768 dims.
  *              Requires v1beta API endpoint (NOT v1).
@@ -45,7 +45,7 @@ import type { LLMProvider } from "../provider.js";
 // Defined as constants (not hardcoded strings) so external reviewers can see
 // all model choices at a glance, and future changes only need one edit.
 
-const TEXT_MODEL = "gemini-2.0-flash";        // chat/instruction-following model
+const TEXT_MODEL = "gemini-2.5-flash";        // chat/instruction-following model
 const EMBEDDING_MODEL = "gemini-embedding-001"; // vector embedding model (MRL-enabled)
 const EMBEDDING_DIMS = 768;                     // fixed output dims — must match DB schema
 
@@ -172,7 +172,7 @@ export class GeminiAdapter implements LLMProvider {
 
   /**
    * Describe an image using Gemini's native multimodal capability.
-   * gemini-2.0-flash handles images alongside text — the same model used for
+   * gemini-2.5-flash handles images alongside text — the same model used for
    * text generation, so no extra SDK initialization is needed.
    */
   async generateImageDescription(

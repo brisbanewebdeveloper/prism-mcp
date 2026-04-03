@@ -62,6 +62,9 @@ export const SESSION_SAVE_HANDOFF_TOOL: Tool = {
     "Upsert the latest project handoff state for the next session to consume on boot. " +
     "This is the 'live context' that gets loaded when a new session starts. " +
     "Calling this replaces the previous handoff for the same project (upsert on project).\n\n" +
+    "**v5.4 CRDT Merge**: On version conflict, a CRDT OR-Map engine automatically merges " +
+    "your changes with concurrent work (Add-Wins OR-Set for arrays, Last-Writer-Wins for scalars). " +
+    "Pass expected_version to enable concurrency control.\n\n" +
     "**v0.4.0 OCC**: If you received a version number from session_load_context, " +
     "/resume_session prompt, or memory resource attachment, you MUST pass it as " +
     "expected_version to prevent overwriting another session's changes.",
@@ -100,6 +103,10 @@ export const SESSION_SAVE_HANDOFF_TOOL: Tool = {
         type: "string",
         description: "Optional. Agent role for Hivemind scoping (e.g., 'dev', 'qa', 'pm'). Omit to let the server auto-resolve from dashboard settings.",
       },
+      disable_merge: {
+        type: "boolean",
+        description: "Set to true to disable automatic CRDT merging and fail strictly on version conflict (original OCC behavior). Default: false.",
+      },
     },
     required: ["project"],
   },
@@ -137,8 +144,16 @@ export const SESSION_LOAD_CONTEXT_TOOL: Tool = {
         type: "integer",
         description: "Maximum token budget for context response. Uses 1 token ≈ 4 chars heuristic. When set, the response is truncated to fit within the budget. Default: unlimited.",
       },
+      toolAction: {
+        type: "string",
+        description: "Brief 2-5 word summary of what this tool is doing. Capitalize like a sentence.",
+      },
+      toolSummary: {
+        type: "string",
+        description: "Brief 2-5 word noun phrase describing what this tool call is about.",
+      },
     },
-    required: ["project"],
+    required: ["project", "toolAction", "toolSummary"],
   },
 };
 
@@ -188,6 +203,7 @@ export const KNOWLEDGE_SEARCH_TOOL: Tool = {
           "latency breakdown, and scoring metadata for explainability. Default: false.",
       },
     },
+    required: ["query"],
   },
 };
 
@@ -276,6 +292,27 @@ export const SESSION_COMPACT_LEDGER_TOOL: Tool = {
   },
 };
 
+// REVIEWER NOTE: Guard intentionally placed directly after the tool definition
+// it covers. All four optional fields (project, threshold, keep_recent, dry_run)
+// are validated — an LLM passing {threshold: "many"} now fails the guard instead
+// of reaching the handler as a string.
+export function isSessionCompactLedgerArgs(
+  args: unknown
+): args is {
+  project?: string;
+  threshold?: number;
+  keep_recent?: number;
+  dry_run?: boolean;
+} {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (a.threshold !== undefined && typeof a.threshold !== "number") return false;
+  if (a.keep_recent !== undefined && typeof a.keep_recent !== "number") return false;
+  if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
+}
+
 // ─── v0.4.0: Session Search Memory (Enhancement #4) ──────────
 // REVIEWER NOTE: This tool uses pgvector embeddings for semantic
 // (meaning-based) search. Unlike knowledge_search which uses keyword
@@ -326,6 +363,13 @@ export const SESSION_SEARCH_MEMORY_TOOL: Tool = {
         description: "If true, returns a separate MEMORY TRACE content block with search strategy, " +
           "latency breakdown (embedding vs storage), and scoring metadata. Default: false.",
       },
+      // v5.2: Context-Weighted Retrieval — biases search toward active work context
+      context_boost: {
+        type: "boolean",
+        description: "If true, appends current project and working context to the search query " +
+          "before embedding generation, naturally biasing results toward contextually relevant memories. " +
+          "Useful when searching within a specific project context. Default: false.",
+      },
     },
     required: ["query"],
   },
@@ -367,6 +411,32 @@ export const SESSION_BACKFILL_EMBEDDINGS_TOOL: Tool = {
   },
 };
 
+// ─── v6.0 Phase 3: Backfill Links Tool ───────────────────────
+
+export const SESSION_BACKFILL_LINKS_TOOL: Tool = {
+  name: "session_backfill_links",
+  description:
+    "Retroactively create graph edges (memory links) for all existing entries in a project. " +
+    "This builds the associative memory graph from your existing session history.\n\n" +
+    "Three strategies are run:\n" +
+    "1. **Temporal Chaining**: Links consecutive entries within the same conversation\n" +
+    "2. **Keyword Overlap**: Links entries sharing ≥3 keywords (bidirectional)\n" +
+    "3. **Provenance**: Links rollup summaries to their archived originals\n\n" +
+    "All strategies use INSERT OR IGNORE — safe to re-run multiple times.\n\n" +
+    "**When to use:** Run once after upgrading to v6.0 to populate the graph for existing memories. " +
+    "New entries are auto-linked on save (no manual action needed).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: {
+        type: "string",
+        description: "Project to backfill links for. Required.",
+      },
+    },
+    required: ["project"],
+  },
+};
+
 // ─── Type Guards ──────────────────────────────────────────────
 
 export function isKnowledgeForgetArgs(
@@ -379,7 +449,15 @@ export function isKnowledgeForgetArgs(
   confirm_all?: boolean;
   dry_run?: boolean;
 } {
-  return typeof args === "object" && args !== null;
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (a.category !== undefined && typeof a.category !== "string") return false;
+  if (a.older_than_days !== undefined && typeof a.older_than_days !== "number") return false;
+  if (a.clear_handoff !== undefined && typeof a.clear_handoff !== "boolean") return false;
+  if (a.confirm_all !== undefined && typeof a.confirm_all !== "boolean") return false;
+  if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
 }
 
 // Phase 1: Added enable_trace to the type guard.
@@ -389,12 +467,19 @@ export function isKnowledgeSearchArgs(
   args: unknown
 ): args is {
   project?: string;
-  query?: string;
+  query: string;
   category?: string;
   limit?: number;
   enable_trace?: boolean;  // Phase 1: Explainability flag
 } {
-  return typeof args === "object" && args !== null;
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.query !== "string") return false;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (a.category !== undefined && typeof a.category !== "string") return false;
+  if (a.limit !== undefined && typeof a.limit !== "number") return false;
+  if (a.enable_trace !== undefined && typeof a.enable_trace !== "boolean") return false;
+  return true;
 }
 
 export function isSessionSaveLedgerArgs(
@@ -408,20 +493,23 @@ export function isSessionSaveLedgerArgs(
   decisions?: string[];
   role?: string;  // v3.0: Hivemind
 } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string" &&
-    "conversation_id" in args &&
-    typeof (args as { conversation_id: string }).conversation_id === "string" &&
-    "summary" in args &&
-    typeof (args as { summary: string }).summary === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  // Required fields
+  if (typeof a.project !== "string") return false;
+  if (typeof a.conversation_id !== "string") return false;
+  if (typeof a.summary !== "string") return false;
+  // Optional array fields — guard against LLM passing a string instead of string[] and check elements
+  if (a.todos !== undefined && (!Array.isArray(a.todos) || !a.todos.every(t => typeof t === "string"))) return false;
+  if (a.files_changed !== undefined && (!Array.isArray(a.files_changed) || !a.files_changed.every(t => typeof t === "string"))) return false;
+  if (a.decisions !== undefined && (!Array.isArray(a.decisions) || !a.decisions.every(t => typeof t === "string"))) return false;
+  if (a.role !== undefined && typeof a.role !== "string") return false;
+  return true;
 }
 
 // REVIEWER NOTE: v0.4.0 adds expected_version to the type guard
 // for optimistic concurrency control. It's optional for backward compat.
+// v5.4: Added disable_merge for CRDT bypass.
 export function isSessionSaveHandoffArgs(
   args: unknown
 ): args is {
@@ -432,13 +520,19 @@ export function isSessionSaveHandoffArgs(
   last_summary?: string;
   key_context?: string;
   role?: string;  // v3.0: Hivemind
+  disable_merge?: boolean;  // v5.4: CRDT bypass
 } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (a.expected_version !== undefined && typeof a.expected_version !== "number") return false;
+  if (a.open_todos !== undefined && (!Array.isArray(a.open_todos) || !a.open_todos.every(t => typeof t === "string"))) return false;
+  if (a.active_branch !== undefined && typeof a.active_branch !== "string") return false;
+  if (a.last_summary !== undefined && typeof a.last_summary !== "string") return false;
+  if (a.key_context !== undefined && typeof a.key_context !== "string") return false;
+  if (a.role !== undefined && typeof a.role !== "string") return false;
+  if (a.disable_merge !== undefined && typeof a.disable_merge !== "boolean") return false;
+  return true;
 }
 
 // ─── v0.4.0: Type guard for semantic search ──────────────────
@@ -453,13 +547,17 @@ export function isSessionSearchMemoryArgs(
   limit?: number;
   similarity_threshold?: number;
   enable_trace?: boolean;  // Phase 1: Explainability flag
+  context_boost?: boolean; // v5.2: Context-Weighted Retrieval
 } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "query" in args &&
-    typeof (args as { query: string }).query === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.query !== "string") return false;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (a.limit !== undefined && typeof a.limit !== "number") return false;
+  if (a.similarity_threshold !== undefined && typeof a.similarity_threshold !== "number") return false;
+  if (a.enable_trace !== undefined && typeof a.enable_trace !== "boolean") return false;
+  if (a.context_boost !== undefined && typeof a.context_boost !== "boolean") return false;
+  return true;
 }
 
 // ─── v1.5.0: Type guard for backfill embeddings ──────────────
@@ -470,21 +568,39 @@ export function isBackfillEmbeddingsArgs(
   limit?: number;
   dry_run?: boolean;
 } {
-  return typeof args === "object" && args !== null;
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (a.limit !== undefined && typeof a.limit !== "number") return false;
+  if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
+}
+
+export function isBackfillLinksArgs(
+  args: unknown
+): args is { project: string } {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  return true;
 }
 
 export function isSessionLoadContextArgs(
   args: unknown
-): args is { project: string; level?: "quick" | "standard" | "deep"; role?: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string"
-  );
+): args is { project: string; level?: "quick" | "standard" | "deep"; role?: string; max_tokens?: number; toolAction?: string; toolSummary?: string } {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (a.level !== undefined && a.level !== "quick" && a.level !== "standard" && a.level !== "deep") return false;
+  if (a.role !== undefined && typeof a.role !== "string") return false;
+  if (a.max_tokens !== undefined && typeof a.max_tokens !== "number") return false;
+  if (a.toolAction !== undefined && typeof a.toolAction !== "string") return false;
+  if (a.toolSummary !== undefined && typeof a.toolSummary !== "string") return false;
+  return true;
 }
 
 // ─── v2.0: Time Travel Tool Definitions ──────────────────────
+
 
 export const MEMORY_HISTORY_TOOL: Tool = {
   name: "memory_history",
@@ -537,25 +653,21 @@ export const MEMORY_CHECKOUT_TOOL: Tool = {
 export function isMemoryHistoryArgs(
   args: unknown
 ): args is { project: string; limit?: number } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (a.limit !== undefined && typeof a.limit !== "number") return false;
+  return true;
 }
 
 export function isMemoryCheckoutArgs(
   args: unknown
 ): args is { project: string; target_version: number } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string" &&
-    "target_version" in args &&
-    typeof (args as { target_version: number }).target_version === "number"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.target_version !== "number") return false;
+  return true;
 }
 
 // ─── v2.0: Visual Memory Tool Definitions ────────────────────
@@ -614,29 +726,22 @@ export const SESSION_VIEW_IMAGE_TOOL: Tool = {
 export function isSessionSaveImageArgs(
   args: unknown
 ): args is { project: string; file_path: string; description: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string" &&
-    "file_path" in args &&
-    typeof (args as { file_path: string }).file_path === "string" &&
-    "description" in args &&
-    typeof (args as { description: string }).description === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.file_path !== "string") return false;
+  if (typeof a.description !== "string") return false;
+  return true;
 }
 
 export function isSessionViewImageArgs(
   args: unknown
 ): args is { project: string; image_id: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string" &&
-    "image_id" in args &&
-    typeof (args as { image_id: string }).image_id === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.image_id !== "string") return false;
+  return true;
 }
 
 // ─── v2.2.0: Health Check (fsck) Tool Definition ─────────────
@@ -650,12 +755,12 @@ export const SESSION_HEALTH_CHECK_TOOL: Tool = {
   name: "session_health_check",
   description:
     "Run integrity checks on the agent's memory (like fsck for filesystems). " +
-    "Scans for missing embeddings, duplicate entries, orphaned handoffs, and stale rollups.\\n\\n" +
-    "Checks performed:\\n" +
-    "1. **Missing embeddings** — entries that can't be found via semantic search\\n" +
-    "2. **Duplicate entries** — near-identical summaries wasting context tokens\\n" +
-    "3. **Orphaned handoffs** — handoff state with no backing ledger entries\\n" +
-    "4. **Stale rollups** — compaction artifacts with no archived originals\\n\\n" +
+    "Scans for missing embeddings, duplicate entries, orphaned handoffs, and stale rollups.\n\n" +
+    "Checks performed:\n" +
+    "1. **Missing embeddings** — entries that can't be found via semantic search\n" +
+    "2. **Duplicate entries** — near-identical summaries wasting context tokens\n" +
+    "3. **Orphaned handoffs** — handoff state with no backing ledger entries\n" +
+    "4. **Stale rollups** — compaction artifacts with no archived originals\n\n" +
     "Use auto_fix=true to automatically repair missing embeddings and clean up orphans.",
   inputSchema: {
     type: "object",
@@ -676,7 +781,10 @@ export const SESSION_HEALTH_CHECK_TOOL: Tool = {
 export function isSessionHealthCheckArgs(
   args: unknown
 ): args is { auto_fix?: boolean } {
-  return typeof args === "object" && args !== null;  // any object is valid
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (a.auto_fix !== undefined && typeof a.auto_fix !== "boolean") return false;
+  return true;
 }
 
 // ─── Phase 2: GDPR-Compliant Memory Deletion Tool ────────────
@@ -743,12 +851,12 @@ export const SESSION_FORGET_MEMORY_TOOL: Tool = {
 export function isSessionForgetMemoryArgs(
   args: unknown
 ): args is { memory_id: string; hard_delete?: boolean; reason?: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "memory_id" in args &&
-    typeof (args as { memory_id: string }).memory_id === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.memory_id !== "string") return false;
+  if (a.hard_delete !== undefined && typeof a.hard_delete !== "boolean") return false;
+  if (a.reason !== undefined && typeof a.reason !== "string") return false;
+  return true;
 }
 
 // ─── Phase 2: GDPR Export Tool ─────────────────────────────────────────
@@ -770,9 +878,10 @@ export const SESSION_EXPORT_MEMORY_TOOL: Tool = {
     "- Visual memory index (descriptions, captions, timestamps; not the raw files)\n\n" +
     "**Formats:**\n" +
     "- `json` — machine-readable, suitable for import into another Prism instance\n" +
-    "- `markdown` — human-readable, ideal for Obsidian, Notion, or archiving\n\n" +
+    "- `markdown` — human-readable, ideal for static archiving\n" +
+    "- `vault` — Prism-Port: exports a compressed `.zip` of interrelated Markdown files with proper Obsidian/Logseq YAML frontmatter and `[[Wikilinks]]`\n\n" +
     "⚠️ Output directory must exist and be writable. " +
-    "Filenames are auto-generated: `prism-export-<project>-<date>.(json|md)`",
+    "Filenames are auto-generated: `prism-export-<project>-<date>.(json|md|zip)`",
   inputSchema: {
     type: "object",
     properties: {
@@ -783,8 +892,8 @@ export const SESSION_EXPORT_MEMORY_TOOL: Tool = {
       },
       format: {
         type: "string",
-        enum: ["json", "markdown"],
-        description: "Export format: 'json' (machine-readable) or 'markdown' (human-readable). Default: json.",
+        enum: ["json", "markdown", "vault"],
+        description: "Export format: 'json', 'markdown', or 'vault' (Obsidian .zip). Default: json.",
         default: "json",
       },
       output_dir: {
@@ -805,13 +914,20 @@ export const SESSION_EXPORT_MEMORY_TOOL: Tool = {
  */
 export function isSessionExportMemoryArgs(
   args: unknown
-): args is { project?: string; format?: "json" | "markdown"; output_dir: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "output_dir" in args &&
-    typeof (args as { output_dir: string }).output_dir === "string"
-  );
+): args is { project?: string; format?: "json" | "markdown" | "vault"; output_dir: string } {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  // Required
+  if (typeof a.output_dir !== "string") return false;
+  // Optional — validate types and enum membership
+  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (
+    a.format !== undefined &&
+    a.format !== "json" &&
+    a.format !== "markdown" &&
+    a.format !== "vault"
+  ) return false;
+  return true;
 }
 
 // ─── v3.1: Knowledge Set Retention (TTL) ─────────────────────
@@ -848,14 +964,11 @@ export const KNOWLEDGE_SET_RETENTION_TOOL: Tool = {
 export function isKnowledgeSetRetentionArgs(
   args: unknown
 ): args is { project: string; ttl_days: number } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string" &&
-    "ttl_days" in args &&
-    typeof (args as { ttl_days: number }).ttl_days === "number"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.ttl_days !== "number") return false;
+  return true;
 }
 
 // ─── v4.0: Active Behavioral Memory Tools ────────────────────
@@ -869,7 +982,8 @@ export const SESSION_SAVE_EXPERIENCE_TOOL: Tool = {
     "- **correction**: Agent was corrected by user\n" +
     "- **success**: Task completed successfully\n" +
     "- **failure**: Task failed\n" +
-    "- **learning**: New knowledge acquired",
+    "- **learning**: New knowledge acquired\n" +
+    "- **validation_result**: Verification sandbox passed or failed",
   inputSchema: {
     type: "object",
     properties: {
@@ -879,7 +993,7 @@ export const SESSION_SAVE_EXPERIENCE_TOOL: Tool = {
       },
       event_type: {
         type: "string",
-        enum: ["correction", "success", "failure", "learning"],
+        enum: ["correction", "success", "failure", "learning", "validation_result"],
         description: "Type of behavioral event.",
       },
       context: {
@@ -917,7 +1031,7 @@ export function isSessionSaveExperienceArgs(
   args: unknown
 ): args is {
   project: string;
-  event_type: string;
+  event_type: "correction" | "success" | "failure" | "learning" | "validation_result";
   context: string;
   action: string;
   outcome: string;
@@ -925,20 +1039,24 @@ export function isSessionSaveExperienceArgs(
   confidence_score?: number;
   role?: string;
 } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as any).project === "string" &&
-    "event_type" in args &&
-    typeof (args as any).event_type === "string" &&
-    "context" in args &&
-    typeof (args as any).context === "string" &&
-    "action" in args &&
-    typeof (args as any).action === "string" &&
-    "outcome" in args &&
-    typeof (args as any).outcome === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (
+    typeof a.event_type !== "string" ||
+    (a.event_type !== "correction" &&
+     a.event_type !== "success" &&
+     a.event_type !== "failure" &&
+     a.event_type !== "learning" &&
+     a.event_type !== "validation_result")
+  ) return false;
+  if (typeof a.context !== "string") return false;
+  if (typeof a.action !== "string") return false;
+  if (typeof a.outcome !== "string") return false;
+  if (a.correction !== undefined && typeof a.correction !== "string") return false;
+  if (a.confidence_score !== undefined && typeof a.confidence_score !== "number") return false;
+  if (a.role !== undefined && typeof a.role !== "string") return false;
+  return true;
 }
 
 export const KNOWLEDGE_UPVOTE_TOOL: Tool = {
@@ -979,12 +1097,10 @@ export const KNOWLEDGE_DOWNVOTE_TOOL: Tool = {
 export function isKnowledgeVoteArgs(
   args: unknown
 ): args is { id: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "id" in args &&
-    typeof (args as { id: string }).id === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.id !== "string") return false;
+  return true;
 }
 
 // ─── v4.2: Knowledge Sync Rules Tool ─────────────────────────
@@ -1028,12 +1144,12 @@ export const KNOWLEDGE_SYNC_RULES_TOOL: Tool = {
 export function isKnowledgeSyncRulesArgs(
   args: unknown
 ): args is { project: string; target_file?: string; dry_run?: boolean } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "project" in args &&
-    typeof (args as { project: string }).project === "string"
-  );
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (a.target_file !== undefined && typeof a.target_file !== "string") return false;
+  if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
 }
 
 // ─── v5.1: Deep Storage Mode (The Purge) ──────────────────────
@@ -1115,6 +1231,301 @@ export function isDeepStoragePurgeArgs(
   if (a.project !== undefined && typeof a.project !== "string") return false;
   if (a.older_than_days !== undefined && typeof a.older_than_days !== "number") return false;
   if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
+}
+
+// ─── v5.5: SDM Intuitive Recall Tool ──────────────────────────
+
+export const SESSION_INTUITIVE_RECALL_TOOL: Tool = {
+  name: "session_intuitive_recall",
+  description:
+    "Manually trigger the Sparse Distributed Memory (SDM) Intuitive Recall to surface latent patterns " +
+    "and related memories for a given query without blowing up the context window. " +
+    "Uses high-speed JS-space Hamming distance scanning on compressed embeddings.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: {
+        type: "string",
+        description: "Project identifier.",
+      },
+      query: {
+        type: "string",
+        description: "The text query or context to trigger the recall.",
+      },
+      limit: {
+        type: "integer",
+        description: "Maximum number of latent patterns to surface (default: 3).",
+      },
+      threshold: {
+        type: "number",
+        description: "Similarity threshold 0-1 (default: 0.55).",
+      },
+    },
+    required: ["project", "query"],
+  },
+};
+
+export interface SessionIntuitiveRecallArgs {
+  project: string;
+  query: string;
+  limit?: number;
+  threshold?: number;
+}
+
+export function isSessionIntuitiveRecallArgs(
+  args: unknown
+): args is SessionIntuitiveRecallArgs {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.query !== "string") return false;
+  // Optional numerics — guard against LLM passing strings like "10" or "high"
+  if (a.limit !== undefined && typeof a.limit !== "number") return false;
+  if (a.threshold !== undefined && typeof a.threshold !== "number") return false;
+  return true;
+}
+
+// ─── v6.1: Storage Hygiene — VACUUM ──────────────────────────────────────────
+
+export const MAINTENANCE_VACUUM_TOOL: Tool = {
+  name: "maintenance_vacuum",
+  description:
+    "Reclaim disk space after large purge operations by running VACUUM on the local SQLite database.\n\n" +
+    "Best called after `deep_storage_purge` removes many entries — SQLite reclaims page allocations " +
+    "only when explicitly vacuumed, so the file size stays the same until you call this tool.\n\n" +
+    "For remote (Supabase) backends, returns guidance on triggering maintenance via the dashboard.\n\n" +
+    "**Note:** On large databases this may take up to 60 seconds. The tool runs synchronously " +
+    "so you will know when it is safe to proceed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      dry_run: {
+        type: "boolean",
+        description:
+          "If true, reports the current database file size without running VACUUM. " +
+          "Use this to preview how large the database is before committing to a full vacuum.",
+      },
+    },
+  },
+};
+
+export interface MaintenanceVacuumArgs {
+  dry_run?: boolean;
+}
+
+export function isMaintenanceVacuumArgs(
+  args: unknown
+): args is MaintenanceVacuumArgs {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (a.dry_run !== undefined && typeof a.dry_run !== "boolean") return false;
+  return true;
+}
+
+// ─── v6.0 Phase 3: Edge Synthesis (On-Demand) ───────────────────────
+
+export const SESSION_SYNTHESIZE_EDGES_TOOL: Tool = {
+  name: "session_synthesize_edges",
+  description:
+    "Step 3A Edge Synthesis: Scans recent project entries with embeddings, finds high-similarity " +
+    "but currently disconnected entries, and creates inferred links as 'synthesized_from'.\n\n" +
+    "**On-Demand Graph Enrichment**: Use this tool periodically to discover semantic relationships " +
+    "between structurally disconnected memory nodes. It batch processes the newest active entries.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: {
+        type: "string",
+        description: "Project identifier.",
+      },
+      similarity_threshold: {
+        type: "number",
+        description: "Minimum cosine similarity score (0.0 to 1.0) to create a link. Default: 0.7.",
+      },
+      max_entries: {
+        type: "integer",
+        description: "Maximum number of recent entries to scan as sources. Default: 50. Max cap: 50.",
+      },
+      max_neighbors_per_entry: {
+        type: "integer",
+        description: "Maximum number of links to synthesize per source entry. Default: 3. Max cap: 5.",
+      },
+      randomize_selection: {
+        type: "boolean",
+        description: "If true, randomly sample active entries instead of taking the newest (default false). Ideal for wide-coverage background sweeps.",
+      },
+    },
+    required: ["project"],
+  },
+};
+
+export interface SessionSynthesizeEdgesArgs {
+  project: string;
+  similarity_threshold?: number;
+  max_entries?: number;
+  max_neighbors_per_entry?: number;
+  randomize_selection?: boolean;
+}
+
+export function isSessionSynthesizeEdgesArgs(
+  args: unknown
+): args is SessionSynthesizeEdgesArgs {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (a.similarity_threshold !== undefined && typeof a.similarity_threshold !== "number") return false;
+  if (a.max_entries !== undefined && typeof a.max_entries !== "number") return false;
+  if (a.max_neighbors_per_entry !== undefined && typeof a.max_neighbors_per_entry !== "number") return false;
+  if (a.randomize_selection !== undefined && typeof a.randomize_selection !== "boolean") return false;
+  return true;
+}
+
+
+export const SESSION_COGNITIVE_ROUTE_TOOL: Tool = {
+  name: "session_cognitive_route",
+  description:
+    "Resolve an HDC compositional state into a nearest semantic concept with policy-gated routing. " +
+    "Returns concept, confidence, distance, ambiguity, convergence steps, and route outcome. " +
+    "Use this for explainable cognitive recall decisions in v6.5.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: {
+        type: "string",
+        description: "Project identifier.",
+      },
+      state: {
+        type: "string",
+        description: "Current state concept key (e.g. 'State:ActiveSession').",
+      },
+      role: {
+        type: "string",
+        description: "Role concept key used for transition binding.",
+      },
+      action: {
+        type: "string",
+        description: "Action concept key used for transition binding.",
+      },
+      fallback_threshold: {
+        type: "number",
+        description: "Optional route fallback threshold override (0 <= fallback < clarify <= 1).",
+      },
+      clarify_threshold: {
+        type: "number",
+        description: "Optional route clarify threshold override (0 <= fallback < clarify <= 1).",
+      },
+      explain: {
+        type: "boolean",
+        description: "If true, include expanded explainability details in the response. Default: true.",
+      },
+    },
+    required: ["project", "state", "role", "action"],
+  },
+};
+
+export interface SessionCognitiveRouteArgs {
+  project: string;
+  state: string;
+  role: string;
+  action: string;
+  fallback_threshold?: number;
+  clarify_threshold?: number;
+  explain?: boolean;
+}
+
+export function isSessionCognitiveRouteArgs(
+  args: unknown
+): args is SessionCognitiveRouteArgs {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.project !== "string") return false;
+  if (typeof a.state !== "string") return false;
+  if (typeof a.role !== "string") return false;
+  if (typeof a.action !== "string") return false;
+  if (a.fallback_threshold !== undefined && typeof a.fallback_threshold !== "number") return false;
+  if (a.clarify_threshold !== undefined && typeof a.clarify_threshold !== "number") return false;
+  if (a.explain !== undefined && typeof a.explain !== "boolean") return false;
+  if (
+    typeof a.fallback_threshold === "number" &&
+    typeof a.clarify_threshold === "number" &&
+    !(a.fallback_threshold >= 0 && a.fallback_threshold < a.clarify_threshold && a.clarify_threshold <= 1)
+  ) return false;
+  return true;
+}
+
+// ─── v7.1: Task Router Tool ──────────────────────────────────
+
+export const SESSION_TASK_ROUTE_TOOL: Tool = {
+  name: "session_task_route",
+  description:
+    "Analyze a coding task and recommend whether it should be handled by the host " +
+    "cloud model or delegated to the local claw-code-agent (Qwen3).\n\n" +
+    "**How to use:**\n" +
+    "1. Call this tool BEFORE writing code or executing a complex task\n" +
+    "2. Read the `target` field in the response\n" +
+    "3. If target is `claw`, call `claw_run_task` with the task description\n" +
+    "4. If target is `host`, handle the task yourself\n\n" +
+    "**v7.1.0/v7.2.0:** Uses deterministic keyword/scope heuristics.\n" +
+    "When a project is specified, routing is enhanced by analyzing past experience events " +
+    "(success/failure/correction) to adjust confidence scores based on historical outcomes.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_description: {
+        type: "string",
+        description: "The raw prompt or task description to analyze for routing.",
+      },
+      files_involved: {
+        type: "array",
+        items: { type: "string" },
+        description: "Expected files to be created or modified by this task.",
+      },
+      estimated_scope: {
+        type: "string",
+        enum: ["minor_edit", "new_feature", "refactor", "bug_fix"],
+        description:
+          "Pre-categorize the task scope to improve routing accuracy. " +
+          "'minor_edit' for small changes, 'new_feature' for scaffolding, " +
+          "'refactor' for restructuring, 'bug_fix' for debugging.",
+      },
+      project: {
+        type: "string",
+        description: "Optional project identifier for context-aware routing.",
+      },
+    },
+    required: ["task_description"],
+  },
+};
+
+export interface SessionTaskRouteArgs {
+  task_description: string;
+  files_involved?: string[];
+  estimated_scope?: "minor_edit" | "new_feature" | "refactor" | "bug_fix";
+  project?: string;
+}
+
+export function isSessionTaskRouteArgs(
+  args: unknown
+): args is SessionTaskRouteArgs {
+  if (typeof args !== "object" || args === null) return false;
+  const a = args as Record<string, unknown>;
+  if (typeof a.task_description !== "string") return false;
+  if (
+    a.files_involved !== undefined &&
+    (!Array.isArray(a.files_involved) ||
+      !a.files_involved.every((f: unknown) => typeof f === "string"))
+  )
+    return false;
+  if (
+    a.estimated_scope !== undefined &&
+    a.estimated_scope !== "minor_edit" &&
+    a.estimated_scope !== "new_feature" &&
+    a.estimated_scope !== "refactor" &&
+    a.estimated_scope !== "bug_fix"
+  )
+    return false;
+  if (a.project !== undefined && typeof a.project !== "string") return false;
   return true;
 }
 

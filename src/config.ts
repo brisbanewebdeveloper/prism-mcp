@@ -333,21 +333,6 @@ if (!BRAVE_ANSWERS_API_KEY) {
   );
 }
 
-// ─── Optional: Supabase (Session Memory Module) ───────────────
-// When both SUPABASE_URL and SUPABASE_KEY are set, session memory tools
-// are registered. These tools allow AI agents to persist and recover
-// context between sessions.
-
-export const SUPABASE_URL = process.env.SUPABASE_URL;
-export const SUPABASE_KEY = process.env.SUPABASE_KEY;
-export const SUPABASE_API_PREFIX = process.env.SUPABASE_API_PREFIX ?? "/rest/v1";
-export const SESSION_MEMORY_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
-// Note: debug() is defined at the bottom of this file; these lines
-// execute at import time after the full module is loaded by Node.
-if (!SESSION_MEMORY_ENABLED) {
-  console.error("Info: Session memory disabled (set SUPABASE_URL + SUPABASE_KEY to enable)");
-}
-
 // ─── Optional: MCP Transport Mode ──────────────────────────────
 
 const MCP_TRANSPORT = process.env.PRISM_MCP_TRANSPORT;
@@ -381,19 +366,50 @@ export const PRISM_STORAGE: "local" | "supabase" =
   (process.env.PRISM_STORAGE as "local" | "supabase") || "supabase";
 // Logged at debug level — see debug() at bottom of file
 
-// ─── Optional: Multi-Tenant User ID ──────────────────────────
-// REVIEWER NOTE: When multiple users share the same Supabase instance,
-// PRISM_USER_ID isolates their data. Each user sets a unique ID in their
-// Claude Desktop config. All queries are scoped to this user_id.
-//
-// Defaults to "default" for backward compatibility — existing single-user
-// installations work without any config changes.
-//
-// For enterprise: use a stable unique identifier (UUID, email hash, etc.)
-// For personal use: any unique string works (e.g., "alice", "bob")
+// ─── Optional: Supabase (Session Memory Module) ───────────────
+// When both SUPABASE_URL and SUPABASE_KEY are set, session memory tools
+// are registered. These tools allow AI agents to persist and recover
+// context between sessions.
 
+function sanitizeEnv(value?: string): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  // Treat unresolved template placeholders as unset (e.g. "${SUPABASE_URL}")
+  if (!trimmed || trimmed.includes("${")) return undefined;
+  return trimmed;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export const SUPABASE_URL = sanitizeEnv(process.env.SUPABASE_URL);
+export const SUPABASE_KEY = sanitizeEnv(process.env.SUPABASE_KEY);
+export const SUPABASE_API_PREFIX = process.env.SUPABASE_API_PREFIX ?? "/rest/v1";
+export const SUPABASE_CONFIGURED =
+  !!SUPABASE_URL &&
+  !!SUPABASE_KEY &&
+  isHttpUrl(SUPABASE_URL);
+
+if (process.env.SUPABASE_URL && !SUPABASE_URL) {
+  console.error(
+    "Warning: SUPABASE_URL appears unresolved/empty (e.g. template placeholder). Falling back to local storage unless explicitly fixed."
+  );
+}
+if (SUPABASE_URL && !isHttpUrl(SUPABASE_URL)) {
+  console.error("Warning: SUPABASE_URL is not a valid http(s) URL. Falling back to local storage.");
+}
+// Session memory remains core-enabled in both local and Supabase modes.
+export const SESSION_MEMORY_ENABLED = true;
+
+// Optional multi-tenant scope ID (used by storage queries and handoffs).
 export const PRISM_USER_ID = process.env.PRISM_USER_ID || "default";
-// Multi-tenant info logged at debug level in startServer()
+
 
 // ─── v2.1: Auto-Capture Feature ─────────────────────────────
 // REVIEWER NOTE: Automatically captures HTML snapshots of local dev servers
@@ -438,5 +454,217 @@ if (PRISM_AUTO_CAPTURE) {
   }
 }
 
+// ─── v5.3: Hivemind Watchdog Thresholds ──────────────────────
+// All values have sane defaults. Override via env vars only for
+// testing or production tuning. Dashboard UI exposure deferred to v5.4.
+export const WATCHDOG_INTERVAL_MS = parseInt(
+  process.env.PRISM_WATCHDOG_INTERVAL_MS || "60000", 10
+);
+export const WATCHDOG_STALE_MIN = parseInt(
+  process.env.PRISM_WATCHDOG_STALE_MIN || "5", 10
+);
+export const WATCHDOG_FROZEN_MIN = parseInt(
+  process.env.PRISM_WATCHDOG_FROZEN_MIN || "15", 10
+);
+export const WATCHDOG_OFFLINE_MIN = parseInt(
+  process.env.PRISM_WATCHDOG_OFFLINE_MIN || "30", 10
+);
+export const WATCHDOG_LOOP_THRESHOLD = parseInt(
+  process.env.PRISM_WATCHDOG_LOOP_THRESHOLD || "5", 10
+);
 
+// ─── v5.4: Background Purge Scheduler ────────────────────────
+// Automated background maintenance: TTL sweep, importance decay,
+// compaction, and deep storage purge. Runs independently from
+// the Watchdog (different cadence: 12h vs 60s).
+export const PRISM_SCHEDULER_ENABLED =
+  process.env.PRISM_SCHEDULER_ENABLED !== "false"; // Default: true
+export const PRISM_SCHEDULER_INTERVAL_MS = parseInt(
+  process.env.PRISM_SCHEDULER_INTERVAL_MS || "43200000", 10  // 12 hours
+);
+
+// ─── v5.4: Autonomous Web Scholar ─────────────────────────────
+// Background LLM research pipeline powered by Brave Search + Firecrawl.
+// Tavily can be used as an alternative when TAVILY_API_KEY is set.
+// Defaults are conservative to prevent runaway API costs.
+
+export const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
+export const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+export const PRISM_SCHOLAR_ENABLED = process.env.PRISM_SCHOLAR_ENABLED === "true"; // Opt-in
+
+if (PRISM_SCHOLAR_ENABLED && !FIRECRAWL_API_KEY && !TAVILY_API_KEY) {
+  console.error("Warning: Neither FIRECRAWL_API_KEY nor TAVILY_API_KEY is set. Web Scholar will fall back to free search.");
+}
+export const PRISM_SCHOLAR_INTERVAL_MS = parseInt(
+  process.env.PRISM_SCHOLAR_INTERVAL_MS || "0", 10  // Default manual-only
+);
+export const PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN = parseInt(
+  process.env.PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN || "3", 10
+);
+export const PRISM_SCHOLAR_TOPICS = (process.env.PRISM_SCHOLAR_TOPICS || "ai,agents")
+  .split(",")
+  .map(t => t.trim());
+
+// ─── v6.0: Associative Memory Graph ──────────────────────────
+// Controls the age threshold for link strength decay.
+// Links not traversed in the last N days lose 0.1 strength per sweep.
+export const PRISM_LINK_DECAY_DAYS = parseInt(
+  process.env.PRISM_LINK_DECAY_DAYS || "30", 10
+);
+
+// ─── v6.5: Cognitive Architecture (HDC Policy Gateway) ─────────────
+// Master feature flag for HDC-driven cognitive routing APIs.
+export const PRISM_HDC_ENABLED = process.env.PRISM_HDC_ENABLED === "true";
+
+// Explainability payload toggle for cognitive routing responses.
+export const PRISM_HDC_EXPLAINABILITY_ENABLED =
+  process.env.PRISM_HDC_EXPLAINABILITY_ENABLED !== "false"; // default true
+
+const DEFAULT_HDC_FALLBACK_THRESHOLD = 0.85;
+const DEFAULT_HDC_CLARIFY_THRESHOLD = 0.95;
+
+const rawHdcFallbackThreshold = parseFloat(
+  process.env.PRISM_HDC_POLICY_FALLBACK_THRESHOLD || String(DEFAULT_HDC_FALLBACK_THRESHOLD)
+);
+const rawHdcClarifyThreshold = parseFloat(
+  process.env.PRISM_HDC_POLICY_CLARIFY_THRESHOLD || String(DEFAULT_HDC_CLARIFY_THRESHOLD)
+);
+
+const hdcThresholdsValid =
+  Number.isFinite(rawHdcFallbackThreshold) &&
+  Number.isFinite(rawHdcClarifyThreshold) &&
+  rawHdcFallbackThreshold >= 0 &&
+  rawHdcFallbackThreshold < rawHdcClarifyThreshold &&
+  rawHdcClarifyThreshold <= 1;
+
+if (!hdcThresholdsValid) {
+  console.error(
+    "Warning: Invalid HDC policy thresholds. Falling back to defaults " +
+    `(fallback=${DEFAULT_HDC_FALLBACK_THRESHOLD}, clarify=${DEFAULT_HDC_CLARIFY_THRESHOLD}).`
+  );
+}
+
+export const PRISM_HDC_POLICY_FALLBACK_THRESHOLD = hdcThresholdsValid
+  ? rawHdcFallbackThreshold
+  : DEFAULT_HDC_FALLBACK_THRESHOLD;
+
+export const PRISM_HDC_POLICY_CLARIFY_THRESHOLD = hdcThresholdsValid
+  ? rawHdcClarifyThreshold
+  : DEFAULT_HDC_CLARIFY_THRESHOLD;
+
+// ─── v6.2: Graph Soft-Pruning ───────────────────────────────
+// Soft-pruning filters weak links from graph/retrieval reads while preserving
+// underlying rows for provenance. This does NOT delete links.
+export const PRISM_GRAPH_PRUNING_ENABLED = process.env.PRISM_GRAPH_PRUNING_ENABLED === "true";
+export const PRISM_GRAPH_PRUNE_MIN_STRENGTH = parseFloat(
+  process.env.PRISM_GRAPH_PRUNE_MIN_STRENGTH || "0.15"
+);
+
+// Scheduler-driven prune sweep controls (WS3)
+export const PRISM_GRAPH_PRUNE_PROJECT_COOLDOWN_MS = parseInt(
+  process.env.PRISM_GRAPH_PRUNE_PROJECT_COOLDOWN_MS || "600000", 10
+);
+export const PRISM_GRAPH_PRUNE_SWEEP_BUDGET_MS = parseInt(
+  process.env.PRISM_GRAPH_PRUNE_SWEEP_BUDGET_MS || "30000", 10
+);
+export const PRISM_GRAPH_PRUNE_MAX_PROJECTS_PER_SWEEP = parseInt(
+  process.env.PRISM_GRAPH_PRUNE_MAX_PROJECTS_PER_SWEEP || "25", 10
+);
+
+// ─── v7.0: ACT-R Cognitive Memory Activation ────────────────
+// Scientifically-grounded retrieval re-ranking based on the ACT-R
+// cognitive architecture. Replaces simple Ebbinghaus decay with
+// a composite similarity + activation model.
+
+/** Master switch for ACT-R activation-based re-ranking. */
+export const PRISM_ACTR_ENABLED = process.env.PRISM_ACTR_ENABLED === "true";
+
+/** ACT-R decay parameter d in t^(-d). Higher = faster forgetting. (Paper default: 0.5) */
+export const PRISM_ACTR_DECAY = parseFloat(process.env.PRISM_ACTR_DECAY || "0.5");
+
+/** Weight of cosine similarity in composite score. (Default: 0.7 — similarity dominates) */
+export const PRISM_ACTR_WEIGHT_SIMILARITY = parseFloat(
+  process.env.PRISM_ACTR_WEIGHT_SIMILARITY || "0.7"
+);
+
+/** Weight of activation boost in composite score. (Default: 0.3 — activation re-ranks) */
+export const PRISM_ACTR_WEIGHT_ACTIVATION = parseFloat(
+  process.env.PRISM_ACTR_WEIGHT_ACTIVATION || "0.3"
+);
+
+/** Sigmoid midpoint: activation value that maps to 0.5 boost. (Default: -2.0) */
+export const PRISM_ACTR_SIGMOID_MIDPOINT = parseFloat(
+  process.env.PRISM_ACTR_SIGMOID_MIDPOINT || "-2.0"
+);
+
+/** Sigmoid steepness k. Higher = sharper discrimination. (Default: 1.0) */
+export const PRISM_ACTR_SIGMOID_STEEPNESS = parseFloat(
+  process.env.PRISM_ACTR_SIGMOID_STEEPNESS || "1.0"
+);
+
+/** Max access log entries per entry for base-level activation. (Default: 50) */
+export const PRISM_ACTR_MAX_ACCESSES_PER_ENTRY = parseInt(
+  process.env.PRISM_ACTR_MAX_ACCESSES_PER_ENTRY || "50", 10
+);
+
+/** AccessLogBuffer flush interval in milliseconds. (Default: 5000ms) */
+export const PRISM_ACTR_BUFFER_FLUSH_MS = parseInt(
+  process.env.PRISM_ACTR_BUFFER_FLUSH_MS || "5000", 10
+);
+
+/** Days to retain access log entries before pruning. (Default: 90) */
+export const PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS = parseInt(
+  process.env.PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS || "90", 10
+);
+
+// ─── v7.1: Task Router Configuration ─────────────────────────
+// Deterministic heuristic-based routing for delegating coding tasks
+// between the host cloud model and the local claw-code-agent.
+// Set PRISM_TASK_ROUTER_ENABLED=true to unlock the session_task_route tool.
+
+/** Master switch for the task router tool. */
+export const PRISM_TASK_ROUTER_ENABLED_ENV = process.env.PRISM_TASK_ROUTER_ENABLED === "true";
+
+/** Confidence threshold below which routing defaults to the host model. (Default: 0.6) */
+export const PRISM_TASK_ROUTER_CONFIDENCE_THRESHOLD = parseFloat(
+  process.env.PRISM_TASK_ROUTER_CONFIDENCE_THRESHOLD || "0.6"
+);
+
+/** Maximum complexity score (1-10) that Claw can handle. Tasks above this → host. (Default: 4) */
+export const PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY = parseInt(
+  process.env.PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY || "4", 10
+);
+
+// ─── v7.2: Verification Harness ──────────────────────────────
+
+/** Master switch for the v7.2.0 enhanced verification harness. */
+export const PRISM_VERIFICATION_HARNESS_ENABLED =
+  process.env.PRISM_VERIFICATION_HARNESS_ENABLED === "true";
+
+/** Comma-separated list of verification layers to run. */
+export const PRISM_VERIFICATION_LAYERS = (
+  process.env.PRISM_VERIFICATION_LAYERS || "data,agent,pipeline"
+).split(",").map(l => l.trim()).filter(Boolean);
+
+/** Default severity floor for all assertions. Overrides individual assertion severity when higher. */
+export const PRISM_VERIFICATION_DEFAULT_SEVERITY =
+  (process.env.PRISM_VERIFICATION_DEFAULT_SEVERITY || "warn") as "warn" | "gate" | "abort";
+
+// ─── v7.3: Dark Factory Orchestration ─────────────────────────
+// Autonomous pipeline runner: PLAN → EXECUTE → VERIFY → iterate.
+// Opt-in because it executes LLM calls in the background.
+
+/** Master switch for the Dark Factory background runner. */
+export const PRISM_DARK_FACTORY_ENABLED =
+  process.env.PRISM_DARK_FACTORY_ENABLED === "true"; // Opt-in
+
+/** Poll interval for the runner loop (ms). Default: 30s. */
+export const PRISM_DARK_FACTORY_POLL_MS = parseInt(
+  process.env.PRISM_DARK_FACTORY_POLL_MS || "30000", 10
+);
+
+/** Default max wall-clock time per pipeline (ms). Default: 15 minutes. */
+export const PRISM_DARK_FACTORY_MAX_RUNTIME_MS = parseInt(
+  process.env.PRISM_DARK_FACTORY_MAX_RUNTIME_MS || "900000", 10
+);
 

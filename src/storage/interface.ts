@@ -89,6 +89,7 @@ export interface LedgerEntry {
   // Timestamps
   created_at?: string;
   session_date?: string;
+  last_accessed_at?: string | null;  // v5.2: Cognitive Memory — tracks last retrieval for importance decay
 }
 
 /**
@@ -157,9 +158,33 @@ export interface SemanticSearchResult {
 // ─── v3.0: Agent Registry Types ──────────────────────────────
 
 /**
+ * Agent health status for the Hivemind Watchdog (v5.3).
+ *
+ * State machine:
+ *   ACTIVE  → STALE    (no heartbeat for staleThresholdMin)
+ *   STALE   → FROZEN   (no heartbeat for frozenThresholdMin)
+ *   FROZEN  → [pruned] (no heartbeat for offlineThresholdMin)
+ *   ACTIVE  → OVERDUE  (task exceeded expected_duration_minutes)
+ *   ACTIVE  → LOOPING  (same task_hash repeated ≥ loopThreshold times)
+ */
+export type AgentHealthStatus =
+  | "active"
+  | "idle"
+  | "shutdown"
+  | "stale"
+  | "frozen"
+  | "overdue"
+  | "looping"
+  | "verifying"
+  | "failed_validation";
+
+/**
  * Tracks an active agent in the Hivemind coordination registry.
  * Agents register on startup, heartbeat periodically, and are
  * auto-pruned when stale (>30 min without heartbeat).
+ *
+ * v5.3: Added watchdog fields for health monitoring —
+ * task_start_time, expected_duration_minutes, task_hash, loop_count.
  */
 export interface AgentRegistryEntry {
   id?: string;
@@ -167,10 +192,19 @@ export interface AgentRegistryEntry {
   user_id: string;
   role: string;
   agent_name?: string | null;
-  status: "active" | "idle" | "shutdown";
+  status: AgentHealthStatus;
   current_task?: string | null;
   last_heartbeat?: string;
   created_at?: string;
+  // ─── v5.3: Watchdog Health Monitoring Fields ───
+  /** When the current task started (ISO string). Set on task change. */
+  task_start_time?: string | null;
+  /** Expected task duration in minutes. Used by watchdog for OVERDUE detection. */
+  expected_duration_minutes?: number | null;
+  /** Hash of current_task string. Used for loop detection. */
+  task_hash?: string | null;
+  /** Number of consecutive heartbeats with the same task_hash. */
+  loop_count?: number;
 }
 
 /**
@@ -216,6 +250,9 @@ export interface HealthStats {
   totalActiveEntries: number;
   totalHandoffs: number;
   totalRollups: number;
+
+  // v5.4: CRDT auto-merge counter (aggregated from handoff metadata)
+  totalCrdtMerges: number;
 }
 
 // ─── Storage Backend Interface ────────────────────────────────
@@ -228,6 +265,7 @@ export interface HealthStats {
  * direct Supabase REST API calls.
  */
 export interface StorageBackend {
+  updateLastAccessed(ids: string[]): Promise<void>;
   // ─── Lifecycle ─────────────────────────────────────────────
 
   /** Initialize the storage backend (create tables, check connection, etc.) */
@@ -255,7 +293,7 @@ export interface StorageBackend {
    * Read ledger entries matching filter criteria.
    * Used by compaction to find candidates and by backfill to find missing embeddings.
    */
-  getLedgerEntries(params: Record<string, string>): Promise<unknown[]>;
+  getLedgerEntries(params: Record<string, any>): Promise<unknown[]>;
 
   /**
    * Delete ledger entries matching filter criteria.
@@ -304,6 +342,18 @@ export interface StorageBackend {
    * Returns status (created/updated/conflict) + new version.
    */
   saveHandoff(handoff: HandoffEntry, expectedVersion?: number | null): Promise<SaveHandoffResult>;
+
+  /**
+   * Retrieve a historical handoff snapshot by version number.
+   * Used by the CRDT merge engine to reconstruct the base state
+   * that both agents originally read before their concurrent saves.
+   *
+   * @param project - Project identifier
+   * @param version - The version number to retrieve (from history)
+   * @param userId - User who owns the handoff (default: 'default')
+   * @returns The snapshot at that version, or null if not found
+   */
+  getHandoffAtVersion(project: string, version: number, userId?: string): Promise<Record<string, unknown> | null>;
 
   /**
    * Delete handoff state for a project (used by knowledge_forget with clear_handoff).
@@ -398,8 +448,13 @@ export interface StorageBackend {
 
   /**
    * Update heartbeat timestamp and optionally current_task.
+   * v5.3: Also accepts expected_duration_minutes for OVERDUE detection,
+   * and performs loop detection (incrementing loop_count when task_hash repeats).
    */
-  heartbeatAgent(project: string, userId: string, role: string, currentTask?: string): Promise<void>;
+  heartbeatAgent(
+    project: string, userId: string, role: string,
+    currentTask?: string, expectedDurationMinutes?: number
+  ): Promise<void>;
 
   /**
    * List all agents on a project. Auto-prunes agents with
@@ -411,6 +466,23 @@ export interface StorageBackend {
    * Remove an agent from the registry.
    */
   deregisterAgent(project: string, userId: string, role: string): Promise<void>;
+
+  // ─── v5.3: Hivemind Watchdog Operations ───────────────────────
+
+  /**
+   * Get ALL registered agents across ALL projects for a user.
+   * Used by the watchdog sweep to check health of every agent.
+   */
+  getAllAgents(userId: string): Promise<AgentRegistryEntry[]>;
+
+  /**
+   * Update an agent's status and optional additional fields.
+   * Used by the watchdog sweep for state transitions (ACTIVE→STALE→FROZEN).
+   */
+  updateAgentStatus(
+    project: string, userId: string, role: string,
+    status: AgentHealthStatus, additionalFields?: Record<string, unknown>
+  ): Promise<void>;
 
   // ─── v3.0: Dashboard Settings (configStorage proxy) ──────────
 
@@ -517,6 +589,279 @@ export interface StorageBackend {
     dryRun: boolean;
     userId: string;
   }): Promise<{ purged: number; eligible: number; reclaimedBytes: number }>;
+
+  // ─── v5.5: SDM Persistence ───────────────────────────────────
+
+  /**
+   * Load the Superposed Distributed Memory (SDM) counter matrix into memory.
+   * Called automatically by the SDMEngine during initialization.
+   * If no state exists for the project, returns null.
+   *
+   * @param project - Project identifier
+   */
+  loadSdmState(project: string): Promise<Float32Array | null>;
+
+  /**
+   * Persist the SDM counter matrix to disk.
+   * Called synchronously during background flushing or SIGINT/SIGTERM.
+   *
+   * @param project - Project identifier
+   * @param state - The 10,000 x 768 element Float32Array
+   */
+  saveSdmState(project: string, state: Float32Array): Promise<void>;
+
+  /**
+   * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.
+   * Returns id, summary, and the base64 encoded embedding_compressed BLOB.
+   * @param project - Project identifier
+   */
+  getAllProjectEmbeddings(project: string): Promise<Array<{ id: string, summary: string, embedding_compressed: string }>>;
+
+  // ─── v6.0: Memory Links (Associative Graph) ──────────────────
+  //
+  // Typed, weighted edges that turn the flat session_ledger into an
+  // associative graph. See: memory_links_rfc.md (approved 2026-03-30)
+  //
+  // SECURITY: All read methods JOIN against session_ledger to enforce:
+  //   1. Tenant isolation (user_id match)
+  //   2. GDPR tombstone filtering (deleted_at IS NULL)
+  //   3. TTL/archive filtering (archived_at IS NULL)
+
+  /**
+   * Create a link between two ledger entries.
+   * Uses INSERT OR IGNORE (idempotent). After insert, atomically prunes
+   * any related_to links beyond the 25-link cap.
+   *
+   * v6.2 (migration 035): Requires userId for tenant-aware validation.
+   * Supabase routes through prism_create_link SECURITY DEFINER RPC.
+   */
+  createLink(link: MemoryLink, userId: string): Promise<void>;
+
+  /**
+   * Delete a link by composite key (source_id, target_id, link_type).
+   * Validates tenant ownership of both endpoints before deletion.
+   *
+   * @param sourceId - Source entry UUID
+   * @param targetId - Target entry UUID
+   * @param linkType - Link type discriminator
+   * @param userId   - Tenant identity for ownership validation
+   * @returns true if a link was deleted, false if not found
+   */
+  deleteLink(
+    sourceId: string,
+    targetId: string,
+    linkType: MemoryLink['link_type'],
+    userId: string
+  ): Promise<boolean>;
+
+  /**
+   * Get all outbound links from a source entry.
+   * JOINs session_ledger to enforce tenant isolation and GDPR visibility.
+   * Used for 1-hop expansion during search result enrichment.
+   */
+  getLinksFrom(sourceId: string, userId: string, minStrength?: number, limit?: number): Promise<MemoryLink[]>;
+
+  /**
+   * Get all inbound links pointing to a target entry.
+   * JOINs session_ledger to enforce tenant isolation and GDPR visibility.
+   * Used for reverse lookups: "who references this entry?"
+   */
+  getLinksTo(targetId: string, userId: string, minStrength?: number, limit?: number): Promise<MemoryLink[]>;
+
+  /**
+   * Count links from an entry, optionally filtered by type.
+   */
+  countLinks(entryId: string, linkType?: string): Promise<number>;
+
+  /**
+   * Atomically prune all links of a given type beyond the top 25 by strength.
+   * Uses a single DELETE with NOT IN subquery — no TOCTOU race.
+   */
+  pruneExcessLinks(entryId: string, linkType: string, maxLinks?: number): Promise<void>;
+
+  /**
+   * Strengthen a link by +0.1 (capped at 1.0) and update last_traversed_at.
+   * Called async (fire-and-forget via setImmediate) when a link is traversed
+   * during search, so it never blocks the search response path.
+   */
+  reinforceLink(sourceId: string, targetId: string, linkType: string): Promise<void>;
+
+  /**
+   * Decay all links not traversed in the last N days by -0.1 (floor at 0.0).
+   * Called by the sleep-cycle consolidation scheduler.
+   * @returns Number of links decayed
+   */
+  decayLinks(olderThanDays: number): Promise<number>;
+
+  /**
+   * Summarize weak-link soft-pruning impact for a project without deleting links.
+   * Used by scheduler observability to estimate how many links would be filtered
+   * out by the active minStrength threshold.
+   */
+  summarizeWeakLinks(
+    project: string,
+    userId: string,
+    minStrength: number,
+    maxSourceEntries?: number,
+    maxLinksPerSource?: number,
+  ): Promise<{
+    sources_considered: number;
+    links_scanned: number;
+    links_soft_pruned: number;
+  }>;
+
+
+  /**
+   * Find existing ledger entries that share ≥ minSharedKeywords with the given keywords.
+   * Used by the auto-linker to create `related_to` edges on save.
+   *
+   * Implementation pushes the intersection logic to the DB layer using
+   * CTE-based json_each() explosion with hash joins — O(N) vs O(N²) cross-join.
+   *
+   * Results exclude the entry itself, archived entries, and deleted entries.
+   *
+   * @param excludeId       - Entry ID to exclude from results (self)
+   * @param project         - Project scope
+   * @param keywords        - Keywords from the new entry
+   * @param userId          - Tenant ID for isolation
+   * @param minSharedKeywords - Minimum shared keywords (default: 3)
+   * @param limit           - Maximum results to return (default: 10)
+   * @returns Array of matching entry IDs with their shared keyword counts
+   */
+  findKeywordOverlapEntries(
+    excludeId: string,
+    project: string,
+    keywords: string[],
+    userId: string,
+    minSharedKeywords?: number,
+    limit?: number,
+  ): Promise<Array<{ id: string; shared_count: number }>>;
+
+  /**
+   * Retroactively create links for all existing entries in a project.
+   * Three strategies: temporal chaining, keyword overlap, provenance.
+   * Idempotent via INSERT OR IGNORE.
+   * @returns Counts of links created per strategy
+   */
+  backfillLinks(project: string): Promise<{ temporal: number; keyword: number; provenance: number }>;
+
+  // ─── v6.1: Storage Hygiene ────────────────────────────────────
+
+  /**
+   * Run VACUUM on the underlying database to reclaim disk space after
+   * large purge operations. For SQLite, this rewrites the entire DB file.
+   * For remote backends (Supabase), returns a guidance message.
+   *
+   * @param opts.dryRun - If true, reports current size without running VACUUM.
+   * @returns sizeBefore, sizeAfter (bytes), and a human-readable message.
+   */
+  vacuumDatabase(opts: { dryRun: boolean }): Promise<{
+    sizeBefore: number;
+    sizeAfter: number;
+    message: string;
+  }>;
+
+  // ─── v6.5: HDC State Machines & Cognitive Logic ────────────────
+
+  /**
+   * Retrieve a generated HDC orthogonal vector for a semantic concept.
+   * If the concept doesn't exist, returns null.
+   *
+   * @param concept - The string identifier of the concept (e.g. 'Action:Read')
+   */
+  getHdcConcept(concept: string): Promise<Uint32Array | null>;
+
+  /**
+   * Retrieves all globally stored HDC concepts from the dictionary.
+   */
+  getAllHdcConcepts(): Promise<Array<{ concept: string; vector: Uint32Array }>>;
+
+  /**
+   * Persist a generated HDC orthogonal vector to the dictionary.
+   *
+   * @param concept - The string identifier of the concept.
+   * @param vector - The 768-word Uint32Array representing the concept.
+   */
+  saveHdcConcept(concept: string, vector: Uint32Array): Promise<void>;
+
+  // ─── v7.0: ACT-R Access Log (Activation Memory) ────────────────
+  //
+  // These methods support the ACT-R base-level activation model.
+  // Every memory retrieval logs an access event. The access log enables
+  // B_i = ln(Σ t_j^(-d)) — combining recency and frequency into a
+  // single activation score.
+
+  /**
+   * Record a memory access event. Delegates to an in-memory buffer
+   * (AccessLogBuffer) that flushes periodically — callers pay zero
+   * async overhead. This is intentionally SYNCHRONOUS (fire-and-forget).
+   *
+   * Rule #1: Write contention prevention via batched inserts.
+   *
+   * @param entryId - The session_ledger entry that was accessed/retrieved
+   * @param contextHash - Optional hash of the search query context
+   */
+  logAccess(entryId: string, contextHash?: string): void;
+
+  /**
+   * Batch-fetch access timestamps for multiple entries in a single query.
+   * Uses SQL window functions: ROW_NUMBER() OVER (PARTITION BY entry_id
+   * ORDER BY accessed_at DESC) to limit per-entry results efficiently.
+   *
+   * Rule #2: Prevents N+1 query explosion on batch fetches.
+   *
+   * @param entryIds - Array of entry IDs to fetch access logs for
+   * @param maxPerEntry - Maximum timestamps per entry (default: 50)
+   * @returns Map from entryId → array of Date objects (most-recent first)
+   */
+  getAccessLog(
+    entryIds: string[],
+    maxPerEntry?: number
+  ): Promise<Map<string, Date[]>>;
+
+  /**
+   * Prune access log entries older than N days.
+   * Called by the sleep-cycle scheduler to keep the access log bounded.
+   *
+   * @param olderThanDays - Delete entries older than this many days
+   * @returns Number of rows pruned
+   */
+  pruneAccessLog(olderThanDays: number): Promise<number>;
+
+  // ─── Dark Factory (v7.3) ───────────────────────────────────
+
+  /** Save or update a pipeline state */
+  savePipeline(state: PipelineState): Promise<void>;
+  
+  /** Retrieve a pipeline by ID */
+  getPipeline(id: string, userId: string): Promise<PipelineState | null>;
+  
+  /** List pipelines, optionally filtered by project and status */
+  listPipelines(project: string | undefined, status: PipelineStatus | undefined, userId: string): Promise<PipelineState[]>;
+}
+
+// ─── v6.0: Memory Link Type ───────────────────────────────────
+
+/**
+ * A typed, weighted edge between two session_ledger entries.
+ * Forms the associative graph layer over the flat ledger.
+ *
+ * Link types:
+ *   - related_to:       Topical similarity (bidirectional, dual-row)
+ *   - temporal_next:    Sequential ordering within a conversation (directed)
+ *   - spawned_from:     Compaction provenance — rollup → archived originals (directed)
+ *   - synthesized_from: Insight derived from multiple entries (directed)
+ *   - supersedes:       Newer entry replaces older (directed)
+ *   - depends_on:       Prerequisite relationship (directed)
+ */
+export interface MemoryLink {
+  source_id: string;
+  target_id: string;
+  link_type: 'related_to' | 'temporal_next' | 'spawned_from' | 'synthesized_from' | 'supersedes' | 'depends_on';
+  strength: number;
+  metadata?: string | null;       // JSON-stringified optional context
+  created_at?: string;
+  last_traversed_at?: string;
 }
 
 // ─── v3.1 Types ────────────────────────────────────────────────
@@ -536,4 +881,22 @@ export interface AnalyticsData {
   avgSummaryLength: number;
   /** Session count per day for the last 14 days */
   sessionsByDay: Array<{ date: string; count: number }>;
+}
+
+// ─── v7.3: Dark Factory Pipeline ──────────────────────────────
+
+export type PipelineStatus = 'PENDING' | 'RUNNING' | 'PAUSED' | 'ABORTED' | 'COMPLETED' | 'FAILED';
+
+export interface PipelineState {
+  id: string;
+  project: string;
+  user_id: string;
+  status: PipelineStatus;
+  current_step: string;
+  iteration: number;
+  started_at: string;
+  updated_at: string;
+  spec: string; // JSON string of PipelineSpec
+  error?: string | null;
+  last_heartbeat?: string | null;
 }

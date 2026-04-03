@@ -140,7 +140,7 @@ export function getLLMProvider(): LLMProvider {
     // Init failure (e.g. missing API key) → fall back to full Gemini provider.
     // A crash here would silently kill the MCP server.
     console.error(
-      `[LLMFactory] Failed to initialise providers (text=${textType}, embed=${embedType}): ${err}. ` +
+      `[LLMFactory] Failed to initialise providers (text=${textType}, embed=${embedType}): ${err instanceof Error ? err.message : String(err)}. ` +
       `Falling back to GeminiAdapter for both.`
     );
     const fallback = new GeminiAdapter();

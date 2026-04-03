@@ -75,7 +75,17 @@ import {
   PRISM_USER_ID,
   PRISM_ENABLE_HIVEMIND,
   PRISM_MCP_TRANSPORT,
+  WATCHDOG_INTERVAL_MS, WATCHDOG_STALE_MIN, WATCHDOG_FROZEN_MIN,
+  WATCHDOG_OFFLINE_MIN, WATCHDOG_LOOP_THRESHOLD,
+  PRISM_SCHEDULER_ENABLED, PRISM_SCHEDULER_INTERVAL_MS,
+  PRISM_SCHOLAR_ENABLED,
+  PRISM_HDC_ENABLED,
+  PRISM_TASK_ROUTER_ENABLED_ENV,
+  PRISM_DARK_FACTORY_ENABLED,
 } from "./config.js";
+import { startWatchdog, drainAlerts } from "./hivemindWatchdog.js";
+import { startScheduler, startScholarScheduler } from "./backgroundScheduler.js";
+import { startDarkFactoryRunner } from "./darkfactory/runner.js";
 import { getSyncBus } from "./sync/factory.js";
 import type { SyncEvent } from "./sync/index.js";
 import { startDashboardServer } from "./dashboard/server.js";
@@ -139,6 +149,12 @@ import {
   SESSION_SAVE_EXPERIENCE_TOOL,
   KNOWLEDGE_UPVOTE_TOOL,
   KNOWLEDGE_DOWNVOTE_TOOL,
+  // v6.0: Associative Memory Graph tools
+  SESSION_BACKFILL_LINKS_TOOL,
+  SESSION_SYNTHESIZE_EDGES_TOOL,
+  SESSION_COGNITIVE_ROUTE_TOOL,
+  // v7.1: Task Router
+  SESSION_TASK_ROUTE_TOOL,
 
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -149,6 +165,9 @@ import {
   compactLedgerHandler,
   sessionSearchMemoryHandler,
   backfillEmbeddingsHandler,
+  sessionBackfillLinksHandler,
+  sessionSynthesizeEdgesHandler,
+  sessionCognitiveRouteHandler,
   // ─── v2.0: Time Travel handlers ───
   memoryHistoryHandler,
   memoryCheckoutHandler,
@@ -173,11 +192,23 @@ import {
   // v5.1: Deep Storage Mode
   DEEP_STORAGE_PURGE_TOOL,
   deepStoragePurgeHandler,
+  // v6.1: Storage Hygiene
+  MAINTENANCE_VACUUM_TOOL,
+  maintenanceVacuumHandler,
   // ─── v3.0: Agent Hivemind tools ───
   AGENT_REGISTRY_TOOLS,
   agentRegisterHandler,
   agentHeartbeatHandler,
   agentListTeamHandler,
+  // v7.1: Task Router
+  sessionTaskRouteHandler,
+  // v7.3: Dark Factory Pipeline tools
+  SESSION_START_PIPELINE_TOOL,
+  SESSION_CHECK_PIPELINE_STATUS_TOOL,
+  SESSION_ABORT_PIPELINE_TOOL,
+  sessionStartPipelineHandler,
+  sessionCheckPipelineStatusHandler,
+  sessionAbortPipelineHandler,
 } from "./tools/index.js";
 
 // ─── Dynamic Tool Registration ───────────────────────────────────
@@ -264,6 +295,12 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
     DEEP_STORAGE_PURGE_TOOL,       // deep_storage_purge — purge float32 embeddings for compressed entries
     // ─── Phase 2: GDPR Export tool ───
     SESSION_EXPORT_MEMORY_TOOL,    // session_export_memory — full portability export (Article 20)
+    // ─── v6.0: Associative Memory Graph tools ───
+    SESSION_BACKFILL_LINKS_TOOL,   // session_backfill_links — retroactive graph edge creation
+    SESSION_SYNTHESIZE_EDGES_TOOL, // session_synthesize_edges — inferred semantic graph enrichment
+    SESSION_COGNITIVE_ROUTE_TOOL,  // session_cognitive_route — HDC policy-gated concept routing (v6.5)
+    // ─── v6.1: Storage Hygiene tool ───
+    MAINTENANCE_VACUUM_TOOL,       // maintenance_vacuum — reclaim SQLite disk space post-purge
   ];
 }
 
@@ -278,6 +315,10 @@ let dashboardStartupScheduled = false;
 let keepAliveHandle: NodeJS.Timeout | null = null;
 
 const notificationTargets = new Set<Server>();
+let backgroundServicesScheduled = false;
+// Tracks whether a connected client already loaded context, allowing us to
+// suppress the deferred auto-push fallback.
+let contextLoadedByClient = false;
 
 function ensureStoragePrewarm() {
   if (!SESSION_MEMORY_ENABLED || storageReady) {
@@ -356,6 +397,16 @@ export function registerServerNotificationTarget(server: Server): () => void {
   };
 }
 
+// Compatibility export for handlers that still import the server-level
+// notifier directly. The primary runtime path uses the per-server callback
+// created inside createServer() so HTTP sessions keep isolated subscriptions.
+export function notifyResourceUpdate(project: string, server: Server) {
+  server.notification({
+    method: "notifications/resources/updated",
+    params: { uri: `memory://${project}/handoff` },
+  });
+}
+
 export async function initializeRuntime() {
   if (runtimeInitialization) {
     await runtimeInitialization;
@@ -368,6 +419,7 @@ export async function initializeRuntime() {
     initTelemetry();
     ensureStoragePrewarm();
     scheduleDashboardStartup();
+    scheduleBackgroundServices();
     await startSyncBusListener();
   })();
 
@@ -382,6 +434,139 @@ function ensureKeepAlive() {
   keepAliveHandle = setInterval(() => {
     // Heartbeat to keep the stdio process running.
   }, 10000);
+}
+
+function scheduleBackgroundServices() {
+  if (!SESSION_MEMORY_ENABLED || backgroundServicesScheduled) {
+    return;
+  }
+
+  backgroundServicesScheduled = true;
+
+  if (PRISM_ENABLE_HIVEMIND) {
+    storageReady?.then(() => {
+      startWatchdog({
+        intervalMs: WATCHDOG_INTERVAL_MS,
+        staleThresholdMin: WATCHDOG_STALE_MIN,
+        frozenThresholdMin: WATCHDOG_FROZEN_MIN,
+        offlineThresholdMin: WATCHDOG_OFFLINE_MIN,
+        loopThreshold: WATCHDOG_LOOP_THRESHOLD,
+      });
+    }).catch(err => {
+      console.error(`[Watchdog] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  if (PRISM_SCHEDULER_ENABLED) {
+    storageReady?.then(() => {
+      startScheduler({
+        intervalMs: PRISM_SCHEDULER_INTERVAL_MS,
+      });
+    }).catch(err => {
+      console.error(`[Scheduler] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  if (PRISM_SCHOLAR_ENABLED) {
+    storageReady?.then(() => {
+      startScholarScheduler();
+    }).catch(err => {
+      console.error(`[WebScholar] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  if (PRISM_DARK_FACTORY_ENABLED) {
+    storageReady?.then(() => {
+      startDarkFactoryRunner();
+    }).catch(err => {
+      console.error(`[DarkFactory] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+}
+
+function scheduleDeferredAutoPush(server: Server) {
+  if (!SESSION_MEMORY_ENABLED) {
+    return;
+  }
+
+  const AUTOLOAD_PUSH_DELAY_MS = 10_000;
+  const pushAutoloadList = getSettingSync("autoload_projects", "")
+    .split(",")
+    .map(project => project.trim())
+    .filter(Boolean);
+
+  if (pushAutoloadList.length === 0) {
+    return;
+  }
+
+  storageReady?.then(async () => {
+    await new Promise(resolve => setTimeout(resolve, AUTOLOAD_PUSH_DELAY_MS));
+
+    if (contextLoadedByClient) {
+      console.error("[Prism] Auto-push skipped — client already loaded context");
+      return;
+    }
+
+    console.error(
+      `[Prism] Auto-push triggered — model did not call session_load_context within ${AUTOLOAD_PUSH_DELAY_MS / 1000}s`
+    );
+
+    try {
+      const storage = await getStorage();
+      const defaultLevel = getSettingSync("default_context_depth", "standard");
+
+      for (const project of pushAutoloadList) {
+        try {
+          const data = await storage.loadContext(project, defaultLevel, PRISM_USER_ID);
+          if (!data) {
+            server.sendLoggingMessage({
+              level: "info",
+              data: `[Prism Auto-Push] No context found for project "${project}". Starting fresh.`,
+            });
+            continue;
+          }
+
+          const d = data as Record<string, any>;
+          let ctx = `📋 [AUTO-PUSH] Session context for "${project}" (${defaultLevel}):\n\n`;
+          if (d.last_summary) ctx += `📝 Last Summary: ${d.last_summary}\n`;
+          if (d.active_branch) ctx += `🌿 Active Branch: ${d.active_branch}\n`;
+          if (d.key_context) ctx += `💡 Key Context: ${d.key_context}\n`;
+          if (d.pending_todo?.length) {
+            ctx += `\n✅ Open TODOs:\n` + d.pending_todo.map((todo: string) => `  - ${todo}`).join("\n") + `\n`;
+          }
+          if (d.keywords?.length) {
+            ctx += `\n🔑 Keywords: ${d.keywords.join(", ")}\n`;
+          }
+          if (d.recent_sessions?.length) {
+            ctx += `\n⏳ Recent Sessions:\n` + d.recent_sessions.map((session: any) => `  [${session.session_date?.split("T")[0]}] ${session.summary}`).join("\n") + `\n`;
+          }
+
+          const agentName = getSettingSync("agent_name", "");
+          const defaultRole = getSettingSync("default_role", "");
+          if (agentName || defaultRole) {
+            ctx += `\n👤 Agent: ${defaultRole || "global"} — ${agentName || "Agent"}`;
+          }
+
+          if (d.version) {
+            ctx += `\n🔑 Session version: ${d.version}. Pass expected_version: ${d.version} when saving handoff.`;
+          }
+
+          server.sendLoggingMessage({
+            level: "info",
+            data: ctx,
+          });
+
+          console.error(`[Prism] Auto-pushed context for "${project}" (${defaultLevel})`);
+        } catch (err) {
+          console.error(`[Prism] Auto-push failed for "${project}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Prism] Auto-push storage error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }).catch(() => {
+    // Storage warmup failed; auto-push is best-effort.
+  });
 }
 
 // ─── Server Factory ──────────────────────────────────────────────
@@ -429,6 +614,10 @@ export function createServer() {
     ...SESSION_MEMORY_TOOLS,
     // v3.0: Agent Hivemind tools — only when PRISM_ENABLE_HIVEMIND=true
     ...(PRISM_ENABLE_HIVEMIND ? AGENT_REGISTRY_TOOLS : []),
+    // v7.1: Task Router tool — only when PRISM_TASK_ROUTER_ENABLED=true
+    ...(getSettingSync("task_router_enabled", String(PRISM_TASK_ROUTER_ENABLED_ENV)) === "true" ? [SESSION_TASK_ROUTE_TOOL] : []),
+    // v7.3: Dark Factory pipeline tools — only when PRISM_DARK_FACTORY_ENABLED=true
+    ...(PRISM_DARK_FACTORY_ENABLED ? [SESSION_START_PIPELINE_TOOL, SESSION_CHECK_PIPELINE_STATUS_TOOL, SESSION_ABORT_PIPELINE_TOOL] : []),
   ];
 
   const server = new Server(
@@ -848,6 +1037,7 @@ export function createServer() {
 
           case "session_load_context":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            contextLoadedByClient = true;  // v5.2.1: suppress deferred auto-push
             result = await sessionLoadContextHandler(args); break;
 
           case "knowledge_search":
@@ -936,6 +1126,31 @@ export function createServer() {
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
             result = await deepStoragePurgeHandler(args); break;
 
+          // ─── v6.0: Associative Memory Graph Tools ───
+
+          case "session_backfill_links":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            result = await sessionBackfillLinksHandler(args); break;
+
+          case "session_synthesize_edges":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            result = await sessionSynthesizeEdgesHandler(args); break;
+
+          case "session_cognitive_route":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            if (!PRISM_HDC_ENABLED) throw new Error("HDC cognitive routing not enabled. Set PRISM_HDC_ENABLED=true.");
+            result = await sessionCognitiveRouteHandler(args); break;
+
+          case "session_backfill_embeddings":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            result = await backfillEmbeddingsHandler(args); break;
+
+          // ─── v6.1: Storage Hygiene ───
+
+          case "maintenance_vacuum":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            result = await maintenanceVacuumHandler(args); break;
+
           // ─── v3.0: Agent Hivemind Tools ───
 
           case "agent_register":
@@ -953,6 +1168,30 @@ export function createServer() {
             if (!PRISM_ENABLE_HIVEMIND) throw new Error("Hivemind not enabled. Set PRISM_ENABLE_HIVEMIND=true.");
             result = await agentListTeamHandler(args); break;
 
+          // ─── v7.1: Task Router ───
+
+          case "session_task_route":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            if (getSettingSync("task_router_enabled", String(PRISM_TASK_ROUTER_ENABLED_ENV)) !== "true") throw new Error("Task router not enabled. Enable it in the dashboard or set PRISM_TASK_ROUTER_ENABLED=true.");
+            result = await sessionTaskRouteHandler(args); break;
+
+          // ─── v7.3: Dark Factory Pipeline Tools ───
+
+          case "session_start_pipeline":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            result = await sessionStartPipelineHandler(args); break;
+
+          case "session_check_pipeline_status":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            result = await sessionCheckPipelineStatusHandler(args); break;
+
+          case "session_abort_pipeline":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            result = await sessionAbortPipelineHandler(args); break;
+
           default:
             result = {
               content: [{ type: "text", text: `Unknown tool: ${name}` }],
@@ -961,6 +1200,39 @@ export function createServer() {
         }
 
         rootSpan.setStatus({ code: SpanStatusCode.OK });
+
+        // ═══ v5.3: Hivemind Watchdog Alert Injection (Telepathy) ═══
+        // CRITICAL: Append alerts DIRECTLY to tool response content
+        // so the LLM actually reads them. sendLoggingMessage goes to
+        // debug logs which the LLM never sees.
+        if (PRISM_ENABLE_HIVEMIND && result && !result.isError) {
+          const project = (args as Record<string, unknown>)?.project;
+          if (typeof project === "string") {
+            const alerts = drainAlerts(project);
+            if (alerts.length > 0) {
+              const alertBlock = alerts.map(a =>
+                `[🐝 SYSTEM ALERT] ⚠️ Teammate "${a.role}"` +
+                (a.agentName ? ` (${a.agentName})` : "") +
+                ` is ${a.status.toUpperCase()}: ${a.message}`
+              ).join("\n");
+
+              // Inject into LLM context (primary mechanism)
+              result.content.push({
+                type: "text" as const,
+                text: `\n\n${alertBlock}`,
+              });
+
+              // Also log to operator/debug channel (secondary)
+              try {
+                server.sendLoggingMessage({
+                  level: "warning",
+                  data: alertBlock,
+                });
+              } catch { /* sendLoggingMessage is best-effort */ }
+            }
+          }
+        }
+
         return result;
 
       } catch (error) {
@@ -1013,7 +1285,15 @@ export function createSandboxServer() {
 
   // Register all tool listings unconditionally
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...ALL_BASE_TOOLS, ...buildSessionMemoryTools([]), ...AGENT_REGISTRY_TOOLS],
+    tools: [
+      ...ALL_BASE_TOOLS,
+      ...buildSessionMemoryTools([]),
+      ...AGENT_REGISTRY_TOOLS,
+      SESSION_TASK_ROUTE_TOOL,
+      SESSION_START_PIPELINE_TOOL,
+      SESSION_CHECK_PIPELINE_STATUS_TOOL,
+      SESSION_ABORT_PIPELINE_TOOL,
+    ],
   }));
 
   // Register prompts listing so scanners see resume_session
@@ -1077,10 +1357,14 @@ export async function startServer() {
   await server.connect(transport);
   registerServerNotificationTarget(server);
 
+  console.error(`[Prism] MCP Server successfully started and listening on stdio...`);
+
   // Register graceful shutdown handlers (SIGTERM, SIGINT, SIGHUP, stdin close).
   // The stdin close handler is critical — when MCP clients disconnect, they
   // often just close the pipe without sending a signal, leaving zombie processes.
   registerShutdownHandlers();
+
+  scheduleDeferredAutoPush(server);
 
   // Keep the process alive — without this, Node.js would exit
   // because there are no active event loop handles after the
@@ -1098,8 +1382,16 @@ export async function startConfiguredServer() {
   await startServer();
 }
 
-// Only auto-start when this module is executed directly (not imported by Smithery scanner)
-const isDirectExecution = process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.ts');
+// Only auto-start when this module is executed directly (not imported by Smithery scanner).
+// IMPORTANT: npm install -g creates a symlink like /usr/local/bin/prism-mcp-server
+// whose path does NOT end with 'server.js'. Node.js sets process.argv[1] to the
+// symlink path, not the resolved target. Without the bin-name check, startServer()
+// never fires and the process silently exits with zero stdout (see issue #21).
+const entryScript = process.argv[1] ?? '';
+const isDirectExecution =
+  entryScript.endsWith('server.js') ||
+  entryScript.endsWith('server.ts') ||
+  entryScript.endsWith('prism-mcp-server');
 if (isDirectExecution) {
   startConfiguredServer().catch((error) => {
     console.error('Fatal error running server:', error);

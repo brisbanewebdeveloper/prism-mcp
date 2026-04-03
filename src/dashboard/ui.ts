@@ -19,8 +19,12 @@ export function renderDashboardHTML(version: string): string {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Prism MCP — Mind Palace</title>
+  <!-- PWA Metadata -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0a0e1a">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <!-- Vis.js for Neural Graph (v2.3.0) -->
@@ -176,6 +180,32 @@ export function renderDashboardHTML(version: string): string {
     .grid-main { grid-template-columns: 1fr 2fr; }
     @media (max-width: 900px) { .grid-main { grid-template-columns: 1fr; } }
 
+    /* ─── PWA Mobile Overrides (v5.4) ─── */
+    @media (max-width: 600px) {
+      .container { padding: 1rem; }
+      header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+      .selector { width: 100%; flex-wrap: wrap; }
+      .selector select { flex: 1; min-width: 0; }
+      
+      /* Swipeable Columns via CSS Scroll Snap */
+      .grid-main {
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        gap: 0;
+        margin: 0 -1rem; /* bleed to edge */
+        padding-bottom: 1rem;
+        scrollbar-width: none; /* Hide scrollbar Firefox */
+      }
+      .grid-main::-webkit-scrollbar { display: none; } /* Hide scrollbar Chrome/Safari */
+      .grid-main > .grid {
+        flex: 0 0 100%;
+        scroll-snap-align: start;
+        padding: 0 1rem;
+      }
+    }
+
     /* ─── State Panel ─── */
     .summary-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.7; margin-bottom: 1rem; }
     .todo-list { list-style: none; padding: 0; }
@@ -303,6 +333,45 @@ export function renderDashboardHTML(version: string): string {
     }
     .cleanup-btn:hover { background: rgba(244,63,94,0.25); border-color: var(--accent-rose); }
     .cleanup-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* ─── Health repair progress bar ─── */
+    .health-progress-wrap {
+      display: none; margin-top: 0.75rem;
+      background: rgba(15,23,42,0.7); border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      border: 1px solid rgba(139,92,246,0.25);
+    }
+    .health-progress-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 0.45rem;
+    }
+    .health-progress-stage {
+      font-size: 0.72rem; color: #a78bfa; font-weight: 500;
+      transition: color 0.3s;
+    }
+    .health-progress-pct {
+      font-size: 0.72rem; color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums;
+    }
+    .health-progress-track {
+      height: 6px; border-radius: 3px;
+      background: rgba(139,92,246,0.15);
+      overflow: hidden;
+    }
+    .health-progress-bar {
+      height: 100%; width: 0%; border-radius: 3px;
+      background: linear-gradient(90deg, #7c3aed, #a78bfa, #7c3aed);
+      background-size: 200% 100%;
+      animation: healthBarShimmer 1.8s linear infinite;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    @keyframes healthBarShimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .health-progress-bar.done {
+      animation: none;
+      background: var(--accent-green);
+      transition: width 0.25s ease-out, background 0.3s;
+    }
     .toast-fixed {
       position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 200;
       padding: 0.65rem 1.2rem; border-radius: 10px; font-size: 0.85rem; font-weight: 500;
@@ -444,7 +513,14 @@ export function renderDashboardHTML(version: string): string {
       width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green);
       flex-shrink: 0; animation: pulseDot 2s ease-in-out infinite;
     }
+    .pulse-dot.looping {
+      animation: spinDot 1s linear infinite;
+      background: #a855f7 !important;
+      border-radius: 2px;
+    }
     @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    @keyframes spinDot { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .team-status { font-size: 0.8rem; flex-shrink: 0; }
 
     /* ─── Memory Analytics (v3.1) ─── */
     .sparkline {
@@ -479,6 +555,8 @@ export function renderDashboardHTML(version: string): string {
     .lc-btn.compact:hover { background: rgba(139,92,246,0.3); }
     .lc-btn.export { background: rgba(16,185,129,0.12); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
     .lc-btn.export:hover { background: rgba(16,185,129,0.25); }
+    .lc-btn.export-vault { background: rgba(139,92,246,0.12); color: #a78bfa; border: 1px solid rgba(139,92,246,0.3); }
+    .lc-btn.export-vault:hover { background: rgba(139,92,246,0.25); }
     .lc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .ttl-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
     .ttl-input {
@@ -522,6 +600,12 @@ export function renderDashboardHTML(version: string): string {
       </div>
     </header>
 
+    <div class="main-tabs" style="display:flex; gap: 1rem; border-bottom: 1px solid var(--border-glass); margin-bottom: 1.5rem; padding-bottom: 0;">
+      <button class="s-tab active" id="mtab-project" onclick="switchMainTab('project')" style="font-size: 1rem;">📁 Project View</button>
+      <button class="s-tab" id="mtab-search" onclick="switchMainTab('search')" style="font-size: 1rem;">🔍 Vector Search</button>
+      <button class="s-tab" id="mtab-factory" onclick="switchMainTab('factory')" style="font-size: 1rem;">🏭 Factory</button>
+    </div>
+
     <div id="welcome" class="empty">
       <div class="emoji">🔮</div>
       <p>Select a project to inspect its neural state.</p>
@@ -564,6 +648,16 @@ export function renderDashboardHTML(version: string): string {
             </div>
           </div>
           <div class="health-issues" id="healthIssues"></div>
+          <!-- Repair progress bar (v6.1.4) -->
+          <div class="health-progress-wrap" id="healthProgressWrap">
+            <div class="health-progress-header">
+              <span class="health-progress-stage" id="healthProgressStage">Initializing…</span>
+              <span class="health-progress-pct" id="healthProgressPct">0%</span>
+            </div>
+            <div class="health-progress-track">
+              <div class="health-progress-bar" id="healthProgressBar"></div>
+            </div>
+          </div>
         </div>
 
         <!-- Memory Analytics (v3.1) -->
@@ -592,6 +686,19 @@ export function renderDashboardHTML(version: string): string {
             <button class="lc-btn export" id="exportBtn" onclick="exportPKM()">
               📦 Export ZIP
             </button>
+            <button class="lc-btn export-vault" id="exportVaultBtn" onclick="exportVault()" title="Export as Obsidian/Logseq-compatible vault with Wikilinks and keyword index">
+              🏛️ Export Vault
+            </button>
+          </div>
+          <!-- Export progress bar (v6.1.4) -->
+          <div class="health-progress-wrap" id="exportProgressWrap">
+            <div class="health-progress-header">
+              <span class="health-progress-stage" id="exportProgressStage">Building archive…</span>
+              <span class="health-progress-pct" id="exportProgressPct">0%</span>
+            </div>
+            <div class="health-progress-track">
+              <div class="health-progress-bar" id="exportProgressBar"></div>
+            </div>
           </div>
           <div class="ttl-row">
             <span class="ttl-label">Auto-expire after</span>
@@ -600,6 +707,63 @@ export function renderDashboardHTML(version: string): string {
             <button class="ttl-save-btn" onclick="saveTTL()">Save TTL</button>
           </div>
           <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.4rem">0 = disabled. Min 7 days. Rollups are never expired.</div>
+        </div>
+
+        <!-- Universal History Import (v5.2) -->
+        <div class="card" id="importCard" style="display:none">
+          <div class="card-title"><span class="dot" style="background:var(--accent-cyan)"></span> Import History 📥</div>
+          <div style="margin-bottom:0.75rem">
+            <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.3rem">Source File</label>
+            <div style="display:flex;gap:0.4rem;align-items:center">
+              <input type="text" id="importPath" class="ttl-input" style="flex:1;text-align:left;font-size:0.82rem;padding:0.45rem 0.65rem" placeholder="/path/to/conversations.jsonl">
+              <input type="file" id="importFileInput" accept=".jsonl,.json,.ndjson" style="display:none">
+              <button class="lc-btn compact" onclick="document.getElementById('importFileInput').click()" style="flex:none;padding:0.45rem 0.75rem;font-size:0.82rem;white-space:nowrap" title="Choose a file from your computer">
+                📂 Browse
+              </button>
+              <button class="lc-btn" onclick="clearImportFile()" id="importClearBtn" style="flex:none;padding:0.45rem 0.55rem;font-size:0.82rem;display:none;background:rgba(244,63,94,0.15);border-color:rgba(244,63,94,0.3);color:var(--accent-rose)" title="Clear selection">
+                ✕
+              </button>
+            </div>
+            <div id="importFileInfo" style="display:none;margin-top:0.35rem;font-size:0.72rem;color:var(--accent-cyan)"></div>
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+            <div style="flex:1;min-width:120px">
+              <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.3rem">Format</label>
+              <select id="importFormat" class="ttl-input" style="width:100%;text-align:left;font-size:0.82rem;padding:0.35rem 0.5rem;cursor:pointer">
+                <option value="">Auto-detect</option>
+                <option value="claude">Claude Code (.jsonl)</option>
+                <option value="gemini">Gemini (.json)</option>
+                <option value="openai">OpenAI (.json)</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:120px">
+              <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.3rem">Target Project</label>
+              <input type="text" id="importProject" class="ttl-input" style="width:100%;text-align:left;font-size:0.82rem;padding:0.45rem 0.65rem" placeholder="(auto from file)">
+            </div>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center">
+            <button class="lc-btn compact" id="importBtn" onclick="runImport(false)" style="flex:1">
+              📥 Import
+            </button>
+            <button class="lc-btn export" id="importDryBtn" onclick="runImport(true)" style="flex:1" title="Validate without writing to storage">
+              🧪 Dry Run
+            </button>
+          </div>
+          <div id="importResult" style="display:none;margin-top:0.75rem;padding:0.65rem 0.85rem;border-radius:var(--radius-sm);font-size:0.82rem;line-height:1.5"></div>
+          <!-- Import progress bar (v6.1.4) -->
+          <div class="health-progress-wrap" id="importProgressWrap">
+            <div class="health-progress-header">
+              <span class="health-progress-stage" id="importProgressStage">Reading file…</span>
+              <span class="health-progress-pct" id="importProgressPct">0%</span>
+            </div>
+            <div class="health-progress-track">
+              <div class="health-progress-bar" id="importProgressBar"></div>
+            </div>
+          </div>
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-top:0.5rem">
+            Click <strong>Browse</strong> to pick a file, or type a server-side path.<br>
+            Supports Claude Code (.jsonl), Gemini (.json), and OpenAI (.json).
+          </div>
         </div>
 
         <div class="card" id="briefingCard" style="display:none">
@@ -626,7 +790,7 @@ export function renderDashboardHTML(version: string): string {
           </div>
 
           <!-- v5.1 Graph Filters -->
-          <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
+          <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap; align-items:center;">
             <select id="graphProjectFilter" class="input-modern" style="min-width:120px; font-size:0.75rem; padding:0.3rem 0.5rem" onchange="loadGraph()">
               <option value="">All Projects</option>
             </select>
@@ -641,10 +805,20 @@ export function renderDashboardHTML(version: string): string {
               <option value="5">Importance &gt;= 5</option>
               <option value="7">Graduated (&gt;= 7)</option>
             </select>
+            <button id="decayToggle" class="input-modern" style="font-size:0.75rem; padding:0.3rem 0.65rem; cursor:pointer; border:1px solid rgba(139,92,246,0.3); background:transparent; color:var(--text-secondary); border-radius:6px; transition:all 0.2s; white-space:nowrap" onclick="toggleDecayView()" title="Color nodes by temporal freshness (Ebbinghaus decay)">
+              🗓️ Decay View
+            </button>
           </div>
 
           <div id="network-container">Loading nodes...</div>
           
+          <!-- Graph Maintenance Actions -->
+          <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-glass); display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button onclick="triggerEdgeSynthesis()" class="input-modern" style="font-size:0.75rem; padding:0.3rem 0.65rem; cursor:pointer; border:1px solid var(--accent-purple); background:transparent; color:var(--text-primary); border-radius:6px; transition:all 0.2s;">
+              ⚡ Synthesize Edges
+            </button>
+            <span id="synthesisStatus" style="font-size: 0.75rem; color: var(--text-muted); align-self: center;"></span>
+          </div>
           <!-- v5.1 Node Editor Panel -->
           <div id="nodeEditorPanel" class="node-editor-panel">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.8rem;">
@@ -653,11 +827,29 @@ export function renderDashboardHTML(version: string): string {
             </div>
             
             <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.3rem">Rename (Or leave empty to delete)</label>
-            <div style="display:flex; gap:0.5rem;">
+            <div style="display:flex; gap:0.5rem; margin-bottom:0.6rem;">
               <input type="text" id="nodeEditorInput" class="input-modern" style="flex:1; font-size:0.8rem; padding:0.3rem 0.6rem" placeholder="New keyword name...">
               <button onclick="submitNodeEdit()" class="btn-modern" style="padding:0.3rem 0.8rem; font-size:0.8rem">Apply</button>
               <button onclick="document.getElementById('nodeEditorPanel').style.display='none'" class="btn-modern" style="background:transparent; border-color:var(--border-subtle); padding:0.3rem 0.8rem; font-size:0.8rem">Cancel</button>
             </div>
+            
+            <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.3rem">Or merge into existing:</label>
+            <select id="nodeMergeSelect" class="input-modern" style="width:100%; font-size:0.8rem; padding:0.3rem 0.5rem" onchange="if(this.value) document.getElementById('nodeEditorInput').value = this.value">
+              <option value="">-- Select node --</option>
+            </select>
+            
+            <hr style="border:none; border-top:1px solid var(--border-subtle); margin:1rem 0;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">Active Recall</span>
+              <button id="testMeBtn" onclick="triggerTestMe()" class="btn-modern" style="padding:0.3rem 0.6rem; font-size:0.75rem; background:var(--accent-teal); border-color:var(--accent-teal);" title="Generate 3 quiz questions using AI">📝 Test Me</button>
+            </div>
+            <div id="testMeContainer" style="margin-top:0.8rem; display:flex; flex-direction:column; gap:0.5rem;"></div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.8rem;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">Cognitive Route (v6.5)</span>
+              <button id="cognitiveRouteBtn" onclick="triggerCognitiveRoute()" class="btn-modern" style="padding:0.3rem 0.6rem; font-size:0.75rem; background:var(--accent-blue); border-color:var(--accent-blue);" title="Resolve concept route and explain why it surfaced">🧭 Route</button>
+            </div>
+            <div id="cognitiveRouteContainer" style="margin-top:0.6rem; display:flex; flex-direction:column; gap:0.4rem;"></div>
+
           </div>
         </div>
 
@@ -687,6 +879,79 @@ export function renderDashboardHTML(version: string): string {
             </li>
           </ul>
         </div>
+
+        <!-- Background Scheduler Status (v5.4) -->
+        <div class="card" id="schedulerCard">
+          <div class="card-title" style="display:flex;align-items:center;">
+            <span class="dot" style="background:var(--accent-amber, #f59e0b)"></span>
+            Background Scheduler ⏰
+            <div style="flex:1"></div>
+            <button id="scholarBtn" onclick="triggerWebScholar()" class="lc-btn compact" style="margin-right:0.5rem">🧠 Scholar (Run)</button>
+            <button onclick="loadSchedulerStatus()" class="refresh-btn">↻</button>
+          </div>
+          <div id="schedulerContent" style="font-size:0.8rem;color:var(--text-muted)">
+            Loading scheduler status...
+          </div>
+          <div id="densityStatContainer" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-glass); font-size: 0.85em; color: var(--text-muted); display:none">
+          </div>
+        </div>
+      </div>
+
+      <!-- Graph Health Metrics (v6.0 Observability) -->
+      <div class="card" style="margin-top:1rem">
+        <div class="card-title" style="display:flex;align-items:center;gap:0.5rem">
+          <span class="dot" style="background:var(--accent-blue)"></span>
+          Graph Health 📊
+          <div style="flex:1"></div>
+          <span id="graphHealthWarnings" style="display:inline-flex;gap:0.3rem"></span>
+          <button onclick="loadGraphMetrics()" class="refresh-btn">↻</button>
+        </div>
+        <div id="graphMetricsContent" style="font-size:0.8rem;color:var(--text-muted)">
+          Loading graph metrics...
+        </div>
+      </div>
+    </div>
+
+    <!-- Search View (v6.0) -->
+    <div id="search-content" class="fade-in" style="display:none; margin: 0 auto; max-width: 900px; padding: 0 1rem;">
+      <div class="card">
+        <div class="card-title"><span class="dot" style="background:var(--accent-purple)"></span> Semantic Vector Search 🔍</div>
+        <div style="margin-bottom: 1.5rem; display:flex; gap:1rem; align-items:center;">
+          <input type="text" id="searchInput" class="input-modern" style="flex:1; padding: 0.8rem 1rem; font-size: 1rem;" placeholder="Search past work, bugs, architecture decisions...">
+          <label style="font-size: 0.85rem; color: var(--text-secondary); display:flex; align-items:center; gap:0.4rem; cursor:pointer;" title="Biases results towards the currently scoped project">
+            <input type="checkbox" id="searchContextBoost" checked>
+            Context Boost
+          </label>
+        </div>
+        <div id="searchResults" class="timeline" style="margin-top: 1rem;">
+          <div style="color:var(--text-muted); font-size:0.9rem; padding: 2rem; text-align:center;">
+            Enter a query to search the neural ledger via embeddings...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dark Factory View (v7.3) -->
+    <div id="factory-content" class="fade-in" style="display:none; margin: 0 auto; max-width: 1000px; padding: 0 1rem;">
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;">
+          <span class="dot" style="background:var(--accent-amber)"></span>
+          Dark Factory — Autonomous Pipelines 🏭
+          <div style="flex:1"></div>
+          <button onclick="loadPipelines()" class="refresh-btn">↻</button>
+        </div>
+        <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center;">
+          <select id="factoryStatusFilter" class="input-modern" style="font-size:0.75rem;padding:0.3rem 0.5rem" onchange="loadPipelines()">
+            <option value="">All Statuses</option>
+            <option value="PENDING">⏸ Pending</option>
+            <option value="RUNNING">⏳ Running</option>
+            <option value="COMPLETED">✅ Completed</option>
+            <option value="FAILED">❌ Failed</option>
+            <option value="ABORTED">🛑 Aborted</option>
+          </select>
+          <span id="factoryCount" style="font-size:0.75rem;color:var(--text-muted);margin-left:auto"></span>
+        </div>
+        <div id="factoryList" style="font-size:0.85rem;color:var(--text-muted)">Loading pipelines...</div>
       </div>
     </div>
 
@@ -751,7 +1016,7 @@ export function renderDashboardHTML(version: string): string {
             min="0" max="100000" step="500"
             style="padding: 0.2rem 0.5rem; background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; font-family: var(--font-mono); width: 90px; text-align: right;"
             onchange="saveSetting('max_tokens', this.value)"
-            oninput="clearTimeout(this._t); this._t=setTimeout(()=>saveSetting('max_tokens',this.value),800)" />
+            oninput="clearTimeout(this._t); var _s=this; this._t=setTimeout(function(){saveSetting('max_tokens',_s.value)},800)" />
         </div>
 
         <div class="setting-section">Boot Settings <span class="boot-badge">Restart Required</span></div>
@@ -762,6 +1027,13 @@ export function renderDashboardHTML(version: string): string {
             <div class="setting-desc">Multi-agent coordination (PRISM_ENABLE_HIVEMIND)</div>
           </div>
           <div class="toggle" id="toggle-hivemind" onclick="toggleBootSetting('hivemind_enabled', this)"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Task Router</div>
+            <div class="setting-desc">Route tasks to local Claw agent (PRISM_TASK_ROUTER_ENABLED)</div>
+          </div>
+          <div class="toggle" id="toggle-task-router" onclick="toggleBootSetting('task_router_enabled', this)"></div>
         </div>
         <div class="setting-row">
           <div>
@@ -1089,6 +1361,209 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
   <div class="toast-fixed" id="fixedToast"></div>
 
   <script>
+    // ═══════════════════════════════════════════════════════════════════
+    // COMPATIBILITY RULE: This entire <script> block MUST use ES5 only.
+    //   - Use 'var' (NEVER 'const' or 'let')
+    //   - Use 'function(){}' (NEVER '=>' arrow functions)
+    //   - NO optional chaining '?.'
+    //   - NO template literals (backticks) — use string concatenation
+    //   - NO destructuring, spread, or other ES6+ syntax
+    // This HTML is served as a raw template literal; mixing ES6 in the
+    // inline script causes SyntaxError in some browser/context combos.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ─── TABS & SEARCH (v6.0) ───
+    function switchMainTab(tabId) {
+      document.getElementById('mtab-project').classList.toggle('active', tabId === 'project');
+      document.getElementById('mtab-search').classList.toggle('active', tabId === 'search');
+      document.getElementById('mtab-factory').classList.toggle('active', tabId === 'factory');
+      
+      document.getElementById('content').style.display = tabId === 'project' ? '' : 'none';
+      document.getElementById('search-content').style.display = tabId === 'search' ? 'block' : 'none';
+      document.getElementById('factory-content').style.display = tabId === 'factory' ? 'block' : 'none';
+      
+      if (tabId === 'search') {
+        document.getElementById('searchInput').focus();
+      }
+      if (tabId === 'factory') {
+        loadPipelines();
+      }
+    }
+
+    // ─── DARK FACTORY (v7.3) ───
+    var factoryPollTimer = null;
+
+    function loadPipelines() {
+      var statusFilter = document.getElementById('factoryStatusFilter').value;
+      var url = '/api/pipelines';
+      if (statusFilter) url += '?status=' + encodeURIComponent(statusFilter);
+
+      fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var list = document.getElementById('factoryList');
+          var count = document.getElementById('factoryCount');
+          var pipelines = data.pipelines || [];
+          count.textContent = pipelines.length + ' pipeline' + (pipelines.length !== 1 ? 's' : '');
+
+          if (pipelines.length === 0) {
+            list.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:0.5rem">🏭</div>No pipelines found. Use <code>session_start_pipeline</code> to create one.</div>';
+            return;
+          }
+
+          var html = '<div style="display:flex;flex-direction:column;gap:0.5rem">';
+          for (var i = 0; i < pipelines.length; i++) {
+            var p = pipelines[i];
+            var emoji = p.status === 'COMPLETED' ? '✅' : p.status === 'FAILED' ? '❌' : p.status === 'ABORTED' ? '🛑' : p.status === 'RUNNING' ? '⏳' : p.status === 'PENDING' ? '⏸' : '📋';
+            var statusColor = p.status === 'COMPLETED' ? 'var(--accent-green)' : p.status === 'FAILED' ? 'var(--accent-rose)' : p.status === 'ABORTED' ? 'var(--accent-amber)' : p.status === 'RUNNING' ? 'var(--accent-purple)' : p.status === 'PENDING' ? 'var(--accent-blue, #3b82f6)' : 'var(--text-muted)';
+            var isActive = p.status === 'RUNNING' || p.status === 'PENDING';
+            var objective = (p.parsedSpec && p.parsedSpec.objective) ? p.parsedSpec.objective : '(unknown)';
+            if (objective.length > 120) objective = objective.slice(0, 120) + '…';
+            var maxIter = (p.parsedSpec && p.parsedSpec.maxIterations) ? p.parsedSpec.maxIterations : '?';
+
+            html += '<div style="padding:0.75rem 1rem;background:rgba(15,23,42,0.6);border-radius:8px;border-left:3px solid ' + statusColor + ';">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem">';
+            html += '<span style="font-weight:600;color:var(--text-primary)">' + emoji + ' ' + p.status + '</span>';
+            html += '<span style="font-size:0.7rem;font-family:var(--font-mono);color:var(--text-muted)">' + p.id.slice(0, 8) + '…</span>';
+            html += '</div>';
+            html += '<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.35rem">' + objective + '</div>';
+            html += '<div style="display:flex;gap:1rem;font-size:0.72rem;color:var(--text-muted);flex-wrap:wrap">';
+            html += '<span>📁 ' + (p.project || '?') + '</span>';
+            html += '<span>🔄 ' + p.iteration + ' / ' + maxIter + '</span>';
+            html += '<span>📍 ' + (p.current_step || '?') + '</span>';
+            html += '<span>🕐 ' + new Date(p.updated_at).toLocaleString() + '</span>';
+            html += '</div>';
+            if (p.error) {
+              html += '<div style="font-size:0.72rem;color:var(--accent-rose);margin-top:0.35rem;padding:0.3rem 0.5rem;background:rgba(244,63,94,0.08);border-radius:4px">⚠ ' + p.error.slice(0, 200) + '</div>';
+            }
+            if (isActive) {
+              html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(\'' + p.id + '\')" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+          list.innerHTML = html;
+
+          // Auto-poll if any pipeline is running
+          var hasActive = pipelines.some(function(p) { return p.status === 'RUNNING' || p.status === 'PENDING'; });
+          clearInterval(factoryPollTimer);
+          if (hasActive) {
+            factoryPollTimer = setInterval(function() {
+              if (document.getElementById('factory-content').style.display !== 'none') loadPipelines();
+              else clearInterval(factoryPollTimer);
+            }, 10000);
+          }
+        })
+        .catch(function(err) {
+          document.getElementById('factoryList').innerHTML = '<div style="color:var(--accent-rose);padding:1rem">Failed to load pipelines: ' + err.message + '</div>';
+        });
+    }
+
+    function abortPipeline(id) {
+      if (!confirm('Abort pipeline ' + id.slice(0, 8) + '…?')) return;
+      fetch('/api/pipelines/' + id + '/abort', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) {
+            showToast('Pipeline aborted');
+            loadPipelines();
+          } else {
+            showToast('Failed: ' + (data.error || 'Unknown error'));
+          }
+        })
+        .catch(function(err) { showToast('Abort failed: ' + err.message); });
+    }
+
+    var searchTimeout = null;
+    var searchAbortController = null;
+    
+    async function performSearch() {
+      var input = document.getElementById('searchInput');
+      var boost = document.getElementById('searchContextBoost');
+      var resultsDiv = document.getElementById('searchResults');
+      var query = input.value.trim();
+      
+      if (!query) {
+        if (searchAbortController) searchAbortController.abort();
+        resultsDiv.innerHTML = '<div style="color:var(--text-muted); font-size:0.9rem; padding: 2rem; text-align:center;">Enter a query to search the neural ledger via embeddings...</div>';
+        return;
+      }
+      
+      resultsDiv.innerHTML = '<div class="loading" style="padding:2rem;"><span class="spinner"></span> Searching neural memory via embeddings...</div>';
+      
+      var project = document.getElementById('projectSelect').value;
+      var url = '/api/search?q=' + encodeURIComponent(query);
+      if (project) url += '&project=' + encodeURIComponent(project);
+      if (boost.checked) url += '&boost=true';
+      
+      if (searchAbortController) searchAbortController.abort();
+      searchAbortController = new AbortController();
+      
+      try {
+        var res = await fetch(url, { signal: searchAbortController.signal });
+        var data = await res.json();
+        if (data.error) throw new Error(data.error);
+        
+        if (!data.results || data.results.length === 0) {
+          resultsDiv.innerHTML = '<div style="color:var(--text-muted); padding: 2rem; text-align:center;">No matching memories found for this query.</div>';
+          return;
+        }
+        
+        // Extract searchable terms for highlighting (length > 2)
+        var queryTerms = query.split(/\\s+/).filter(function(w) { return w.length > 2; });
+        var termRegex = queryTerms.length > 0 
+          ? new RegExp('(' + queryTerms.map(function(w) { return w.replace(/[.*+?^$()|[\\]\\\\{}]/g, '\\\\$&'); }).join('|') + ')', 'gi')
+          : null;
+
+        function highlight(text) {
+          var escaped = escapeHtml(text || '');
+          if (termRegex) {
+            escaped = escaped.replace(termRegex, '<mark style="background: rgba(168, 85, 247, 0.4); color: inherit; padding: 0 0.1rem; border-radius: 2px;">$1</mark>');
+          }
+          return escaped;
+        }
+        
+        resultsDiv.innerHTML = data.results.map(function(r) {
+          var isGraduated = r.importance >= 7;
+          var opacity = isGraduated ? 1 : 0.8;
+          var borderStyle = isGraduated ? 'border-left: 3px solid var(--accent-purple); padding-left: 0.8rem;' : '';
+          var decisionsHtml = '';
+          if (r.decisions && r.decisions.length > 0) {
+            decisionsHtml = '<ul class="tag-list" style="margin-top:0.75rem;">' +
+              r.decisions.map(function(d) { return '<li class="tag">💡 ' + highlight(d) + '</li>'; }).join('') +
+              '</ul>';
+          }
+          return '<div class="entry" style="opacity: ' + opacity + '; ' + borderStyle + '">' +
+            '<div class="entry-meta" style="justify-content:space-between; margin-bottom:0.5rem;">' +
+              '<span>📁 ' + escapeHtml(r.project) + ' • 🕒 ' + new Date(r.session_date || r.created_at || Date.now()).toLocaleDateString() + '</span>' +
+              '<div style="display:flex; gap:0.5rem; font-size:0.75rem;">' +
+                '<span class="badge" title="Similarity Score (Semantic Match)" style="background:rgba(6,182,212,0.1); color:var(--accent-cyan); border:1px solid rgba(6,182,212,0.3);">' +
+                  '🎯 ' + (r.similarity * 100).toFixed(1) + '%' +
+                '</span>' +
+                '<span class="badge badge-purple" title="Ebbinghaus Importance (Recency/Reinforcement)">' +
+                  '⭐ ' + (r.importance || 0).toFixed(1) +
+                '</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="entry-summary" style="font-size:0.9rem; line-height: 1.5;">' + highlight(r.summary) + '</div>' +
+            decisionsHtml +
+          '</div>';
+        }).join('');
+      } catch (err) {
+        if (err.name === 'AbortError') return; // Ignore aborted fetches
+        resultsDiv.innerHTML = '<div style="padding:1rem; color:var(--accent-rose);">❌ Failed to search memory: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    var _searchInput = document.getElementById('searchInput');
+    if (_searchInput) _searchInput.addEventListener('input', function() {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(performSearch, 300);
+    });
+    var _searchBoost = document.getElementById('searchContextBoost');
+    if (_searchBoost) _searchBoost.addEventListener('change', performSearch);
+
+
     // Role icon map
     var ROLE_ICONS = {dev:'🛠️',qa:'🔍',pm:'📋',lead:'🏗️',security:'🔒',ux:'🎨',global:'🌐',cmo:'📢'};
 
@@ -1116,9 +1591,9 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     // Auto-load project list on page load
     (async function() {
       try {
-        const res = await fetch('/api/projects');
-        const data = await res.json();
-        const select = document.getElementById('projectSelect');
+        var res = await fetch('/api/projects');
+        var data = await res.json();
+        var select = document.getElementById('projectSelect');
         if (data.projects && data.projects.length > 0) {
           select.innerHTML = '<option value="">— Select a project —</option>' +
             data.projects.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
@@ -1253,7 +1728,8 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           var t = healthData.totals || {};
           healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' +
             (t.handoffs || 0) + ' handoffs · ' +
-            (t.rollups || 0) + ' rollups';
+            (t.rollups || 0) + ' rollups' +
+            (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
 
           // Issue rows
           var issues = healthData.issues || [];
@@ -1281,9 +1757,10 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         document.getElementById('content').className = 'grid grid-main fade-in';
         document.getElementById('content').style.display = 'grid';
 
-        // v3.1: Analytics + Lifecycle Controls
+        // v3.1: Analytics + Lifecycle Controls + Import
         document.getElementById('analyticsCard').style.display = 'block';
         document.getElementById('lifecycleCard').style.display = 'block';
+        document.getElementById('importCard').style.display = 'block';
         loadAnalytics(project);
         loadRetention(project);
 
@@ -1383,24 +1860,282 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     }
 
     // ─── v3.1: PKM Export (Obsidian / Logseq ZIP) ───────────────────────
+    // ── Shared export progress helpers ─────────────────────────────────
+    // Export uses fetch+blob so we can show a building bar during ZIP generation.
+    // Estimated time ~5-15s for most projects (fflate in-memory); staged accordingly.
+    function startExportProgress(isVault) {
+      var wrap  = document.getElementById('exportProgressWrap');
+      var bar   = document.getElementById('exportProgressBar');
+      var pct   = document.getElementById('exportProgressPct');
+      var stage = document.getElementById('exportProgressStage');
+      if (wrap) wrap.style.display = 'block';
+      var stages = isVault
+        ? [
+            { pct: 10, label: 'Fetching ledger entries…',   ms: 500  },
+            { pct: 30, label: 'Rendering Markdown files…',  ms: 2000 },
+            { pct: 55, label: 'Building Wikilink index…',   ms: 4000 },
+            { pct: 75, label: 'Compressing vault ZIP…',     ms: 7000 },
+            { pct: 88, label: 'Finalizing archive…',        ms: 11000 },
+          ]
+        : [
+            { pct: 15, label: 'Fetching project data…',    ms: 500  },
+            { pct: 50, label: 'Building archive…',         ms: 2000 },
+            { pct: 80, label: 'Compressing ZIP…',          ms: 5000 },
+            { pct: 92, label: 'Finalizing…',               ms: 9000 },
+          ];
+      var timers = stages.map(function(s) {
+        return setTimeout(function() {
+          if (bar) bar.style.width = s.pct + '%';
+          if (pct) pct.textContent = s.pct + '%';
+          if (stage) stage.textContent = s.label;
+        }, s.ms);
+      });
+      return timers;
+    }
+
+    function finishExportProgress(timers, ok) {
+      timers.forEach(function(t) { clearTimeout(t); });
+      var bar   = document.getElementById('exportProgressBar');
+      var pct   = document.getElementById('exportProgressPct');
+      var stage = document.getElementById('exportProgressStage');
+      var wrap  = document.getElementById('exportProgressWrap');
+      if (bar) bar.classList.add('done');
+      if (bar) bar.style.width = '100%';
+      if (pct) pct.textContent = '100%';
+      if (stage) stage.textContent = ok ? '✅ Ready — downloading…' : '❌ Export failed';
+      setTimeout(function() {
+        if (wrap) wrap.style.display = 'none';
+        if (bar) { bar.classList.remove('done'); bar.style.width = '0%'; }
+        if (pct) pct.textContent = '0%';
+        if (stage) stage.textContent = 'Building archive…';
+      }, 2200);
+    }
+
+    // ── v3.1: PKM Export (ZIP) ────────────────────────────────────────
     async function exportPKM() {
       var project = document.getElementById('projectSelect').value;
       if (!project) return;
       var btn = document.getElementById('exportBtn');
       btn.disabled = true;
-      btn.textContent = '📦 Exporting...';
+      btn.textContent = '📦 Building…';
+      var timers = startExportProgress(false);
       try {
+        var res = await fetch('/api/export?project=' + encodeURIComponent(project));
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        var blob = await res.blob();
+        finishExportProgress(timers, true);
+        var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
-        a.href = '/api/export?project=' + encodeURIComponent(project);
-        a.download = 'prism-export-' + project + '.zip';
+        a.href = url;
+        a.download = 'prism-vault-' + project + '.zip';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
         showToast('↓ Download started');
-      } catch(e) { showToast('❌ Export failed', true); }
-      finally {
+      } catch(e) {
+        finishExportProgress(timers, false);
+        showToast('❌ Export failed', true);
+      } finally {
         btn.disabled = false;
         btn.textContent = '📦 Export ZIP';
+      }
+    }
+
+    // ── v6.1: Vault Export (Prism-Port) ────────────────────────────
+    async function exportVault() {
+      var project = document.getElementById('projectSelect').value;
+      if (!project) return;
+      var btn = document.getElementById('exportVaultBtn');
+      btn.disabled = true;
+      btn.textContent = '🏛️ Building…';
+      var timers = startExportProgress(true);
+      try {
+        var res = await fetch('/api/export/vault?project=' + encodeURIComponent(project));
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        var blob = await res.blob();
+        finishExportProgress(timers, true);
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'prism-vault-' + project + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+        showToast('↓ Vault download started — open in Obsidian or Logseq');
+      } catch(e) {
+        finishExportProgress(timers, false);
+        showToast('❌ Vault export failed', true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🏛️ Export Vault';
+      }
+    }
+
+    // ─── v5.2: Universal History Import ───────────────────────────────
+
+    // Track the picked file for upload mode
+    var _importPickedFile = null;
+
+    document.getElementById('importFileInput').addEventListener('change', function(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      _importPickedFile = file;
+      var pathInput = document.getElementById('importPath');
+      pathInput.value = file.name;
+      document.getElementById('importClearBtn').style.display = 'inline-flex';
+      var infoEl = document.getElementById('importFileInfo');
+      var sizeKB = (file.size / 1024).toFixed(1);
+      var sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      infoEl.textContent = '📄 ' + file.name + ' (' + (file.size > 1048576 ? sizeMB + ' MB' : sizeKB + ' KB') + ')';
+      infoEl.style.display = 'block';
+
+      // Auto-detect format from extension
+      var fmt = document.getElementById('importFormat');
+      if (file.name.endsWith('.jsonl') || file.name.endsWith('.ndjson')) {
+        fmt.value = 'claude';
+      } else if (file.name.toLowerCase().includes('gemini')) {
+        fmt.value = 'gemini';
+      } else if (file.name.toLowerCase().includes('openai') || file.name.toLowerCase().includes('chatgpt')) {
+        fmt.value = 'openai';
+      } else {
+        fmt.value = '';
+      }
+    });
+
+    function clearImportFile() {
+      _importPickedFile = null;
+      document.getElementById('importPath').value = '';
+      document.getElementById('importFileInput').value = '';
+      document.getElementById('importClearBtn').style.display = 'none';
+      document.getElementById('importFileInfo').style.display = 'none';
+      document.getElementById('importResult').style.display = 'none';
+      document.getElementById('importFormat').value = '';
+    }
+
+    async function runImport(dryRun) {
+      var filePath = document.getElementById('importPath').value.trim();
+      if (!filePath && !_importPickedFile) { showToast('❌ Pick a file or enter a path', true); return; }
+
+      var format    = document.getElementById('importFormat').value || undefined;
+      var project   = document.getElementById('importProject').value.trim() || undefined;
+      var importBtn = document.getElementById('importBtn');
+      var dryBtn    = document.getElementById('importDryBtn');
+      var resultEl  = document.getElementById('importResult');
+      var progWrap  = document.getElementById('importProgressWrap');
+      var progBar   = document.getElementById('importProgressBar');
+      var progPct   = document.getElementById('importProgressPct');
+      var progStage = document.getElementById('importProgressStage');
+
+      importBtn.disabled = true;
+      dryBtn.disabled = true;
+      var activeBtn = dryRun ? dryBtn : importBtn;
+      var origText  = activeBtn.innerHTML;
+      activeBtn.innerHTML = dryRun ? '🔄 Validating…' : '🔄 Importing…';
+
+      // Hide old result, show progress bar
+      resultEl.style.display = 'none';
+      if (progWrap) progWrap.style.display = 'block';
+
+      // Estimate duration by file size: <500KB~10s, <5MB~30s, else~90s
+      var fileSize = _importPickedFile ? _importPickedFile.size : 0;
+      var estMs = fileSize > 5 * 1024 * 1024 ? 90000
+                : fileSize > 500 * 1024      ? 30000
+                : 10000;
+
+      var importStages = dryRun
+        ? [
+            { pct: 20, label: 'Parsing file structure…', ms: Math.round(estMs * 0.1) },
+            { pct: 55, label: 'Validating conversation turns…', ms: Math.round(estMs * 0.35) },
+            { pct: 80, label: 'Checking for duplicates…', ms: Math.round(estMs * 0.65) },
+            { pct: 92, label: 'Generating preview…', ms: Math.round(estMs * 0.85) },
+          ]
+        : [
+            { pct: 10, label: 'Reading file…', ms: Math.round(estMs * 0.05) },
+            { pct: 25, label: 'Parsing conversation turns…', ms: Math.round(estMs * 0.15) },
+            { pct: 45, label: 'Deduplicating entries…', ms: Math.round(estMs * 0.35) },
+            { pct: 65, label: 'Writing to ledger…', ms: Math.round(estMs * 0.55) },
+            { pct: 82, label: 'Indexing keywords (FTS5)…', ms: Math.round(estMs * 0.72) },
+            { pct: 91, label: 'Generating embeddings…', ms: Math.round(estMs * 0.85) },
+          ];
+
+      function setImportProgress(pct, label) {
+        if (progBar)   progBar.style.width  = pct + '%';
+        if (progPct)   progPct.textContent  = pct + '%';
+        if (progStage) progStage.textContent = label;
+      }
+
+      var timers = importStages.map(function(s) {
+        return setTimeout(function() { setImportProgress(s.pct, s.label); }, s.ms);
+      });
+
+      function finishImportProgress(ok, label) {
+        timers.forEach(function(t) { clearTimeout(t); });
+        if (progBar) progBar.classList.add('done');
+        setImportProgress(100, ok ? '✅ ' + (label || 'Done') : '❌ ' + (label || 'Failed'));
+        setTimeout(function() {
+          if (progWrap) progWrap.style.display = 'none';
+          if (progBar)  { progBar.classList.remove('done'); progBar.style.width = '0%'; }
+          if (progPct)  progPct.textContent = '0%';
+          if (progStage) progStage.textContent = 'Reading file…';
+        }, 2500);
+      }
+
+      try {
+        var endpoint, body, headers;
+
+        if (_importPickedFile) {
+          var content = await _importPickedFile.text();
+          endpoint = '/api/import-upload';
+          headers  = {'Content-Type':'application/json'};
+          body     = JSON.stringify({
+            filename: _importPickedFile.name,
+            content:  content,
+            format:   format,
+            project:  project,
+            dryRun:   dryRun
+          });
+        } else {
+          endpoint = '/api/import';
+          headers  = {'Content-Type':'application/json'};
+          body     = JSON.stringify({ path: filePath, format: format, project: project, dryRun: dryRun });
+        }
+
+        var res = await fetch(endpoint, { method: 'POST', headers: headers, body: body });
+        var d   = await res.json();
+
+        if (res.ok && d.ok) {
+          finishImportProgress(true, dryRun ? 'Validation complete' : 'Import complete');
+          resultEl.style.display    = 'block';
+          resultEl.style.background = 'rgba(16,185,129,0.1)';
+          resultEl.style.border     = '1px solid rgba(16,185,129,0.25)';
+          resultEl.style.color      = 'var(--accent-green)';
+          resultEl.innerHTML = '✅ ' + escapeHtml(d.message) +
+            '<div style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted)">' +
+            'Conversations: ' + (d.conversationCount || 0) + ' · Turns: ' + (d.successCount || 0) +
+            (d.skipCount  ? ' · Skipped: '  + d.skipCount  : '') +
+            (d.failCount  ? ' · Failed: '   + d.failCount  : '') + '</div>';
+          if (!dryRun) { showToast('✓ Import complete'); loadProject(); }
+        } else {
+          finishImportProgress(false, d.error || 'Import failed');
+          resultEl.style.display    = 'block';
+          resultEl.style.background = 'rgba(244,63,94,0.1)';
+          resultEl.style.border     = '1px solid rgba(244,63,94,0.25)';
+          resultEl.style.color      = 'var(--accent-rose)';
+          resultEl.innerHTML = '❌ ' + escapeHtml(d.error || 'Import failed');
+        }
+      } catch(e) {
+        finishImportProgress(false, e.message);
+        resultEl.style.display    = 'block';
+        resultEl.style.background = 'rgba(244,63,94,0.1)';
+        resultEl.style.border     = '1px solid rgba(244,63,94,0.25)';
+        resultEl.style.color      = 'var(--accent-rose)';
+        resultEl.innerHTML = '❌ ' + escapeHtml(e.message);
+      } finally {
+        importBtn.disabled = false;
+        dryBtn.disabled    = false;
+        activeBtn.innerHTML = origText;
       }
     }
 
@@ -1432,8 +2167,55 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     // Allow Enter key in select to trigger load
     document.getElementById('projectSelect').addEventListener('change', loadProject);
 
-    // ─── Neural Graph (v2.3.0 / v5.1) ───
-    // Renders a force-directed graph of projects ↔ keywords ↔ categories
+    // ─── v6.2: Decay View State ───
+    var _decayViewActive = false;
+    function toggleDecayView() {
+      _decayViewActive = !_decayViewActive;
+      var btn = document.getElementById('decayToggle');
+      if (btn) {
+        btn.style.background = _decayViewActive ? 'rgba(139,92,246,0.25)' : 'transparent';
+        btn.style.color = _decayViewActive ? 'var(--accent-purple)' : 'var(--text-secondary)';
+        btn.style.borderColor = _decayViewActive ? 'var(--accent-purple)' : 'rgba(139,92,246,0.3)';
+      }
+      loadGraph();
+    }
+
+
+    /**
+     * Compute decay color for a node.
+     * Fresh (0 days) → bright green (#10b981)
+     * Stale (30+ days) → dim gray (#334155)
+     * Graduated nodes (importance >= 7) stay vibrant purple regardless of age.
+     */
+    function getDecayColor(daysSince, decayedImportance, group, baseImportance) {
+      // Graduated nodes: always vibrant (check BASE importance, not decayed)
+      if (baseImportance !== null && baseImportance !== undefined && baseImportance >= 7) {
+        return { bg: '#8b5cf6', border: '#7c3aed', fontColor: '#f1f5f9' };
+      }
+      // Clamp days to 0-60 range for interpolation
+      var d = Math.min(60, Math.max(0, daysSince || 0));
+      var t = d / 60; // 0 = fresh, 1 = stale
+      // Interpolate: green → amber → gray
+      var r, g, b;
+      if (t < 0.5) {
+        // green (#10b981) → amber (#f59e0b)
+        var tt = t * 2;
+        r = Math.round(16 + (245 - 16) * tt);
+        g = Math.round(185 + (158 - 185) * tt);
+        b = Math.round(129 + (11 - 129) * tt);
+      } else {
+        // amber (#f59e0b) → gray (#334155)
+        var tt = (t - 0.5) * 2;
+        r = Math.round(245 + (51 - 245) * tt);
+        g = Math.round(158 + (65 - 158) * tt);
+        b = Math.round(11 + (85 - 11) * tt);
+      }
+      var hex = '#' + [r, g, b].map(function(c) { return c.toString(16).padStart(2, '0'); }).join('');
+      var fontBrightness = (t < 0.7) ? '#0f172a' : '#94a3b8';
+      return { bg: hex, border: hex, fontColor: fontBrightness };
+    }
+
+    // ─── Neural Graph (v2.3.0 / v5.1 / v6.2 Decay Heatmap) ───
     async function loadGraph() {
       var container = document.getElementById('network-container');
       if (!container) return;
@@ -1455,19 +2237,45 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         // Empty state — no ledger entries yet
         if (data.nodes.length === 0) {
           container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.85rem">No knowledge associations found yet.</div>';
+          var dens = document.getElementById('densityStatContainer');
+          if (dens) dens.style.display = 'none';
           return;
         }
 
+        // Calculate Memory Density before truncation
+        var graduatedNodes = data.nodes.filter(function(n) { return (n.value || 0) >= 7; }).length;
+        var denPercentage = Math.round((graduatedNodes / data.nodes.length) * 100);
+        var dens = document.getElementById('densityStatContainer');
+        if (dens) {
+           dens.style.display = 'block';
+           dens.innerHTML = '<strong>Memory Density:</strong> ' + denPercentage + '% <span title="Ratio of Highly-Reinforced (Graduated) knowledge vs raw concepts" style="cursor:help">🧠</span> (' + graduatedNodes + ' / ' + data.nodes.length + ' ideas graduated)';
+        }
+
         // Safety cap: Vis.js Barnes-Hut physics blows the call stack at ~400+ nodes.
-        // Truncate to 200 nodes max, keeping project and category nodes first.
         var MAX_NODES = 200;
         if (data.nodes.length > MAX_NODES) {
-          // Priority: project > category > keyword
           var priority = { project: 0, category: 1, keyword: 2 };
           data.nodes.sort(function(a, b) { return (priority[a.group] || 9) - (priority[b.group] || 9); });
           var kept = new Set(data.nodes.slice(0, MAX_NODES).map(function(n) { return n.id; }));
           data.nodes = data.nodes.slice(0, MAX_NODES);
           data.edges = data.edges.filter(function(e) { return kept.has(e.from) && kept.has(e.to); });
+        }
+
+        // ── v6.2: Apply decay heatmap coloring when toggle is active ──
+        if (_decayViewActive) {
+          data.nodes.forEach(function(n) {
+            var dc = getDecayColor(n.days_since_access, n.decayed_importance, n.group, n.base_importance);
+            n.color = { background: dc.bg, border: dc.border };
+            n.font = { color: dc.fontColor, face: 'Inter', size: n.group === 'project' ? 14 : (n.group === 'category' ? 12 : 10) };
+            // Add decay tooltip
+            var daysText = (n.days_since_access !== null && n.days_since_access !== undefined)
+              ? n.days_since_access + 'd ago'
+              : 'unknown';
+            var decayText = (n.decayed_importance !== null && n.decayed_importance !== undefined)
+              ? ' · importance: ' + n.decayed_importance
+              : '';
+            n.title = n.label + ' (' + daysText + decayText + ')';
+          });
         }
 
         // Vis.js dark-theme config matching the glassmorphism palette
@@ -1542,6 +2350,25 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             input.value = nodeData.label;
             input.dataset.oldId = clickedId;
             input.dataset.group = nodeData.group;
+            
+            // Populate merge dropdown
+            var mergeSelect = document.getElementById('nodeMergeSelect');
+            if (mergeSelect) {
+              var sameGroupNodes = allNodes.filter(function(n) { return n.group === nodeData.group && n.id !== clickedId; });
+              sameGroupNodes.sort(function(a, b) { return a.label.localeCompare(b.label); });
+              mergeSelect.innerHTML = '<option value="">-- Select node to merge into --</option>' + 
+                sameGroupNodes.map(function(n) { return '<option value="' + escapeHtml(n.label) + '">' + escapeHtml(n.label) + '</option>'; }).join('');
+              mergeSelect.value = "";
+            }
+            
+            var tmBtn = document.getElementById('testMeBtn');
+            var tmCont = document.getElementById('testMeContainer');
+            if (tmCont) tmCont.innerHTML = '';
+            if (tmBtn) {
+              tmBtn.disabled = false;
+              tmBtn.textContent = '📝 Test Me';
+              tmBtn.style.opacity = '1';
+            }
             
             document.getElementById('nodeEditorPanel').style.display = 'block';
           } else {
@@ -1627,6 +2454,180 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       } finally {
         btn.disabled = false;
         btn.textContent = 'Apply';
+      }
+    }
+
+    async function triggerEdgeSynthesis() {
+      var gpf = document.getElementById('graphProjectFilter');
+      var ps = document.getElementById('projectSelect');
+      var project = (gpf ? gpf.value : '') || (ps ? ps.value : '');
+      if (!project) {
+        alert("Please select an active project first.");
+        return;
+      }
+      
+      var btn = document.querySelector('button[onclick="triggerEdgeSynthesis()"]');
+      var status = document.getElementById('synthesisStatus');
+      if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+      if (status) status.textContent = 'running...';
+      
+      try {
+        var res = await fetch('/api/graph/synthesize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: project, randomize_selection: true, max_entries: 50 })
+        });
+        
+        var data = await res.json();
+        if (res.ok && data.success) {
+          if (status) status.textContent = '✅ Created ' + data.newLinks + ' links (Scanned: ' + data.entriesScanned + ')';
+          setTimeout(loadGraph, 1000); // Reload graph to show new edges
+          loadGraphMetrics(); // Refresh health metrics
+        } else {
+          showToast('❌ Edge Synthesis Error: ' + (data.error || 'Failed'), true);
+          if (status) status.textContent = '❌ Failed';
+        }
+      } catch (e) {
+        showToast('❌ Edge Synthesis Error: ' + e.message, true);
+        if (status) status.textContent = '❌ Error';
+      } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+        setTimeout(function() {
+          if (status) status.textContent = '';
+        }, 5000);
+      }
+    }
+
+
+
+    async function triggerCognitiveRoute() {
+      var input = document.getElementById('nodeEditorInput');
+      var state = input && input.dataset && input.dataset.oldId ? input.dataset.oldId : '';
+      var _gpf = document.getElementById('graphProjectFilter');
+      var _ps = document.getElementById('projectSelect');
+      var project = (_gpf ? _gpf.value : '') || (_ps ? _ps.value : '');
+      var container = document.getElementById('cognitiveRouteContainer');
+      var btn = document.getElementById('cognitiveRouteBtn');
+
+      if (!project || !state) {
+        if (container) {
+          container.innerHTML = '<div style="font-size:0.75rem;color:var(--accent-rose);">Select a project and click a graph node first.</div>';
+        }
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '...';
+      }
+      if (container) {
+        container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-muted);text-align:center;padding:0.6rem 0;">Resolving cognitive route...</div>';
+      }
+
+      try {
+        var url = '/api/graph/cognitive-route' +
+          '?project=' + encodeURIComponent(project) +
+          '&state=' + encodeURIComponent('State:' + state) +
+          '&role=' + encodeURIComponent('Role:dev') +
+          '&action=' + encodeURIComponent('Action:inspect') +
+          '&explain=true';
+
+        var res = await fetch(url);
+        var data = await res.json();
+
+        if (!res.ok || data.isError) {
+          if (container) {
+            container.innerHTML = '<div style="font-size:0.75rem;color:var(--accent-rose);">' + escapeHtml(data.error || data.text || 'Cognitive route failed') + '</div>';
+          }
+          return;
+        }
+
+        if (container) {
+          var txt = data.text || '';
+          container.innerHTML = '<pre style="margin:0;white-space:pre-wrap;font-size:0.72rem;line-height:1.45;background:var(--bg-secondary);border:1px solid var(--border-subtle);border-radius:6px;padding:0.6rem;color:var(--text-secondary);">' + escapeHtml(txt) + '</pre>';
+        }
+      } catch (err) {
+        if (container) {
+          container.innerHTML = '<div style="font-size:0.75rem;color:var(--accent-rose);">' + escapeHtml(err.message || 'Route error') + '</div>';
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🧭 Route';
+        }
+      }
+    }
+
+    async function triggerTestMe() {
+      var input = document.getElementById('nodeEditorInput');
+      var oldId = input.dataset.oldId;
+      var _gpf = document.getElementById('graphProjectFilter');
+      var _ps = document.getElementById('projectSelect');
+      var project = (_gpf ? _gpf.value : '') || (_ps ? _ps.value : '');
+      
+      if (!oldId || !project) return;
+      
+      var btn = document.getElementById('testMeBtn');
+      var container = document.getElementById('testMeContainer');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '...';
+      }
+      if (container) {
+        container.innerHTML = '<div style="font-size:0.75rem; color:var(--text-muted); text-align:center; padding:1rem 0;">Generating questions...</div>';
+      }
+      
+      try {
+        var res = await fetch('/api/graph/test-me?id=' + encodeURIComponent(oldId) + '&project=' + encodeURIComponent(project));
+        var data = await res.json();
+        
+        if (data.reason === 'no_api_key') {
+          if (btn) {
+            btn.disabled = true;
+            btn.title = 'Requires AI key to generate quizzes';
+            btn.style.opacity = '0.5';
+          }
+          if (container) container.innerHTML = '';
+          return;
+        } else if (data.reason === 'generation_failed' || !data.questions || data.questions.length === 0) {
+          showToast('Failed to generate quizzes. Try again.', true);
+          if (container) container.innerHTML = '';
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '📝 Test Me';
+          }
+          return;
+        }
+        
+        if (container) {
+          container.innerHTML = '';
+          data.questions.forEach(function(qa) {
+            var card = document.createElement('div');
+            card.style.background = 'var(--bg-secondary)';
+            card.style.border = '1px solid var(--border-subtle)';
+            card.style.borderRadius = '6px';
+            card.style.padding = '0.6rem';
+            
+            card.innerHTML = 
+              '<div style="font-size:0.8rem; font-weight:600; color:var(--text-primary); margin-bottom:0.4rem;">' + escapeHtml(qa.q) + '</div>' +
+              '<div class="testme-ans" style="display:none; font-size:0.75rem; color:var(--text-secondary); margin-top:0.4rem; padding-top:0.4rem; border-top:1px dashed var(--border-subtle);">' +
+                escapeHtml(qa.a) + 
+              '</div>' +
+              '<button onclick="this.previousElementSibling.style.display=&apos;block&apos;; this.style.display=&apos;none&apos;" style="background:transparent; border:none; color:var(--accent-purple); font-size:0.7rem; cursor:pointer; padding:0; margin-top:0.3rem;">Show Answer</button>';
+              
+            container.appendChild(card);
+          });
+        }
+        
+      } catch (err) {
+        showToast('Error generating quiz', true);
+        if (container) container.innerHTML = '';
+      } finally {
+        if (btn && !(btn.title && btn.title.includes('Requires AI key'))) {
+          btn.textContent = '📝 Test Me';
+          btn.disabled = false;
+        }
+        loadGraphMetrics(); // Refresh health metrics
       }
     }
 
@@ -1882,7 +2883,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
       async function loadSettings() {
       try {
-        var res = await fetch('/api/settings');
+        var res = await fetch('/api/settings?t=' + Date.now());
         var data = await res.json();
         var s = data.settings || {};
         // Runtime toggles
@@ -1898,6 +2899,8 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         // Boot toggles
         if (s.hivemind_enabled === 'true') document.getElementById('toggle-hivemind').classList.add('active');
         else document.getElementById('toggle-hivemind').classList.remove('active');
+        if (s.task_router_enabled === 'true') document.getElementById('toggle-task-router').classList.add('active');
+        else document.getElementById('toggle-task-router').classList.remove('active');
         
         // Storage Backend
         if (s.PRISM_STORAGE) {
@@ -1943,30 +2946,44 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
     function toggleSetting(key, el) {
       var isActive = el.classList.toggle('active');
-      saveSetting(key, isActive ? 'true' : 'false');
+      saveSetting(key, isActive ? 'true' : 'false').then(function(ok) {
+        if (!ok) el.classList.toggle('active'); // rollback on failure
+      });
     }
     function toggleBootSetting(key, el) {
       var isActive = el.classList.toggle('active');
-      saveSetting(key, isActive ? 'true' : 'false');
-      showToast('Saved. Restart your AI client for this to take effect.');
+      saveSetting(key, isActive ? 'true' : 'false').then(function(ok) {
+        if (!ok) {
+          el.classList.toggle('active'); // rollback on failure
+        } else {
+          showToast('Saved. Restart your AI client for this to take effect.');
+        }
+      });
     }
     function saveBootSetting(key, value) {
-      saveSetting(key, value);
-      showToast('Saved. Restart your AI client for this to take effect.');
+      saveSetting(key, value).then(function(ok) {
+        if (ok) showToast('Saved. Restart your AI client for this to take effect.');
+      });
     }
 
     async function saveSetting(key, value) {
       try {
-        await fetch('/api/settings', {
+        var res = await fetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: key, value: value })
         });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         if (key === 'dashboard_theme') applyTheme(value);
         // Refresh identity chip if role or name changed
         if (key === 'default_role' || key === 'agent_name') loadIdentityChip();
         showToast('Saved ✓');
-      } catch(e) { console.error('Setting save failed:', e); }
+        return true;
+      } catch(e) {
+        console.error('Setting save failed:', e);
+        showToast('⚠️ Save failed — check server connection', true);
+        return false;
+      }
     }
 
     /**
@@ -1985,7 +3002,9 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       setTimeout(function() { toast.classList.remove('show'); }, 2000);
     }
 
-    // ─── Hivemind Radar (v3.0) ───
+    // ─── Hivemind Radar (v5.3 — Health Watchdog) ───
+    var hivemindRefreshTimer = null;
+
     async function loadTeam() {
       var project = document.getElementById('projectSelect').value;
       if (!project) return;
@@ -1997,15 +3016,36 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         var list = document.getElementById('teamList');
         if (team.length > 0) {
           var roleIcons = {dev:'🛠️',qa:'🔍',pm:'📋',lead:'🏗️',security:'🔒',ux:'🎨',cmo:'📢'};
+          var statusColors = {
+            active: '#10b981', stale: '#f59e0b', frozen: '#ef4444',
+            overdue: '#f97316', looping: '#a855f7', idle: '#64748b', shutdown: '#374151'
+          };
+          var statusLabels = {
+            active: '🟢', stale: '🟡', frozen: '🔴',
+            overdue: '⏰', looping: '🔄', idle: '💤', shutdown: '⚫'
+          };
           list.innerHTML = team.map(function(a) {
             var icon = roleIcons[a.role] || '🤖';
             var ago = a.last_heartbeat ? timeAgo(a.last_heartbeat) : '?';
+            var dotColor = statusColors[a.status] || '#64748b';
+            var statusIcon = statusLabels[a.status] || '❓';
+            var loopBadge = (a.loop_count && a.loop_count >= 3)
+              ? ' <span style="color:#a855f7;font-size:0.75rem">🔄 ' + a.loop_count + 'x</span>'
+              : '';
+            var dotClass = 'pulse-dot' + (a.status === 'looping' ? ' looping' : '');
             return '<li class="team-item">' +
-              '<span class="pulse-dot"></span>' +
+              '<span class="' + dotClass + '" style="background:' + dotColor + '"></span>' +
               '<span class="team-role">' + icon + ' ' + escapeHtml(a.role) + '</span>' +
-              '<span class="team-task">' + escapeHtml(a.current_task || 'idle') + '</span>' +
+              '<span class="team-status" title="' + (a.status || 'active') + '">' + statusIcon + '</span>' +
+              '<span class="team-task">' + escapeHtml(a.current_task || 'idle') + loopBadge + '</span>' +
               '<span class="team-heartbeat">' + ago + '</span></li>';
           }).join('');
+          var healthyCt = team.filter(function(a){ return a.status === 'active' || a.status === 'idle'; }).length;
+          var warnCt = team.length - healthyCt;
+          var summary = team.length + ' agent(s)';
+          if (warnCt > 0) summary += ' | ⚠️ ' + warnCt + ' need attention';
+          summary += ' | 🐝 Watchdog active';
+          list.innerHTML += '<li style="color:var(--text-muted);font-size:0.75rem;text-align:center;padding:0.5rem;border-top:1px solid var(--border)">' + summary + '</li>';
           card.style.display = 'block';
         } else {
           list.innerHTML = '<li style="color:var(--text-muted);font-size:0.85rem;text-align:center;padding:1rem">No active agents on this project.</li>';
@@ -2016,6 +3056,295 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       }
     }
 
+    // v5.3: Auto-refresh Hivemind Radar every 15s
+    function startHivemindRefresh() {
+      stopHivemindRefresh();
+      hivemindRefreshTimer = setInterval(loadTeam, 15000);
+    }
+    function stopHivemindRefresh() {
+      if (hivemindRefreshTimer) { clearInterval(hivemindRefreshTimer); hivemindRefreshTimer = null; }
+    }
+    if (document.getElementById('hivemindCard')) {
+      startHivemindRefresh();
+    }
+
+    // ─── Background Scheduler Status (v5.4) ───
+    async function loadSchedulerStatus() {
+      var el = document.getElementById('schedulerContent');
+      if (!el) return;
+      try {
+        var res = await fetch('/api/scheduler');
+        var data = await res.json();
+        if (!data.running) {
+          var offHtml = '<div style="color:var(--text-muted)">⏸ Scheduler not running. Set <code style="font-family:var(--font-mono);font-size:0.75rem">PRISM_SCHEDULER_ENABLED=true</code> to enable.</div>';
+          offHtml += '<div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-glass); font-size: 0.85em; color: var(--text-muted);">' +
+            '<strong>Web Scholar:</strong> ' + (data.scholarRunning ? '🟢 Enabled' : '🔴 Disabled') +
+            (data.scholarIntervalMs ? ' (every ' + Math.round(data.scholarIntervalMs / 60000) + 'm)' : '') +
+            '</div>';
+          el.innerHTML = offHtml;
+          return;
+        }
+        var intervalH = Math.round(data.intervalMs / 3600000);
+        var parts = ['<div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem">'];
+        parts.push('<span style="color:var(--accent-green)">🟢 Running</span>');
+        parts.push('<span>Interval: <strong>' + intervalH + 'h</strong></span>');
+        if (data.startedAt) {
+          parts.push('<span>Started: ' + formatDate(data.startedAt) + '</span>');
+        }
+        parts.push('</div>');
+
+        if (data.lastSweep) {
+          var ls = data.lastSweep;
+          parts.push('<div style="border-top:1px solid var(--border-glass);padding-top:0.5rem;margin-top:0.25rem">');
+          parts.push('<div style="margin-bottom:0.3rem;color:var(--text-secondary)">Last sweep: ' + formatDate(ls.completedAt) + ' (' + ls.durationMs + 'ms)</div>');
+          parts.push('<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.3rem;font-size:0.75rem">');
+          var t = ls.tasks;
+          if (t.ttlSweep.ran) {
+            parts.push('<div>🗓️ TTL: ' + t.ttlSweep.totalExpired + ' expired (' + t.ttlSweep.projectsSwept + ' projects)</div>');
+          }
+          if (t.importanceDecay.ran) {
+            parts.push('<div>📉 Decay: ' + t.importanceDecay.projectsDecayed + ' projects</div>');
+          }
+          if (t.compaction.ran) {
+            parts.push('<div>🧹 Compact: ' + t.compaction.projectsCompacted + ' compacted</div>');
+          }
+          if (t.deepPurge.ran) {
+            var bytes = t.deepPurge.reclaimedBytes;
+            var bytesStr = bytes > 1048576 ? (bytes / 1048576).toFixed(1) + 'MB' : bytes > 1024 ? (bytes / 1024).toFixed(1) + 'KB' : bytes + 'B';
+            parts.push('<div>💾 Purge: ' + t.deepPurge.purged + ' entries (' + bytesStr + ' freed)</div>');
+          }
+          parts.push('</div>');
+          // Show errors if any
+          var errors = [t.ttlSweep.error, t.importanceDecay.error, t.compaction.error, t.deepPurge.error].filter(Boolean);
+          if (errors.length > 0) {
+            parts.push('<div style="color:var(--accent-rose);margin-top:0.3rem;font-size:0.7rem">⚠️ ' + errors.join(' | ') + '</div>');
+          }
+          parts.push('</div>');
+        } else {
+          parts.push('<div style="color:var(--text-muted)">No sweep completed yet. First sweep runs 5s after start.</div>');
+        }
+
+        var scholarStatusHtml = '<div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-glass); font-size: 0.85em; color: var(--text-muted);">' +
+          '<strong>Web Scholar:</strong> ' + (data.scholarRunning ? '🟢 Enabled' : '🔴 Disabled') +
+          (data.scholarIntervalMs ? ' (every ' + Math.round(data.scholarIntervalMs / 60000) + 'm)' : '') +
+          '</div>';
+        parts.push(scholarStatusHtml);
+
+        el.innerHTML = parts.join('');
+      } catch(e) {
+        el.innerHTML = '<div style="color:var(--text-muted)">Scheduler status unavailable</div>';
+      }
+    }
+
+    async function loadGraphMetrics() {
+      var el = document.getElementById('graphMetricsContent');
+      var warn = document.getElementById('graphHealthWarnings');
+      if (!el) return;
+      try {
+        var res = await fetch('/api/graph/metrics');
+        var m = await res.json();
+        var parts = [];
+
+        // Synthesis row
+        parts.push('<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;margin-bottom:0.5rem">');
+        parts.push('<div><strong>Synthesis</strong></div>');
+        parts.push('<div><strong>Test Me</strong></div>');
+
+        // Synthesis stats
+        parts.push('<div style="font-size:0.75rem">');
+        parts.push('Runs: <strong>' + m.synthesis.runs_total + '</strong>');
+        if (m.synthesis.runs_failed > 0) parts.push(' (<span style="color:var(--accent-rose)">' + m.synthesis.runs_failed + ' failed</span>)');
+        parts.push('<br>Links created: <strong>' + m.synthesis.links_created_total + '</strong>');
+        if (m.synthesis.last_run_at) {
+          var synthStatus = m.synthesis.last_status === 'ok'
+            ? '<span style="color:var(--accent-green)">✓ ok</span>'
+            : '<span style="color:var(--accent-rose)">✗ error</span>';
+          parts.push('<br>Last: ' + synthStatus + ' (' + m.synthesis.last_links_created + ' links)');
+          parts.push('<br><span style="color:var(--text-muted)">' + timeAgo(m.synthesis.last_run_at) + '</span>');
+        }
+        if (m.synthesis.duration_p50_ms !== null) {
+          parts.push('<br>p50: ' + m.synthesis.duration_p50_ms + 'ms');
+        }
+        parts.push('</div>');
+
+        // Test-Me stats
+        parts.push('<div style="font-size:0.75rem">');
+        parts.push('Requests: <strong>' + m.testMe.requests_total + '</strong>');
+        parts.push('<br><span style="color:var(--accent-green)">✓ ' + m.testMe.success_total + '</span>');
+        if (m.testMe.no_api_key_total > 0) parts.push(' <span style="color:var(--accent-amber)">🔑 ' + m.testMe.no_api_key_total + '</span>');
+        if (m.testMe.generation_failed_total > 0) parts.push(' <span style="color:var(--accent-rose)">✗ ' + m.testMe.generation_failed_total + '</span>');
+        if (m.testMe.last_run_at) {
+          var tmStatus = m.testMe.last_status === 'success'
+            ? '<span style="color:var(--accent-green)">✓</span>'
+            : m.testMe.last_status === 'no_api_key'
+              ? '<span style="color:var(--accent-amber)">🔑</span>'
+              : '<span style="color:var(--accent-rose)">✗</span>';
+          parts.push('<br>Last: ' + tmStatus + ' ' + m.testMe.last_status);
+          parts.push('<br><span style="color:var(--text-muted)">' + timeAgo(m.testMe.last_run_at) + '</span>');
+        }
+        if (m.testMe.duration_p50_ms !== null) {
+          parts.push('<br>p50: ' + m.testMe.duration_p50_ms + 'ms');
+        }
+        parts.push('</div>');
+        parts.push('</div>');
+
+        // Pruning summary row
+        if (m.pruning && m.pruning.last_run_at) {
+          parts.push('<div style="border-top:1px solid var(--border-glass);padding-top:0.4rem;margin-top:0.2rem;font-size:0.75rem">');
+          parts.push('🧹 Pruning: ' + m.pruning.projects_considered_last + ' considered, ' + m.pruning.projects_pruned_last + ' impacted');
+          parts.push('<br>Links: ' + m.pruning.links_soft_pruned_last + ' soft-pruned / ' + m.pruning.links_scanned_last + ' scanned');
+          var pruneRatio = m.pruning.links_scanned_last > 0
+            ? Math.round((m.pruning.links_soft_pruned_last / m.pruning.links_scanned_last) * 100)
+            : 0;
+          parts.push(' (' + pruneRatio + '%)');
+          parts.push('<br>Threshold: ' + m.pruning.min_strength_last + ' | ' + m.pruning.duration_ms_last + 'ms');
+
+          var pruneSkipParts = [];
+          if (m.pruning.skipped_backpressure_last > 0) pruneSkipParts.push('⏳ ' + m.pruning.skipped_backpressure_last + ' backpressure');
+          if (m.pruning.skipped_cooldown_last > 0) pruneSkipParts.push('🕒 ' + m.pruning.skipped_cooldown_last + ' cooldown');
+          if (m.pruning.skipped_budget_last > 0) pruneSkipParts.push('⛽ ' + m.pruning.skipped_budget_last + ' budget');
+          if (pruneSkipParts.length > 0) {
+            parts.push('<br><span style="color:var(--accent-amber)">Skipped: ' + pruneSkipParts.join(' · ') + '</span>');
+          }
+
+          parts.push('<br><span style="color:var(--text-muted)">' + timeAgo(m.pruning.last_run_at) + '</span>');
+          parts.push('</div>');
+        }
+
+        // SLO derivations row (WS4)
+        if (m.slo) {
+          parts.push('<div style="border-top:1px solid var(--border-glass);padding-top:0.4rem;margin-top:0.2rem;font-size:0.75rem">');
+          parts.push('<strong>SLO</strong>');
+
+          // Synthesis success rate — color-coded
+          if (m.slo.synthesis_success_rate !== null) {
+            var rate = m.slo.synthesis_success_rate;
+            var ratePct = Math.round(rate * 100);
+            var rateColor = rate >= 0.95 ? 'var(--accent-green)' : rate >= 0.80 ? 'var(--accent-amber)' : 'var(--accent-rose)';
+            parts.push('<br>Success rate: <span style="color:' + rateColor + ';font-weight:600">' + ratePct + '%</span>');
+          } else {
+            parts.push('<br>Success rate: <span style="color:var(--text-muted)">—</span>');
+          }
+
+          // Net new links
+          var netNew = m.slo.net_new_links_last_sweep;
+          var netColor = netNew > 0 ? 'var(--accent-green)' : netNew < 0 ? 'var(--accent-rose)' : 'var(--text-muted)';
+          var netSign = netNew > 0 ? '+' : '';
+          parts.push(' · Net links: <span style="color:' + netColor + '">' + netSign + netNew + '</span>');
+
+          // Prune ratio
+          var pruneRatioPct = Math.round(m.slo.prune_ratio_last_sweep * 100);
+          parts.push(' · Prune: ' + pruneRatioPct + '%');
+
+          // Sweep duration
+          if (m.slo.scheduler_sweep_duration_ms_last > 0) {
+            parts.push(' · Sweep: ' + m.slo.scheduler_sweep_duration_ms_last + 'ms');
+          }
+
+          parts.push('</div>');
+        }
+
+        // Cognitive Routing row (v6.5)
+        if (m.cognitive && m.cognitive.evaluations_total > 0) {
+          parts.push('<div style="border-top:1px solid var(--border-glass);padding-top:0.4rem;margin-top:0.2rem;font-size:0.75rem">');
+          parts.push('<strong>🧠 Cognitive Routing</strong>');
+          parts.push('<br>Evaluations: <strong>' + m.cognitive.evaluations_total + '</strong>');
+
+          // Route distribution bar
+          var cogTotal = m.cognitive.evaluations_total;
+          var autoP = Math.round((m.cognitive.route_auto_total / cogTotal) * 100);
+          var clarP = Math.round((m.cognitive.route_clarify_total / cogTotal) * 100);
+          var fallP = 100 - autoP - clarP;
+          parts.push('<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin:4px 0;background:var(--surface-glass)">');
+          if (autoP > 0) parts.push('<div style="width:' + autoP + '%;background:var(--accent-green)" title="Auto: ' + autoP + '%"></div>');
+          if (clarP > 0) parts.push('<div style="width:' + clarP + '%;background:var(--accent-amber)" title="Clarify: ' + clarP + '%"></div>');
+          if (fallP > 0) parts.push('<div style="width:' + fallP + '%;background:var(--accent-rose)" title="Fallback: ' + fallP + '%"></div>');
+          parts.push('</div>');
+          parts.push('<span style="color:var(--accent-green)">● Auto ' + autoP + '%</span>');
+          parts.push(' <span style="color:var(--accent-amber)">● Clarify ' + clarP + '%</span>');
+          parts.push(' <span style="color:var(--accent-rose)">● Fallback ' + fallP + '%</span>');
+
+          // Rates
+          if (m.cognitive.ambiguity_rate !== null) {
+            var ambPct = Math.round(m.cognitive.ambiguity_rate * 100);
+            var ambColor = ambPct > 40 ? 'var(--accent-rose)' : ambPct > 20 ? 'var(--accent-amber)' : 'var(--accent-green)';
+            parts.push('<br>Ambiguity: <span style="color:' + ambColor + ';font-weight:600">' + ambPct + '%</span>');
+          }
+          if (m.cognitive.fallback_rate !== null) {
+            var fbPct = Math.round(m.cognitive.fallback_rate * 100);
+            var fbColor = fbPct > 30 ? 'var(--accent-rose)' : fbPct > 15 ? 'var(--accent-amber)' : 'var(--accent-green)';
+            parts.push(' · Fallback: <span style="color:' + fbColor + ';font-weight:600">' + fbPct + '%</span>');
+          }
+
+          // Convergence steps
+          if (m.cognitive.median_convergence_steps !== null) {
+            parts.push('<br>Convergence: ' + m.cognitive.median_convergence_steps + ' steps (avg)');
+          }
+          if (m.cognitive.duration_p50_ms !== null) {
+            parts.push(' · p50: ' + m.cognitive.duration_p50_ms + 'ms');
+          }
+
+          // Last evaluation
+          if (m.cognitive.last_run_at) {
+            var lastRoute = m.cognitive.last_route || '—';
+            var lastConcept = m.cognitive.last_concept || '(none)';
+            var lastConf = m.cognitive.last_confidence !== null ? Math.round(m.cognitive.last_confidence * 100) + '%' : '—';
+            parts.push('<br>Last: ' + lastRoute + ' → ' + lastConcept + ' (' + lastConf + ')');
+            parts.push('<br><span style="color:var(--text-muted)">' + timeAgo(m.cognitive.last_run_at) + '</span>');
+          }
+
+          parts.push('</div>');
+        }
+
+
+        el.innerHTML = parts.join('');
+
+        // Warning badges
+        if (warn) {
+          var badges = [];
+          if (m.warnings.synthesis_quality_warning) {
+            badges.push('<span style="background:var(--accent-amber);color:#000;padding:2px 6px;border-radius:3px;font-size:0.65rem;font-weight:600" title="Over 85% of synthesis candidates are below threshold">⚠ Quality</span>');
+          }
+          if (m.warnings.testme_provider_warning) {
+            badges.push('<span style="background:var(--accent-rose);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.65rem;font-weight:600" title="No API key configured — Test Me cannot generate quizzes">🔑 No Key</span>');
+          }
+          if (m.warnings.synthesis_failure_warning) {
+            badges.push('<span style="background:var(--accent-rose);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.65rem;font-weight:600" title="Over 20% of synthesis runs are failing">⚠ Failures</span>');
+          }
+          if (m.warnings.cognitive_fallback_rate_warning) {
+            badges.push('<span style="background:var(--accent-rose);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.65rem;font-weight:600" title="Over 30% of cognitive routes land on FALLBACK">⚠ Cog Fallback</span>');
+          }
+          if (m.warnings.cognitive_ambiguity_rate_warning) {
+            badges.push('<span style="background:var(--accent-amber);color:#000;padding:2px 6px;border-radius:3px;font-size:0.65rem;font-weight:600" title="Over 40% of cognitive evaluations are ambiguous">⚠ Cog Ambiguity</span>');
+          }
+          warn.innerHTML = badges.join('');
+        }
+      } catch(e) {
+        el.innerHTML = '<div style="color:var(--text-muted)">Graph metrics unavailable</div>';
+      }
+    }
+
+    async function triggerWebScholar() {
+      var btn = document.getElementById('scholarBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '🔄 Triggering...'; }
+      try {
+        var res = await fetch('/api/scholar/trigger', { method: 'POST' });
+        var data = await res.json();
+        showFixedToast(data.message || (data.ok ? 'Scholar triggered.' : 'Scholar failed.'), data.ok);
+      } catch (e) {
+        showFixedToast('Scholar trigger failed.', false);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🧠 Scholar (Run)'; }
+      }
+    }
+
+    // Load scheduler status on page load
+    loadSchedulerStatus();
+    loadGraphMetrics();
+    // Auto-refresh scheduler status every 60s
+    setInterval(loadSchedulerStatus, 60000);
+    setInterval(loadGraphMetrics, 60000);
+
     function timeAgo(iso) {
       var diff = Date.now() - new Date(iso).getTime();
       var mins = Math.floor(diff / 60000);
@@ -2024,29 +3353,83 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       return Math.floor(mins/60) + 'h ago';
     }
 
-    // ─── Brain Health Cleanup (v3.1) ───
+    // ─── Brain Health Cleanup (v6.1.4) — with simulated progress bar ───
     async function cleanupIssues() {
-      var btn = document.getElementById('cleanupBtn');
-      if (btn) { btn.disabled = true; btn.textContent = 'Cleaning...'; }
+      var btn       = document.getElementById('cleanupBtn');
+      var wrap      = document.getElementById('healthProgressWrap');
+      var bar       = document.getElementById('healthProgressBar');
+      var pctEl     = document.getElementById('healthProgressPct');
+      var stageEl   = document.getElementById('healthProgressStage');
+
+      if (btn) { btn.disabled = true; btn.textContent = 'Cleaning…'; }
+
+      // ── show progress bar ──
+      if (wrap) wrap.style.display = 'block';
+
+      // Stages mapped to approximate % milestones over ~120s.
+      // Easing: fast early (embedding detection is quick), slow in the
+      // middle (100-iteration embedding backfill loop), normal at the end.
+      var stages = [
+        { pct: 5,  label: 'Running health scan…',          ms: 1500  },
+        { pct: 12, label: 'Identifying missing embeddings…', ms: 4000  },
+        { pct: 22, label: 'Backfilling embeddings (batch 1)…', ms: 10000 },
+        { pct: 35, label: 'Backfilling embeddings (batch 2)…', ms: 20000 },
+        { pct: 48, label: 'Backfilling embeddings (batch 3)…', ms: 30000 },
+        { pct: 60, label: 'Backfilling embeddings (batch 4)…', ms: 40000 },
+        { pct: 70, label: 'Backfilling embeddings (batch 5)…', ms: 55000 },
+        { pct: 78, label: 'Backfilling embeddings (batch 6)…', ms: 70000 },
+        { pct: 85, label: 'Cleaning orphaned handoffs…',    ms: 85000 },
+        { pct: 90, label: 'Verifying repairs…',             ms: 100000 },
+        { pct: 95, label: 'Finalizing…',                   ms: 115000 },
+      ];
+
+      function setProgress(pct, label) {
+        if (bar)    { bar.style.width = pct + '%'; }
+        if (pctEl)  { pctEl.textContent = pct + '%'; }
+        if (stageEl && label) { stageEl.textContent = label; }
+      }
+
+      // Kick off all stage timers
+      var timers = stages.map(function(s) {
+        return setTimeout(function() { setProgress(s.pct, s.label); }, s.ms);
+      });
+
+      function clearTimers() { timers.forEach(function(t) { clearTimeout(t); }); }
+
+      function finishProgress(ok, label) {
+        clearTimers();
+        if (bar) bar.classList.add('done');
+        setProgress(100, ok ? '✅ Repair complete' : '❌ ' + (label || 'Repair failed'));
+        // hide bar after a short celebration
+        setTimeout(function() {
+          if (wrap) wrap.style.display = 'none';
+          if (bar) { bar.classList.remove('done'); bar.style.width = '0%'; }
+          if (pctEl) pctEl.textContent = '0%';
+        }, 2500);
+      }
+
       try {
-        var res = await fetch('/api/health/cleanup', { method: 'POST' });
+        var res  = await fetch('/api/health/cleanup', { method: 'POST' });
         var data = await res.json();
-        showFixedToast(data.message || (data.ok ? 'Cleanup complete.' : 'Cleanup failed.'), data.ok);
+        var msg  = data.message || data.error || (data.ok ? 'Cleanup complete.' : 'Cleanup failed.');
+        finishProgress(data.ok, msg);
+        showFixedToast(msg, data.ok);
+        if (btn) { btn.disabled = false; btn.textContent = '🧹 Fix Issues'; }
         // Re-run health check to refresh the card
         setTimeout(async function() {
           try {
-            var healthRes = await fetch('/api/health');
+            var healthRes  = await fetch('/api/health');
             var healthData = await healthRes.json();
-            var healthDot = document.getElementById('healthDot');
-            var healthLabel = document.getElementById('healthLabel');
+            var healthDot    = document.getElementById('healthDot');
+            var healthLabel  = document.getElementById('healthLabel');
             var healthSummary = document.getElementById('healthSummary');
             var healthIssues = document.getElementById('healthIssues');
-            var cleanupBtn = document.getElementById('cleanupBtn');
+            var cleanupBtn   = document.getElementById('cleanupBtn');
             var statusMap = { healthy: '✅ Healthy', degraded: '⚠️ Degraded', unhealthy: '🔴 Unhealthy' };
             healthDot.className = 'health-dot ' + (healthData.status || 'unknown');
             healthLabel.textContent = statusMap[healthData.status] || '❓ Unknown';
             var t = healthData.totals || {};
-            healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' + (t.handoffs || 0) + ' handoffs · ' + (t.rollups || 0) + ' rollups';
+            healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' + (t.handoffs || 0) + ' handoffs · ' + (t.rollups || 0) + ' rollups' + (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
             var issues = healthData.issues || [];
             if (issues.length > 0) {
               var sevIcons = { error: '🔴', warning: '🟡', info: '🔵' };
@@ -2058,9 +3441,13 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
               healthIssues.innerHTML = '<div style="color:var(--accent-green);font-size:0.8rem">🎉 No issues found</div>';
               if (cleanupBtn) cleanupBtn.style.display = 'none';
             }
-          } catch(e) {}
+          } catch(e) {
+            // Health re-check failed — ensure button is usable
+            if (btn) { btn.disabled = false; btn.textContent = '🧹 Fix Issues'; }
+          }
         }, 400);
       } catch(e) {
+        finishProgress(false, 'Request failed');
         showFixedToast('Cleanup request failed.', false);
         if (btn) { btn.disabled = false; btn.textContent = '🧹 Fix Issues'; }
       }
@@ -2071,6 +3458,42 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       t.textContent = (ok === false ? '❌ ' : '✅ ') + msg;
       t.classList.add('show');
       setTimeout(function() { t.classList.remove('show'); }, 3500);
+    }
+
+    // ─── PWA Service Worker Registration ───
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/sw.js').then(function(reg) {
+          console.log('[Dashboard] Service Worker registered with scope:', reg.scope);
+          
+          reg.addEventListener('updatefound', function() {
+            var newWorker = reg.installing;
+            newWorker.addEventListener('statechange', function() {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                var toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;bottom:2rem;right:2rem;background:var(--bg-glass);backdrop-filter:blur(12px);border:1px solid var(--border-glass);padding:1rem 1.5rem;border-radius:12px;display:flex;align-items:center;gap:1.5rem;z-index:9999;box-shadow:0 10px 30px rgba(0,0,0,0.5);transform:translateY(0);transition:transform 0.3s, opacity 0.3s;';
+                toast.innerHTML = '<div><p style="font-weight:600;margin-bottom:0.25rem;color:var(--text-primary);">Update Available</p><p style="color:var(--text-secondary);font-size:0.85rem;">A new version of Prism is ready.</p></div><button style="background:linear-gradient(135deg, var(--accent-purple), var(--accent-blue));color:white;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;font-weight:600;">Refresh</button>';
+                
+                toast.querySelector('button').addEventListener('click', function() {
+                  newWorker.postMessage({ action: 'skipWaiting' });
+                  toast.style.opacity = '0';
+                });
+                document.body.appendChild(toast);
+              }
+            });
+          });
+        }).catch(function(err) {
+          console.error('[Dashboard] Service Worker registration failed:', err);
+        });
+
+        var refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function() {
+          if (!refreshing) {
+            refreshing = true;
+            window.location.reload();
+          }
+        });
+      });
     }
   </script>
 </body>

@@ -53,3 +53,18 @@ undefined-wal
 # repomix output
 repomix*.xml
 repomix-output.txt
+repomix-*.txt
+
+# Local Build / DB
+*.tgz
+*.db
+*.db-shm
+*.db-wal
+
+# Local debug/scratch scripts
+test-mcp.js
+test_crdt.js
+test_save.js
+test_save2.js
+upvote.js
+test-results.txt

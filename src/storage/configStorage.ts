@@ -67,7 +67,7 @@ export async function initConfigStorage() {
     // filesystem in a sandboxed container), fall back to an empty cache.
     // getSettingSync() will return defaults; getSetting()/setSetting()
     // will attempt to re-open the DB on first call.
-    console.error(`[configStorage] Failed to initialize (non-fatal): ${err}`);
+    console.error(`[configStorage] Failed to initialize (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     settingsCache = {};
   }
 

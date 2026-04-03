@@ -42,13 +42,23 @@ async function summarizeEntries(entries: any[]): Promise<string> {
   ).join("\n");
 
   const prompt = (
-    `You are compressing a session history log. Summarize these ${entries.length} ` +
-    `work sessions into a single concise paragraph (max 500 words).\n\n` +
-    `PRESERVE: key decisions, important file changes, error resolutions, ` +
-    `architecture changes, and any recurring patterns.\n` +
-    `OMIT: routine operations, intermediate debugging steps, and redundant details.\n\n` +
-    `Sessions to summarize:\n${entriesText}\n\n` +
-    `Provide ONLY the summary paragraph, no headers or formatting.`
+    `You are compressing a session history log for an AI agent's persistent memory.\n\n` +
+    `Analyze these ${entries.length} work sessions and produce THREE sections:\n\n` +
+    `1. SUMMARY (max 300 words): A concise paragraph preserving key decisions, ` +
+    `important file changes, error resolutions, and architecture changes. ` +
+    `Omit routine operations and intermediate debugging steps.\n\n` +
+    `2. PRINCIPLES (1-3 bullet points): Reusable lessons extracted from these sessions. ` +
+    `These should be actionable engineering insights the agent can apply to future work. ` +
+    `Format: "- [principle]"\n\n` +
+    `3. PATTERNS (1-3 bullet points): Recurring behaviors, tools, or workflows observed. ` +
+    `Format: "- [pattern]"\n\n` +
+    `Sessions to analyze:\n${entriesText}\n\n` +
+    `Output format (follow exactly):\n` +
+    `[summary paragraph]\n\n` +
+    `Principles:\n` +
+    `- ...\n\n` +
+    `Patterns:\n` +
+    `- ...`
   ).substring(0, 30000);
 
   return llm.generateText(prompt);
@@ -145,7 +155,7 @@ export async function compactLedgerHandler(args: unknown) {
       user_id: `eq.${PRISM_USER_ID}`,
       "archived_at": "is.null",
       "is_rollup": "eq.false",
-      order: "created_at.asc",
+      order: "last_accessed_at.asc.nullsfirst,created_at.asc",
       limit: String(toCompact),
       select: "id,summary,decisions,files_changed,keywords,session_date",
     });
@@ -190,7 +200,7 @@ export async function compactLedgerHandler(args: unknown) {
     )];
 
     // Step 4: Insert rollup entry via storage backend
-    await storage.saveLedger({
+    const savedRollup: any = await storage.saveLedger({
       project: proj,
       user_id: PRISM_USER_ID,
       summary: `[ROLLUP of ${oldEntries.length} sessions] ${finalSummary}`,
@@ -201,6 +211,25 @@ export async function compactLedgerHandler(args: unknown) {
       rollup_count: oldEntries.length,
       conversation_id: `rollup-${Date.now()}`,
     });
+
+    const rollupId = savedRollup && savedRollup[0] ? savedRollup[0].id : null;
+
+    if (rollupId) {
+      // ── v6.0 Phase 3: Auto-Linking on Save (Compaction) ──────────
+      await Promise.all(oldEntries.map(async (entry: any) => {
+        try {
+          await storage.createLink({
+            source_id: rollupId,
+            target_id: entry.id,
+            link_type: "spawned_from",
+            strength: 1.0,
+            metadata: JSON.stringify({ reason: "compaction", original_date: entry.session_date })
+          }, PRISM_USER_ID);
+        } catch (err) {
+          debugLog(`[compact_ledger] Failed to create spawned_from link for ${rollupId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }));
+    }
 
     // Step 5: Archive old entries (soft-delete)
     for (const entry of oldEntries) {

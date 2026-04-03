@@ -35,6 +35,41 @@ export interface ShutdownHandlerOptions {
 
 let shutdownHandlersRegistered = false;
 
+/**
+ * Global registry for tracking critical background tasks (like embeddings or SDM writes).
+ * Ensures they complete gracefully during server shutdown.
+ */
+export const BackgroundTaskRegistry = {
+  tasks: new Set<Promise<unknown>>(),
+
+  register<T>(task: Promise<T>): Promise<T> {
+    this.tasks.add(task);
+    task.finally(() => this.tasks.delete(task)).catch(() => {});
+    return task;
+  },
+
+  async awaitAll(timeoutMs = 5000): Promise<void> {
+    if (this.tasks.size === 0) return;
+
+    log(`Waiting for ${this.tasks.size} background tasks to complete...`);
+
+    const timeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Timeout waiting for tasks")), timeoutMs);
+    });
+
+    try {
+      await Promise.race([
+        Promise.allSettled(Array.from(this.tasks)),
+        timeout,
+      ]);
+      log("Background tasks completed.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Background tasks shutdown warning: ${message}`);
+    }
+  },
+};
+
 type ProcessParentState = "managed" | "orphaned" | "missing" | "unknown";
 
 function inspectLinuxParentState(pid: number): ProcessParentState {
@@ -146,7 +181,7 @@ export function acquireLock() {
         }
       }
     } catch (err) {
-      log(`Warning: Failed to process existing PID file: ${err}`);
+      log(`Warning: Failed to process existing PID file: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -155,7 +190,7 @@ export function acquireLock() {
     fs.writeFileSync(PID_FILE, process.pid.toString(), "utf8");
     log(`Acquired singleton lock (PID ${process.pid})`);
   } catch (err) {
-    log(`Warning: Failed to write PID file: ${err}`);
+    log(`Warning: Failed to write PID file: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -176,19 +211,53 @@ export function registerShutdownHandlers(options: ShutdownHandlerOptions = {}) {
     log(`Shutting down gracefully (${reason})...`);
 
     try {
+      // 0. Stop the Dark Factory background runner first (prevents new DB writes)
+      try {
+        const { stopDarkFactoryRunner } = await import("./darkfactory/runner.js");
+        stopDarkFactoryRunner();
+      } catch {
+        // Runner may not be initialized — safe to ignore
+      }
+
+      // 0.5 Await pending background tasks (max 5s timeout)
+      await BackgroundTaskRegistry.awaitAll(5000);
+
       await options.onShutdown?.();
 
-      // 0. Flush OTel span buffer FIRST — before any DBs are closed.
+      // 1. Flush OTel span buffer FIRST — before any DBs are closed.
       //    BatchSpanProcessor holds spans in memory (up to 5s). If we close
       //    DBs first, spans that reference DB operations lose their context.
       //    shutdownTelemetry() is a no-op when otel_enabled=false.
       await shutdownTelemetry();
 
-      // 1. Close system settings DB
+      const storage = await getStorage();
+
+      // 1. Flush pending SDM matrices to disk
+      try {
+        const { getAllActiveSdmProjects, getSdmEngine } = await import("./sdm/sdmEngine.js");
+        const sdmProjects = getAllActiveSdmProjects();
+        if (sdmProjects.length > 0) {
+          log(`Flushing SDM state for ${sdmProjects.length} active projects...`);
+          for (const project of sdmProjects) {
+            try {
+              const sdm = getSdmEngine(project);
+              // Ensure we aren't saving an empty state unnecessarily if possible,
+              // but UPSERT handles it cleanly regardless.
+              const state = sdm.exportState();
+              await storage.saveSdmState(project, state);
+            } catch (err) {
+              log(`Failed to flush SDM state for "${project}": ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      } catch (err) {
+        log(`Failed to load SDM engine during shutdown: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 2. Close system settings DB
       closeConfigStorage();
 
-      // 2. Close main ledger DB
-      const storage = await getStorage();
+      // 3. Close main ledger DB
       if (storage && typeof storage.close === "function") {
         await storage.close();
       }
@@ -205,7 +274,7 @@ export function registerShutdownHandlers(options: ShutdownHandlerOptions = {}) {
         }
       }
     } catch (err) {
-      log(`Error during shutdown cleanup: ${err}`);
+      log(`Error during shutdown cleanup: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       process.exit(0);
     }

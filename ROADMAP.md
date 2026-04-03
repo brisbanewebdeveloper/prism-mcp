@@ -1,180 +1,218 @@
 # Prism MCP — Roadmap
 
-> Full project board: https://github.com/users/dcostenco/projects/1/views/1
+> Full release history: [`CHANGELOG.md`](CHANGELOG.md) · Issue tracking: [GitHub Issues](../../issues)
 
 ---
-
-## 🏆 Shipped — The v4.x Lineage
+## 🏆 Shipped
 
 Prism has evolved from a simple SQLite session logger into a **Quantized, Multimodal, Multi-Agent, Self-Learning, Observable AI Operating System**.
 
-### ✅ v5.1.0 — Knowledge Graph Editor & Deep Storage
+### ✅ v7.1.0 — Prism Task Router (Heuristic + ML Experience)
 
 | Feature | Detail |
 |---------|--------|
-| 🗑️ **Deep Storage Mode** | `prism_purge_embeddings` reclaims ~90% of vector storage by purging float32 vectors for entries with TurboQuant blobs. |
-| 🕸️ **Knowledge Graph Editor** | Graph filtering (project, date range, importance) and interactive node editor panel to surgically rename/delete keywords. |
+| 🚦 **Heuristic Routing Engine** | Deterministic `session_task_route` tool dynamically routes tasks to either the host cloud model or local agent (Claw) based on task description, file count, and scope. Evaluated over 5 core signals. |
+| 🤖 **Experience-Based ML Routing** | Cold-start protected ML layer leverages historical performance (Win Rate) extracted by the `routerExperience` system to apply dynamic confidence boosts or penalties to the routing score. |
+| 🖥️ **Dashboard Integration** | Added controls in `src/dashboard/ui.ts` under Node Editor settings to visually monitor and toggle Prism Task Router configuration. |
+| 🧩 **Tool Discoverability** | Fully integrates `session_task_route` into the external registry through `createSandboxServer`, ensuring scanners can enumerate task delegating capabilities robustly. |
+| 🧪 **Test Coverage** | Comprehensive suite spanning 33 tests across `task-router.test.ts` and `router-experience.test.ts`, verifying cold starts, structural biases, and signal weighting. |
 
 ---
-
-### ✅ v5.0.0 — Quantized Agentic Memory
+### ✅ v7.0.0 — ACT-R Cognitive Activation Memory
 
 | Feature | Detail |
 |---------|--------|
-| 🧮 **TurboQuant Math Core** | Pure TypeScript port of Google's TurboQuant (ICLR 2026) — Lloyd-Max codebook, QR rotation, QJL error correction. Zero dependencies. |
-| 📦 **~7× Embedding Compression** | 768-dim embeddings shrink from 3,072 bytes to ~400 bytes (4-bit) via variable bit-packing. |
-| 🔍 **Asymmetric Similarity** | Unbiased inner product estimator: query as float32 vs compressed blobs. No decompression needed. |
-| 🗄️ **Three-Tier Search** | FTS5 → sqlite-vec float32 → TurboQuant JS fallback. Search works even without native vector extension. |
-| 🛠️ **Backfill Handler** | `session_backfill_embeddings` repairs AND compresses existing entries in a single atomic update. |
+| 🧠 **ACT-R Activation Model** | Scientifically-grounded memory retrieval based on Anderson's ACT-R cognitive architecture. Base-level activation `B_i = ln(Σ t_j^{-d})` replaces flat similarity search with recency × frequency scoring that mirrors human memory decay. |
+| 🔗 **Candidate-Scoped Spreading Activation** | Activation spreads only within the current search result set — prevents "God node" centrality bias where highly-connected nodes dominate every query. |
+| 📊 **Composite Scoring** | `0.7 × similarity + 0.3 × σ(activation)` blends semantic relevance with cognitive activation. Sigmoid normalization keeps activation in `[0,1]` regardless of access pattern. |
+| 🔄 **AccessLogBuffer** | In-memory batch-write buffer with 5-second flush window resolves `SQLITE_BUSY` contention during parallel multi-agent tool calls. Graceful shutdown via `BackgroundTaskRegistry`. |
+| 🚀 **Zero Cold-Start** | Memory creation seeds an initial access log entry — new memories are immediately rankable, no warm-up period needed. |
+| 🗄️ **Supabase Parity** | Migration 037 (`actr_access_log`) + Supabase SQL functions for access log writes and activation computation. Full feature parity with SQLite backend. |
+| ⚙️ **Full Configurability** | 5 new env vars: `PRISM_ACTR_ENABLED`, `PRISM_ACTR_DECAY`, `PRISM_ACTR_WEIGHT_SIMILARITY`, `PRISM_ACTR_WEIGHT_ACTIVATION`, `PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS`. |
+| 📖 **Documentation Overhaul** | README refreshed with Mind Palace terminology, Universal Import top-level section, Quick Start port-conflict collapsible, TL;DR env var guide, and live v7.0.0 dashboard screenshot. |
+| 🧪 **705 Tests** | 32 suites (49 new ACT-R tests across activation math, access log buffer, SQLite/Supabase parity). Zero regressions. |
 
 ---
+### ✅ v6.5.1 — Dashboard Project-Load Hotfix
 
-### ✅ v4.6.0 — OpenTelemetry Observability
+| Fix | Detail |
+|-----|--------|
+| 🩹 **Project Selector Bootstrap** | Fixed a startup failure where unresolved Supabase env placeholders (`$` / `$`) could break `/api/projects` and leave the selector stuck on "Loading projects...". |
+| 🔄 **Backend Fallback Safety** | Added guardrails to auto-fallback to local SQLite when Supabase backend is requested but env config is invalid/unresolved. |
+
+---
+### ✅ v6.5.0 — HDC Cognitive Routing
 
 | Feature | Detail |
 |---------|--------|
-| 🔭 **MCP Root Span** | `mcp.call_tool` wraps every tool invocation. Context propagated via AsyncLocalStorage — no ref-passing. |
-| 🎨 **TracingLLMProvider** | Decorator at the factory boundary. Zero changes to vendor adapters (Gemini/OpenAI/Anthropic). Instruments text, embedding, and VLM generation. |
-| ⚙️ **Worker Spans** | `worker.vlm_caption` in `imageCaptioner.ts` correctly parents fire-and-forget async tasks to the root MCP span. |
-| 🔒 **Shutdown Flush** | `shutdownTelemetry()` is step-0 in `lifecycle.ts` — flushes `BatchSpanProcessor` before DBs close on SIGTERM/disconnect. |
-| 🖥️ **Dashboard UI** | 🔭 Observability tab: enable toggle, OTLP endpoint, service name, inline Jaeger docker quick-start, ASCII waterfall diagram. |
-| ✅ **GDPR-safe** | Span attributes: char counts + sizes only. Never prompt content, embeddings, or base64 image data. |
-
-**Trace waterfall:**
-```
-mcp.call_tool  [session_save_image, ~50 ms]
-  └─ worker.vlm_caption          [~2–5 s, outlives parent ✓]
-       └─ llm.generate_image_description  [~1–4 s]
-       └─ llm.generate_embedding          [~200 ms]
-```
+| 🧠 **HDC Cognitive Routing** | New `session_cognitive_route` tool composes agent state, role, and action into a 768-dim binary hypervector via XOR binding, resolves to nearest concept via Hamming distance, and routes through a three-outcome policy gateway (`direct` / `clarify` / `fallback`). |
+| 🎛️ **Per-Project Threshold Overrides** | Fallback and clarify thresholds are configurable per-project and persisted via the existing `getSetting`/`setSetting` contract. No new storage migrations required (**Phase 2 storage-parity scope note**: `getSetting()`/`setSetting()` already abstracts SQLite/Supabase parity for threshold overrides as decimal-string key-value pairs). |
+| 🔬 **Explainability Mode** | When `explain: true`, responses include convergence steps, raw Hamming distance, and ambiguity flags. Controlled by `PRISM_HDC_EXPLAINABILITY_ENABLED` (default: `true`). |
+| 📊 **Cognitive Observability** | `recordCognitiveRoute()` in `graphMetrics.ts` tracks route distribution, rolling confidence/distance averages, ambiguity rates, and null-concept counts. Warning heuristics: fallback rate > 30%, ambiguity rate > 40%. |
+| 🖥️ **Dashboard Cognitive Card** | Route distribution bar, confidence/distance gauges, and warning badges in the Mind Palace metrics panel. On-demand "Cognitive Route" button in the Node Editor panel. |
+| 🔒 **Feature Gating** | Entire v6.5 pipeline gated behind `PRISM_HDC_ENABLED` (default: `true`). Clean error + zero telemetry when disabled. |
+| 🧪 **566 Tests** | 30 suites (42 new tests: 26 handler integration + 16 dashboard API). TypeScript strict mode, zero errors, zero regressions. |
 
 ---
-
-### ✅ v4.5.1 — GDPR Export & Test Hardening
+### ✅ v6.2.0 — Autonomous Cognitive Loop ("Synthesize & Prune")
 
 | Feature | Detail |
 |---------|--------|
-| 📦 **`session_export_memory`** | ZIP export of all project memory (JSON + Markdown). Satisfies GDPR Art. 20 Right to Portability. API keys redacted, embeddings stripped. |
-| 🧪 **270 Tests** | Concurrent export safety, API-key redaction edge cases (incl. `db_password` non-redaction regression), MCP contract under concurrent load. |
+| 🧬 **Edge Synthesis ("The Dream Procedure")** | Automated background linker (`session_synthesize_edges`) discovers semantically similar but disconnected memory nodes via cosine similarity (threshold ≥ 0.7). Batch-limited to 50 sources × 3 neighbors per sweep to prevent runaway graph growth. |
+| ✂️ **Graph Pruning (Soft-Prune)** | Configurable strength-based pruning (`PRISM_GRAPH_PRUNING_ENABLED`) soft-deletes weak links below a configurable minimum strength. Per-project cooldown, backpressure guards, and sweep budget controls. |
+| 📊 **SLO Observability Layer** | `graphMetrics.ts` tracks synthesis success rate, net new links, prune ratio, and sweep duration. Exposes `slo` and `warnings` fields for proactive health monitoring. |
+| 🖥️ **Dashboard Metrics Integration** | SLO cards, warning badges, and pruning skip breakdown (backpressure / cooldown / budget) in the Mind Palace dashboard at `/api/graph/metrics`. |
+| 🌡️ **Temporal Decay Heatmaps** | UI overlay toggle where un-accessed nodes desaturate while Graduated nodes stay vibrant. Graph router extraction + decay view toggle. |
+| 🧪 **Active Recall Prompt Generation** | "Test Me" utility in the node editor panel generates synthetic quizzes from semantic neighbors for knowledge activation. |
+| ⚡ **Supabase Weak-Link RPC (WS4.1)** | `prism_summarize_weak_links` Postgres function (migration 036) aggregates pruning server-side in one RPC call, eliminating N+1 network roundtrips. TypeScript fast-path with automatic fallback. |
+| 🔐 **Migration 035** | Tenant-safe graph writes + soft-delete hardening for MemoryLinks. |
+| 🔧 **Scheduler Telemetry Fix** | `projects_processed` now tracks all attempted projects, not just successes, for accurate SLO derivation. |
+| 🧪 **510 Tests** | 28 suites, TypeScript strict mode, zero errors. |
 
 ---
+### ✅ v6.1.5–v6.1.8 — Production Hardening Series
 
-### ✅ v4.5.0 — VLM Multimodal Memory
+| Version | Feature | Detail |
+|---------|---------|--------|
+| v6.1.5 | 🗜️ **`maintenance_vacuum` Tool** | New MCP tool to run SQLite `VACUUM` after large purge operations — reclaims page allocations that SQLite retains until explicitly vacuumed. |
+| v6.1.5 | 🔒 **Prototype Pollution Guards** | CRDT merge pipeline hardened against `__proto__` / `constructor` injection via `Object.create(null)` scratchpads. |
+| v6.1.5 | 🧪 **425-Test Suite** | Edge-case suite across 20 files: CRDT merges, TurboQuant math invariants, prototype pollution, SQLite TTL boundary conditions. |
+| v6.1.6 | 🛡️ **11 Type Guards Hardened (Round 1)** | All MCP tool argument guards audited; explicit `typeof` validation added for every optional field. Prevents LLM-hallucinated payloads from bypassing type safety. |
+| v6.1.7 | 🔄 **Toggle Rollback on Failure** | `saveSetting()` returns `Promise<boolean>`; Hivemind and Auto-Capture toggles roll back optimistic UI state on server error. |
+| v6.1.7 | 🚫 **Settings Cache-Busting** | `loadSettings()` appends `?t=<timestamp>` to bypass stale browser/service-worker caches. |
+| v6.1.8 | 🛡️ **Missing Guard: `isSessionCompactLedgerArgs`** | `SESSION_COMPACT_LEDGER_TOOL` existed with no type guard — added with full optional field validation. |
+| v6.1.8 | ✅ **Array Field Validation** | `isSessionSaveLedgerArgs` now guards `todos`, `files_changed`, `decisions` with `Array.isArray`. |
+| v6.1.8 | 🔖 **Enum Literal Guard** | `isSessionExportMemoryArgs` rejects unknown `format` values at the MCP boundary. |
+| v6.1.8 | 🔢 **Numeric Guards** | `isSessionIntuitiveRecallArgs` validates `limit` and `threshold` as numbers. |
+
+---
+### ✅ v6.1.0 — Prism-Port, Security Hardening & Dashboard Healing
 
 | Feature | Detail |
 |---------|--------|
-| 👁️ **Auto-Captioning Pipeline** | `session_save_image` → VLM → handoff visual_memory → ledger entry → inline embedding. Fire-and-forget, never blocks MCP response. |
-| 🔍 **Free Semantic Search** | Captions stored as standard ledger entries — `session_search_memory` finds images by meaning with zero schema changes. |
-| 🛡️ **Provider Size Guards** | Anthropic 5MB hard cap. Gemini/OpenAI 20MB soft cap. Pre-flight check before API call. |
-| 🔄 **OCC Retry on Handoff** | Read-modify-write with 2-attempt OCC retry loop to survive concurrent handoff saves. |
+| 📦 **Prism-Port Vault Export** | New `vault` format for `session_export_memory` — generates a `.zip` of interlinked Markdown files with YAML frontmatter (`date`, `type`, `project`, `importance`, `tags`, `summary`), `[[Wikilinks]]`, and auto-generated `Keywords/` backlink indices. Drop into Obsidian or Logseq for instant knowledge graph. Zero new dependencies (`fflate` already present). |
+| 🏥 **Dashboard Health Cleanup** | `POST /api/health/cleanup` now dynamically imports `backfillEmbeddingsHandler` to repair missing embeddings directly from the Mind Palace UI — no MCP tool call required. Paginated with `MAX_ITERATIONS=100` safety cap. |
+| 🔒 **Path Traversal Fix** | `/api/import-upload` now sanitizes filenames via `path.basename()` to prevent directory traversal attacks from malicious payloads. |
+| 🔧 **Dangling Catch Fix** | Fixed mismatched braces in the Scholar Trigger / Search API section of the dashboard server that could prevent compilation. |
+| 📡 **Search API 503 Handling** | `/api/search` now returns `503 Service Unavailable` with a clear message when the LLM provider is not configured, instead of a generic 500 error. |
+| 🪟 **Windows Port Cleanup** | `killPortHolder` now uses `netstat`/`taskkill` on Windows instead of Unix-only `lsof`/`kill`. |
+| 🧹 **readBody Buffer Optimization** | Shared `readBody()` helper now uses `Buffer[]` array + `Buffer.concat()` instead of string concatenation, preventing GC thrash on large imports (ChatGPT history files). All 4 inline body-read duplicates replaced. |
+| 🛡️ **Vault Exporter Bug Fixes** | Fixed filename collision (counter suffix dedup), `escapeYaml` (backslashes, newlines, control chars), `slugify` empty-result fallback, and Markdown table pipe escaping. |
+| 📋 **Export Schema Version** | Bumped export payload `version` from `"4.5"` to `"6.1"` to match the release. |
+| 📖 **README Overhaul** | Added Magic Moment demo, Capability Matrix, competitor comparison grid, Big Three callout box. Renamed "Research Roadmap" → "Scientific Foundation" and "Roadmap" → "Product Roadmap". |
 
 ---
 
-### ✅ v4.4.0 — Pluggable LLM Adapters (BYOM)
+<details>
+<summary><strong>📜 Earlier releases (v5.5 → v3.0) — click to expand</strong></summary>
 
-| Feature | Detail |
-|---------|--------|
-| 🔌 **Provider Adapters** | OpenAI, Anthropic Claude, Gemini, Ollama (local). Split provider: text and embedding independently configurable. |
-| 🛡️ **Air-Gapped Mode** | Zero cloud API keys — full local execution via `http://127.0.0.1:11434`. |
-| 🔀 **Cost-Optimized** | Claude 3.5 Sonnet + `nomic-embed-text` (free, local) = best-in-class reasoning + free embeddings. |
+> For full details on every release, see [`CHANGELOG.md`](CHANGELOG.md).
 
----
+| Version | Codename | Highlights |
+|---------|----------|------------|
+| **v5.5.0** | Architectural Hardening | Transactional migrations, graceful shutdown registry, thundering herd prevention, zero-thrashing SDM scans. 374 tests. |
+| **v5.4.0** | Concurrency & Autonomous Research | CRDT OR-Map handoff merging, background purge scheduler, autonomous Web Scholar, Scholar ↔ Hivemind integration. |
+| **v5.3.0** | Verification Watchdog | Active pipeline orchestrator, declarative/sandboxed test assertions, `validation_result` logging, and programmatic gating. |
+| **v5.2.0** | Cognitive Memory & Universal Migration | Ebbinghaus importance decay, context-weighted retrieval, Universal History Migration (Claude/Gemini/ChatGPT), SQL injection prevention. |
+| **v5.1.0** | Knowledge Graph Editor & Deep Storage | Deep storage purge (~90% vector savings), interactive graph editor with filtering and node surgery. |
+| **v5.0.0** | Quantized Agentic Memory | TurboQuant ~7× embedding compression, three-tier search (FTS5 → sqlite-vec → JS fallback), atomic backfill. |
+| **v4.6.0** | OpenTelemetry Observability | MCP root spans, `TracingLLMProvider` decorator, GDPR-safe attributes, Jaeger dashboard. |
+| **v4.5.x** | VLM Multimodal Memory & GDPR Export | Auto-captioning pipeline, semantic image search, GDPR Art. 20 export, concurrent safety tests. |
+| **v4.4.0** | Pluggable LLM Adapters (BYOM) | OpenAI/Anthropic/Gemini/Ollama providers, air-gapped mode, split text+embedding config. |
+| **v4.0–4.3** | Behavioral Memory & IDE Sync | Experience events, importance scoring, knowledge → `.cursorrules` sync, project repo registry. |
+| **v3.x** | Memory Lifecycle & Agent Hivemind | Data retention (TTL), auto-compaction, role-scoped memory, Telepathy real-time sync. |
 
-### ✅ v4.3.0 — The Bridge: Knowledge Sync Rules
-
-Active Behavioral Memory meets IDE context. Graduated insights (importance ≥ 7) auto-sync into `.cursorrules` / `.clauderules` via `knowledge_sync_rules` — idempotent sentinel-based file writing.
-
----
-
-### ✅ v4.2.0 — Project Repo Registry
-
-Dashboard UI maps projects to repo directories. `session_save_ledger` validates `files_changed` paths and warns on mismatch. Dynamic tool descriptions replace `PRISM_AUTOLOAD_PROJECTS` env var — dashboard is sole source of truth.
-
----
-
-### ✅ v4.1.0 — Auto-Migration & Multi-Instance
-
-Zero-config Supabase schema upgrades via `prism_apply_ddl` RPC on startup. `PRISM_INSTANCE` env var for side-by-side server instances without PID lock conflicts.
+</details>
 
 ---
+## 📊 The State of Prism (v7.1.0)
 
-### ✅ v4.0.0 — Behavioral Memory
+With v7.1.0 shipped, Prism is a **production-hardened, scientifically-grounded, self-organizing AI Operating System**:
 
-`session_save_experience` with event types, confidence scores, and importance decay. Auto-injects correction warnings into `session_load_context`. Dynamic role resolution from dashboard.
-
----
-
-### ✅ v3.x — Memory Lifecycle & Agent Hivemind
-
-v3.1: Data retention (TTL), auto-compaction, PKM export, analytics sparklines.  
-v3.0: Role-scoped memory, agent registration/heartbeat, Telepathy (real-time cross-agent sync).
-
----
-
-## 📊 The State of Prism (v5.1)
-
-With v5.1 shipped, Prism sits on a profoundly solid foundation:
-
-- **Scale** — TurboQuant 10× compression + Deep Storage Purge. Decades of session history on a laptop.
+- **Intelligently Routed** — Heuristic and ML-driven Task Router dynamically delegates to host cloud models or local agents (Claw) based on complexity, scope, and cold-start protected historical win rates.
+- **Scientifically-Grounded** — ACT-R activation model (`B_i = ln(Σ t_j^{-d})`) ranks memories by recency × frequency, mirroring human cognitive decay. Candidate-scoped spreading activation prevents centrality bias.
+- **Cognitively-Routed** — HDC state machine composes agent context into binary hypervectors and resolves semantic concepts via Hamming distance. Policy gateway routes with configurable thresholds.
+- **Self-Organizing** — Edge Synthesis + Graph Pruning form an autonomous cognitive loop: the graph grows connective tissue overnight and prunes dead weight on schedule.
+- **Cognitive** — Composite scoring (similarity + activation) + context-boosted retrieval + Active Recall quizzes = memory that knows what matters *right now*.
+- **Observable** — SLO dashboard tracks synthesis success rate, net link growth, prune ratio, sweep latency, and cognitive route distribution. Warning badges fire proactively.
+- **Zero Cold-Start** — Universal Migration imports years of Claude/Gemini/ChatGPT history on day one. New memories are access-seeded immediately.
+- **Scale** — TurboQuant 10× compression + Deep Storage Purge + SQLite VACUUM. Decades of session history on a laptop.
+- **Safe** — Full type-guard matrix across all 30+ MCP tools. LLM-hallucinated payloads are rejected at the boundary.
+- **Convergent** — CRDT OR-Map handoff merging. Multiple agents, zero conflicts.
+- **Autonomous** — Web Scholar researches while you sleep. Task-aware, Hivemind-integrated.
+- **Hardened** — Transactional migrations, graceful shutdown, thundering herd prevention, AccessLogBuffer batch writes, prototype pollution guards, tenant-safe graph writes.
 - **Quality** — Interactive Knowledge Graph Editor + Behavioral Memory that learns from mistakes.
-- **Reliability** — 303 passing tests across 13 suites. Hardened auto-load hooks for Claude Code & Gemini.
-- **Observability** — OpenTelemetry span waterfalls for every tool call, LLM hop, and background worker.
+- **Reliability** — 705 passing tests across 32 suites.
+- **Observability** — OpenTelemetry span waterfalls + SLO metrics + cognitive route telemetry for every tool call, LLM hop, background worker, and graph sweep.
 - **Multimodal** — VLM auto-captioning turns screenshots into semantically searchable memory.
+- **Security** — SQL injection prevention, path traversal guard, GDPR Art. 17+20 compliance.
 
 ---
+## 🗺️ Next on the Horizon
 
-## 🗺️ Next on the Horizon — v5.2
+### 🧪 v7.2.0 — Verification Harness (Front-Loaded Testing) `[Planned]`
+**Problem:** Agents plan and execute but have no structured, programmatically enforced verification layer. Test assertions are afterthoughts, not first-class planning artifacts. Complex multi-database ETL, data migrations, and agentic pipelines require "stacking 9's" on accuracy — which demands front-loaded, machine-parseable validation at every layer.
+**Solution:** A planning-phase verification harness that forces the agent to emit programmatically verifiable test assertions *before* execution begins, then automatically validates them post-execution.
 
-The next major frontier: **Concurrency & Automation**.
+| Feature | Detail |
+|---------|--------|
+| 📋 **Planning-Phase Test Generation** | New planning skill that requires the agent to emit machine-parseable test specifications (JSON test specs) during `implementation_plan.md` creation. Tests define expected outcomes, data invariants, and acceptance criteria *before* any code is written. |
+| 🔬 **Multi-Layer Verification Framework** | Structured verification across 3 layers: **Data Accuracy** (schema validation, row-count checks, referential integrity), **Agent Behavior** (output format, tool call correctness, state transitions), and **Pipeline Integrity** (end-to-end flow completion, idempotency, error handling). |
+| 🤖 **Claw-as-Validator (Adversarial Loop)** | After execution, a second `claw_run_task` call runs the generated test specs against the actual output — creating a generate → execute → validate adversarial loop between host and local agent. |
+| 📊 **`validation_result` Experience Event** | New experience event type that records test pass/fail results with per-layer granularity. Feeds directly into the v7.1.0 ML routing feedback loop, enabling the router to learn which task types need tighter validation. |
+| 🚦 **Verification Gates** | Configurable pass/fail gates that block progression when critical assertions fail. Supports `warn` (log and continue), `gate` (block until resolved), and `abort` (rollback) severity levels. |
+| ⚙️ **Configuration** | `PRISM_VERIFICATION_HARNESS_ENABLED` (default: `false`), `PRISM_VERIFICATION_LAYERS` (comma-separated: `data,agent,pipeline`), `PRISM_VERIFICATION_DEFAULT_SEVERITY` (default: `warn`). |
 
-### 🔄 CRDT Handoff Merging
+**Dependency:** Builds on v7.1.0 experience-based ML routing for the feedback loop integration.
 
-**Problem:** Today's OCC (optimistic concurrency control) rejects one agent when two try to save simultaneously. The rejected agent must retry. This is fine for 2 agents but doesn't scale to 5+.
+---
+### 🏭 v7.3.0 — Dark Factory Orchestration `[Exploring]`
+**Problem:** Even with verification harnesses, Prism remains session-based and human-triggered. Autonomous "dark factory" pipelines — where agents execute, validate, and iterate without human intervention — require a continuous orchestration layer that doesn't exist today.
+**Solution:** A lightweight pipeline runner that chains plan → execute → verify → iterate cycles autonomously, gated by the verification harness and bounded by configurable safety limits.
 
-**Solution:** Replace the strict version-bump model with **conflict-free replicated data types** (CRDTs). Each agent can independently mutate `open_todos`, `key_context`, and `last_summary` — merges happen automatically without rejection or retry.
+| Feature | Detail |
+|---------|--------|
+| 🔄 **Autonomous Pipeline Runner** | Continuous background loop that chains `plan → execute → verify → iterate` cycles natively. Runs decoupled from MCP RPC cycles to avoid 60s host client timeouts. |
+| 🛡️ **Safety Boundaries** | Hard limits on iteration count (`PRISM_DARK_FACTORY_MAX_ITERATIONS`), wall-clock time (`PRISM_DARK_FACTORY_TIMEOUT_MINUTES`), and file mutation scope. Emergency kill switch via dashboard. |
+| 📊 **Pipeline Telemetry** | OpenTelemetry spans for each pipeline stage. Dedicated "Factory" dashboard tab with real-time pipeline visualization. |
+| 🔀 **Native Local Execution (BYOM)** | Prism acts as an internal LLM client using existing BYOM adapters. Host models trigger `session_start_pipeline`, Prism immediately acks, and orchestrates local models concurrently in the background. |
+| 🧠 **Agent Delegation Strategy** | Delegate generation-heavy, bounded tasks (scaffolding, testing, linting) to Claw. Keep the Host for synthesis-heavy tasks (architecture, cross-module reasoning). |
+| 🔄 **Closed Feedback Loop** | Background pipeline exits automatically log `session_save_experience` events to dynamically improve the Host's task router win rates on a per-project basis. |
+| 📈 **Accuracy Stacking ("9's Dashboard")** | Real-time accuracy metrics across verification layers. Visual indicator showing current confidence level (e.g., "99.7% — 2.5σ") inspired by Six Sigma methodology. |
 
-**Architecture candidates:**
-- **Automerge** — mature Rust-backed CRDT library with JS bindings
-- **Yjs** — lighter-weight, excellent for text/array/map types
-- **Custom LWW-Register** — last-writer-wins per-field, simplest to implement
+**Dependency:** Requires v7.2.0 Verification Harness as the safety net. Without front-loaded testing, autonomous execution is unsafe.
 
-### ⏰ Background Purge Scheduler
-
-**Problem:** `deep_storage_purge` must be invoked manually. Users forget, storage grows.
-
-**Solution:** A cron-style scheduler inside the Prism server process that automatically runs purge on a configurable interval (default: weekly). Completely abstracts storage management away from the user.
-
-**Implementation:**
-- Node.js `setInterval` or `node-cron` with configurable schedule via dashboard
-- Respects all existing safety guards (7-day minimum age, dry-run logging)
-- Dashboard shows last-purge timestamp and bytes reclaimed
-
-### 📱 Mind Palace Mobile PWA
-
+---
+### 📱 Mind Palace Mobile PWA `[Backlog]`
 **Problem:** The dashboard is desktop-only. Quick check-ins on mobile require a laptop.
-
 **Solution:** Progressive Web App with responsive glassmorphism layout, offline-first IndexedDB cache, and push notifications for agent activity.
-
 **Phases:**
 1. Responsive CSS breakpoints for the existing dashboard
 2. Service worker + offline cache for read-only access
 3. Push notifications via Web Push API for Telepathy events
 
-### 🥉 Autonomous Web Scholar 🌐
+### 🔭 Future Cognitive Tracks
 
-Agent-driven learning pipeline:
-1. Brave Search + Firecrawl scrape for a given topic
-2. VLM extracts key concepts from diagrams/screenshots
-3. Gemini summarizes and deduplicates
-4. Results saved as ledger entries → semantically searchable
-5. Runs on a cron schedule while the developer sleeps
+#### v8.x — Affect-Tagged Memory `[Researching]`
+- **Problem:** Pure semantic relevance misses urgency and emotional salience in real-world agent collaboration.
+- **Benefit:** Recall prioritization improves by weighting memories with affective/contextual valence, making surfaced context more behaviorally useful.
+- **Dependency:** Builds on v7.0 ACT-R activation and v6.5 compositional memory states so affect can be attached and retrieved as first-class signal.
+
+#### v9+ — Zero-Search Retrieval `[Exploring]`
+- **Problem:** Index/ANN retrieval layers add latency, complexity, and operational overhead at very large memory scales.
+- **Benefit:** Direct vector-addressed recall (“just ask the vector”) reduces retrieval indirection and moves Prism toward truly native associative memory.
+- **Dependency:** Requires stable SDM/HDC primitives, ACT-R activation calibration, and production-grade retrieval from v7.x/v8.x.
 
 ---
-
 ## 🧰 Infrastructure Backlog
+
+> 🤝 **Want to contribute?** These items are great entry points for new contributors. Most are self-contained and don't require deep knowledge of the cognitive pipeline. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
 | Feature | Notes |
 |---------|-------|
+| **Supabase `summarizeWeakLinks` N+1 Removal** | Migration 036 ships the RPC; remove the sequential REST fallback once 036 is confirmed deployed across all tenants |
 | Supabase RPC Soft-Delete Filtering | Server-side GDPR filtering at the RPC layer |
 | Prism CLI | Standalone CLI for backup, export, and health check without MCP |
 | Plugin System | Third-party tool registration via MCP tool composition |
+| **Supabase MemoryLinks** | Implement `MemoryLinks` (graph-based traversal) in Supabase to achieve full structural parity with SQLite backend |
+| **SDM Counter Soft Decay** | Evaluate implementing chronological "Soft Decay" for SDM counters if plasticity loss (catastrophic saturation) is observed in long-running agents |

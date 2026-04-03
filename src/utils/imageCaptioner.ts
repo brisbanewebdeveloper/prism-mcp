@@ -108,7 +108,7 @@ export function fireCaptionAsync(
           code: SpanStatusCode.ERROR,
           message: err instanceof Error ? err.message : String(err),
         });
-        console.error(`[ImageCaptioner] Failed for [${imageId}]: ${err}`);
+        console.error(`[ImageCaptioner] Failed for [${imageId}]: ${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
         // Always end the span — even on VLM failure — to flush the BatchSpanProcessor.

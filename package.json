@@ -1,13 +1,14 @@
 {
   "name": "prism-mcp-server",
-  "version": "5.1.0",
+  "version": "7.3.1",
   "mcpName": "io.github.dcostenco/prism-mcp",
-  "description": "The Mind Palace for AI Agents — persistent memory (SQLite/Supabase), behavioral learning & IDE rules sync, multimodal VLM image captioning, pluggable LLM providers (OpenAI/Anthropic/Gemini/Ollama), OpenTelemetry distributed tracing, GDPR export, multi-agent Hivemind sync, time travel, visual Mind Palace dashboard. Zero-config local mode.",
+  "description": "The Mind Palace for AI Agents — fail-closed Dark Factory autonomous pipelines (3-gate parse→type→scope validation), persistent memory (SQLite/Supabase), ACT-R cognitive retrieval, behavioral learning & IDE rules sync, multi-agent Hivemind, time travel, visual dashboard. Zero-config local mode.",
   "module": "index.ts",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
-    "prism-mcp-server": "dist/server.js"
+    "prism-mcp-server": "dist/server.js",
+    "prism-import": "dist/utils/universalImporter.js"
   },
   "files": [
     "dist"
@@ -19,7 +20,8 @@
     "test:watch": "vitest",
     "test:load": "vitest run tests/load/",
     "test:ci": "vitest run --reporter=junit --outputFile=test-results.xml",
-    "test:mcp": "node ./test_cross_mcp.js"
+    "test:mcp": "node ./test_cross_mcp.js",
+    "import": "node dist/utils/universalImporter.js"
   },
   "keywords": [
     "mcp",
@@ -63,7 +65,14 @@
     "persistent-memory",
     "zero-config",
     "auto-capture",
-    "dashboard"
+    "dashboard",
+    "actr",
+    "cognitive-memory",
+    "activation-memory",
+    "dark-factory",
+    "autonomous-pipeline",
+    "fail-closed",
+    "path-traversal-prevention"
   ],
   "homepage": "https://github.com/dcostenco/prism-mcp",
   "repository": {
@@ -74,6 +83,9 @@
   "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/jsdom": "^28.0.1",
+    "@types/mozilla-readability": "^0.2.1",
+    "@types/turndown": "^5.0.6",
     "tsx": "^4.19.3",
     "vitest": "^4.1.1"
   },
@@ -86,15 +98,23 @@
     "@google/generative-ai": "^0.24.1",
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@mozilla/readability": "^0.6.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-trace-node": "^2.6.1",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@supabase/supabase-js": "^2.99.3",
+    "@tavily/core": "^0.6.0",
+    "cheerio": "^1.2.0",
     "dotenv": "^16.5.0",
     "fflate": "^0.8.2",
+    "jsdom": "^29.0.1",
     "openai": "^6.32.0",
-    "quickjs-emscripten": "^0.32.0"
+    "p-limit": "^7.3.0",
+    "quickjs-emscripten": "^0.32.0",
+    "stream-json": "^2.0.0",
+    "turndown": "^7.2.2",
+    "zod": "^4.3.6"
   }
 }

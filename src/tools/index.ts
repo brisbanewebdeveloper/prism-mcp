@@ -28,11 +28,44 @@ export { webSearchHandler, braveWebSearchCodeModeHandler, localSearchHandler, br
 // This file always exports them — server.ts decides whether to include them in the tool list.
 //
 // v0.4.0: Added SESSION_COMPACT_LEDGER_TOOL and SESSION_SEARCH_MEMORY_TOOL
-export { SESSION_SAVE_LEDGER_TOOL, SESSION_SAVE_HANDOFF_TOOL, SESSION_LOAD_CONTEXT_TOOL, KNOWLEDGE_SEARCH_TOOL, KNOWLEDGE_FORGET_TOOL, SESSION_COMPACT_LEDGER_TOOL, SESSION_SEARCH_MEMORY_TOOL, MEMORY_HISTORY_TOOL, MEMORY_CHECKOUT_TOOL, SESSION_SAVE_IMAGE_TOOL, SESSION_VIEW_IMAGE_TOOL, SESSION_HEALTH_CHECK_TOOL, SESSION_FORGET_MEMORY_TOOL, SESSION_EXPORT_MEMORY_TOOL, KNOWLEDGE_SET_RETENTION_TOOL, SESSION_SAVE_EXPERIENCE_TOOL, KNOWLEDGE_UPVOTE_TOOL, KNOWLEDGE_DOWNVOTE_TOOL, KNOWLEDGE_SYNC_RULES_TOOL, DEEP_STORAGE_PURGE_TOOL, isDeepStoragePurgeArgs } from "./sessionMemoryDefinitions.js";
+export { SESSION_SAVE_LEDGER_TOOL, SESSION_SAVE_HANDOFF_TOOL, SESSION_LOAD_CONTEXT_TOOL, KNOWLEDGE_SEARCH_TOOL, KNOWLEDGE_FORGET_TOOL, SESSION_COMPACT_LEDGER_TOOL, SESSION_SEARCH_MEMORY_TOOL, MEMORY_HISTORY_TOOL, MEMORY_CHECKOUT_TOOL, SESSION_SAVE_IMAGE_TOOL, SESSION_VIEW_IMAGE_TOOL, SESSION_HEALTH_CHECK_TOOL, SESSION_FORGET_MEMORY_TOOL, SESSION_EXPORT_MEMORY_TOOL, KNOWLEDGE_SET_RETENTION_TOOL, SESSION_SAVE_EXPERIENCE_TOOL, KNOWLEDGE_UPVOTE_TOOL, KNOWLEDGE_DOWNVOTE_TOOL, KNOWLEDGE_SYNC_RULES_TOOL, DEEP_STORAGE_PURGE_TOOL, SESSION_INTUITIVE_RECALL_TOOL, SESSION_BACKFILL_LINKS_TOOL, MAINTENANCE_VACUUM_TOOL, isDeepStoragePurgeArgs, SESSION_SYNTHESIZE_EDGES_TOOL, isSessionSynthesizeEdgesArgs, SESSION_COGNITIVE_ROUTE_TOOL, isSessionCognitiveRouteArgs, SESSION_TASK_ROUTE_TOOL, isSessionTaskRouteArgs } from "./sessionMemoryDefinitions.js";
 
-export { sessionSaveLedgerHandler, sessionSaveHandoffHandler, sessionLoadContextHandler, knowledgeSearchHandler, knowledgeForgetHandler, sessionSearchMemoryHandler, backfillEmbeddingsHandler, memoryHistoryHandler, memoryCheckoutHandler, sessionSaveImageHandler, sessionViewImageHandler, sessionHealthCheckHandler, sessionForgetMemoryHandler, knowledgeSetRetentionHandler, sessionSaveExperienceHandler, knowledgeUpvoteHandler, knowledgeDownvoteHandler, knowledgeSyncRulesHandler, sessionExportMemoryHandler, deepStoragePurgeHandler } from "./sessionMemoryHandlers.js";
+// 1. Ledger (Core CRUD & State)
+export {
+    sessionSaveLedgerHandler,
+    sessionSaveHandoffHandler,
+    sessionLoadContextHandler,
+    sessionSaveExperienceHandler,
+    sessionSaveImageHandler,
+    sessionViewImageHandler,
+    memoryHistoryHandler,
+    memoryCheckoutHandler,
+    sessionForgetMemoryHandler,
+    sessionExportMemoryHandler
+} from "./ledgerHandlers.js";
 
+// 2. Graph (Semantic Search & Weighting)
+export {
+    sessionSearchMemoryHandler,
+    knowledgeSearchHandler,
+    sessionIntuitiveRecallHandler,
+    knowledgeUpvoteHandler,
+    knowledgeDownvoteHandler,
+    knowledgeForgetHandler,
+    knowledgeSyncRulesHandler,
+    sessionSynthesizeEdgesHandler,
+    sessionCognitiveRouteHandler
+} from "./graphHandlers.js";
 
+// 3. Hygiene (Maintenance & Integrity)
+export {
+    deepStoragePurgeHandler,
+    maintenanceVacuumHandler,
+    sessionHealthCheckHandler,
+    backfillEmbeddingsHandler,
+    sessionBackfillLinksHandler,
+    knowledgeSetRetentionHandler
+} from "./hygieneHandlers.js";
 // ── Compaction Handler (v0.4.0 — Enhancement #2) ──
 // The compaction handler is in a separate file because it's significantly
 // more complex than the other session memory handlers (chunked Gemini
@@ -44,3 +77,25 @@ export { compactLedgerHandler } from "./compactionHandler.js";
 // server.ts handles the conditional registration.
 export { AGENT_REGISTRY_TOOLS, getRoleIcon } from "./agentRegistryDefinitions.js";
 export { agentRegisterHandler, agentHeartbeatHandler, agentListTeamHandler } from "./agentRegistryHandlers.js";
+
+// ── Task Router (v7.1 — Heuristic Routing, Optional) ──
+// Registered when PRISM_TASK_ROUTER_ENABLED=true.
+// server.ts handles the conditional registration.
+export { sessionTaskRouteHandler } from "./taskRouterHandler.js";
+
+// ── Dark Factory Pipeline Tools (v7.3 — Autonomous Execution, Optional) ──
+// Registered when PRISM_DARK_FACTORY_ENABLED=true.
+// server.ts handles the conditional registration.
+export {
+  SESSION_START_PIPELINE_TOOL,
+  SESSION_CHECK_PIPELINE_STATUS_TOOL,
+  SESSION_ABORT_PIPELINE_TOOL,
+  isStartPipelineArgs,
+  isCheckPipelineStatusArgs,
+  isAbortPipelineArgs,
+} from "./pipelineDefinitions.js";
+export {
+  sessionStartPipelineHandler,
+  sessionCheckPipelineStatusHandler,
+  sessionAbortPipelineHandler,
+} from "./pipelineHandlers.js";

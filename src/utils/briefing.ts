@@ -6,7 +6,7 @@
  *
  * ═══════════════════════════════════════════════════════════════════
  * DESIGN DECISIONS:
- *   - Uses gemini-2.0-flash for max speed (~2-3s generation)
+ *   - Uses gemini-2.5-flash for max speed (~2-3s generation)
  *   - Graceful fallback if no API key or Gemini call fails
  *   - Prompt is tuned for brevity — exactly 3 bullets, no fluff
  *   - Reuses GOOGLE_API_KEY from config.ts (same key as embeddings)

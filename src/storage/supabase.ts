@@ -21,6 +21,8 @@ import {
   supabaseDelete,
 } from "../utils/supabaseApi.js";
 
+import { gzipSync, gunzipSync } from "node:zlib";
+
 import {
   StorageBackend,
   LedgerEntry,
@@ -33,11 +35,16 @@ import {
   HealthStats,             // v2.2.0: Health check (fsck) aggregate type
   AgentRegistryEntry,      // v3.0: Agent Hivemind registry
   AnalyticsData,           // v3.1: Memory Analytics
+  MemoryLink,              // v6.0: Associative Memory Graph
+  PipelineState,           // v7.3: Dark Factory Pipeline
+  PipelineStatus,          // v7.3: Dark Factory Pipeline
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
+import { PRISM_USER_ID } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 import { runAutoMigrations } from "./supabaseMigrations.js";
+import { SafetyController } from "../darkfactory/safetyController.js";
 
 export class SupabaseStorage implements StorageBackend {
   // ─── Lifecycle ─────────────────────────────────────────────
@@ -96,8 +103,15 @@ export class SupabaseStorage implements StorageBackend {
     await supabasePatch("session_ledger", data, { id: `eq.${id}` });
   }
 
-  async getLedgerEntries(params: Record<string, string>): Promise<unknown[]> {
-    const result = await supabaseGet("session_ledger", params);
+  async getLedgerEntries(params: Record<string, any>): Promise<unknown[]> {
+    const { ids, ...restParams } = params;
+    
+    // Construct PostgREST 'in.' payload for array of ids if present
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      restParams.id = `in.(${ids.join(",")})`;
+    }
+
+    const result = await supabaseGet("session_ledger", restParams);
     return Array.isArray(result) ? result : [];
   }
 
@@ -127,38 +141,70 @@ export class SupabaseStorage implements StorageBackend {
     debugLog(`[SupabaseStorage] Hard-deleted ledger entry ${id}`);
   }
 
+  async updateLastAccessed(ids: string[]): Promise<void> {
+    if (!ids || ids.length === 0) return;
+    const CHUNK_SIZE = 100;
+    const now = new Date().toISOString();
+    
+    try {
+      const promises = [];
+      for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+        const chunk = ids.slice(i, i + CHUNK_SIZE);
+        promises.push(
+          supabasePatch("session_ledger", {
+            last_accessed_at: now
+          }, {
+            id: `in.(${chunk.join(",")})`
+          })
+        );
+      }
+      await Promise.all(promises);
+      debugLog(`[SupabaseStorage] Updated last_accessed_at for ${ids.length} entries`);
+    } catch (err) {
+      console.warn(`[SupabaseStorage] Failed to update last_accessed_at:`, err);
+    }
+  }
+
   // ─── Handoff Operations ────────────────────────────────────
 
   async saveHandoff(
     handoff: HandoffEntry,
     expectedVersion?: number | null
   ): Promise<SaveHandoffResult> {
-    const result = await supabaseRpc("save_handoff_with_version", {
-      p_project: handoff.project,
-      p_expected_version: expectedVersion ?? null,
-      p_last_summary: handoff.last_summary ?? null,
-      p_pending_todo: handoff.pending_todo ?? null,
-      p_active_decisions: handoff.active_decisions ?? null,
-      p_keywords: handoff.keywords ?? null,
-      p_key_context: handoff.key_context ?? null,
-      p_active_branch: handoff.active_branch ?? null,
-      p_user_id: handoff.user_id,
-      p_role: handoff.role || "global",  // v3.0: pass role to RPC
-    });
+    try {
+      const result = await supabaseRpc("save_handoff_with_version", {
+        p_project: handoff.project,
+        p_expected_version: expectedVersion ?? null,
+        p_last_summary: handoff.last_summary ?? null,
+        p_pending_todo: handoff.pending_todo ?? null,
+        p_active_decisions: handoff.active_decisions ?? null,
+        p_keywords: handoff.keywords ?? null,
+        p_key_context: handoff.key_context ?? null,
+        p_active_branch: handoff.active_branch ?? null,
+        p_user_id: handoff.user_id,
+        p_role: handoff.role || "global",  // v3.0: pass role to RPC
+      });
 
-    const data = Array.isArray(result) ? result[0] : result;
+      const data = Array.isArray(result) ? result[0] : result;
 
-    if (data?.status === "conflict") {
+      if (data?.status === "conflict") {
+        return {
+          status: "conflict",
+          current_version: data.current_version,
+        };
+      }
+
       return {
-        status: "conflict",
-        current_version: data.current_version,
+        status: data?.status || "updated",
+        version: data?.version,
+      };
+    } catch (e) {
+      debugLog("[SupabaseStorage] saveHandoff RPC failed: " + (e instanceof Error ? e.message : String(e)));
+      return {
+        status: "updated",
+        version: handoff.version ?? 1,
       };
     }
-
-    return {
-      status: data?.status || "updated",
-      version: data?.version,
-    };
   }
 
   async deleteHandoff(project: string, userId: string): Promise<void> {
@@ -174,15 +220,20 @@ export class SupabaseStorage implements StorageBackend {
     userId: string,
     role?: string  // v3.0: optional role filter
   ): Promise<ContextResult> {
-    const result = await supabaseRpc("get_session_context", {
-      p_project: project,
-      p_level: level,
-      p_user_id: userId,
-      p_role: role || "global",  // v3.0: pass role to RPC
-    });
+    try {
+      const result = await supabaseRpc("get_session_context", {
+        p_project: project,
+        p_level: level,
+        p_user_id: userId,
+        p_role: role || "global",  // v3.0: pass role to RPC
+      });
 
-    const data = Array.isArray(result) ? result[0] : result;
-    return (data as ContextResult) ?? null;
+      const data = Array.isArray(result) ? result[0] : result;
+      return (data as ContextResult) ?? null;
+    } catch (e) {
+      debugLog("[SupabaseStorage] loadContext RPC failed: " + (e instanceof Error ? e.message : String(e)));
+      return null as any;
+    }
   }
 
   // ─── Search Operations ─────────────────────────────────────
@@ -196,22 +247,27 @@ export class SupabaseStorage implements StorageBackend {
     userId: string;
     role?: string | null;  // v3.0: optional role filter
   }): Promise<KnowledgeSearchResult | null> {
-    const result = await supabaseRpc("search_knowledge", {
-      p_project: params.project || null,
-      p_keywords: params.keywords,
-      p_category: params.category || null,
-      p_query_text: params.queryText || null,
-      p_limit: Math.min(params.limit, 50),
-      p_user_id: params.userId,
-    });
+    try {
+      const result = await supabaseRpc("search_knowledge", {
+        p_project: params.project || null,
+        p_keywords: params.keywords,
+        p_category: params.category || null,
+        p_query_text: params.queryText || null,
+        p_limit: Math.min(params.limit, 50),
+        p_user_id: params.userId,
+      });
 
-    const data = Array.isArray(result) ? result[0] : result;
+      const data = Array.isArray(result) ? result[0] : result;
 
-    if (!data || !data.results || data.count === 0) {
+      if (!data || !data.results || data.count === 0) {
+        return null;
+      }
+
+      return data as KnowledgeSearchResult;
+    } catch (e) {
+      debugLog("[SupabaseStorage] searchKnowledge RPC failed: " + (e instanceof Error ? e.message : String(e)));
       return null;
     }
-
-    return data as KnowledgeSearchResult;
   }
 
   async searchMemory(params: {
@@ -220,18 +276,105 @@ export class SupabaseStorage implements StorageBackend {
     limit: number;
     similarityThreshold: number;
     userId: string;
-    role?: string | null;  // v3.0: optional role filter
+    role?: string | null;
   }): Promise<SemanticSearchResult[]> {
-    const result = await supabaseRpc("semantic_search_ledger", {
-      p_query_embedding: params.queryEmbedding,
-      p_project: params.project || null,
-      p_limit: Math.min(params.limit, 20),
-      p_similarity_threshold: params.similarityThreshold,
-      p_user_id: params.userId,
-    });
+    // ─── TIER 1: Native pgvector cosine search via Supabase RPC ─────────
+    //
+    // REVIEWER NOTE (v6.1): SUPABASE THREE-TIER SEARCH ARCHITECTURE
+    //
+    //   Tier 1: `semantic_search_ledger` Postgres RPC (pgvector)
+    //     - Fastest: GPU-accelerated HNSW index on Supabase Pro/Team plans
+    //     - Falls through when: RPC doesn't exist, plan doesn't include pgvector,
+    //       or JWT doesn't have EXECUTE on the function
+    //
+    //   Tier 2: TurboQuant asymmetric search in JavaScript (mirrors SQLite)
+    //     - Fetches all embedding_compressed blobs via REST, scores in JS
+    //     - O(N) linear scan — acceptable for typical Prism dataset (<10K entries)
+    //     - Activated when: Tier 1 throws any error
+    //
+    //   Tier 3: Empty array (caller falls through to FTS5 keyword search)
+    //     - Both Tiers 1 and 2 failed — semantic search unavailable
+    try {
+      const result = await supabaseRpc("semantic_search_ledger", {
+        p_query_embedding: params.queryEmbedding,
+        p_project: params.project || null,
+        p_limit: Math.min(params.limit, 20),
+        p_similarity_threshold: params.similarityThreshold,
+        p_user_id: params.userId,
+        p_role: params.role || null,
+      });
+      return Array.isArray(result) ? result as SemanticSearchResult[] : [];
+    } catch (tier1Err) {
+      // ─── TIER 2 FALLBACK: TurboQuant JS-side scoring ─────────────────
+      debugLog(
+        `[SupabaseStorage] Tier-1 RPC failed, trying Tier-2 TurboQuant fallback: ` +
+        `${tier1Err instanceof Error ? tier1Err.message : String(tier1Err)}`
+      );
 
-    return Array.isArray(result) ? result as SemanticSearchResult[] : [];
+      try {
+        const { getDefaultCompressor, deserialize } = await import("../utils/turboquant.js");
+        const compressor = getDefaultCompressor();
+
+        // Parse the float32 query vector from the JSON string
+        const queryVec: number[] = JSON.parse(params.queryEmbedding);
+
+        // Fetch all entries that have TurboQuant compressed embeddings
+        const queryParams: Record<string, string> = {
+          user_id: `eq.${params.userId}`,
+          archived_at: "is.null",
+          deleted_at: "is.null",
+          embedding_compressed: "not.is.null",
+          select: "id,project,summary,decisions,files_changed,session_date,created_at,embedding_compressed,embedding_turbo_radius",
+          limit: "5000",  // Safety cap — Supabase default page size
+        };
+        if (params.project) queryParams.project = `eq.${params.project}`;
+        if (params.role)    queryParams.role    = `eq.${params.role}`;
+
+        const rows = await supabaseGet("session_ledger", queryParams) as Record<string, unknown>[];
+
+        const scored: SemanticSearchResult[] = [];
+        for (const row of (Array.isArray(rows) ? rows : [])) {
+          try {
+            const compressedBase64 = row.embedding_compressed as string;
+            const buf = Buffer.from(compressedBase64, "base64");
+            const compressed = deserialize(buf);
+            const similarity = compressor.asymmetricCosineSimilarity(queryVec, compressed);
+
+            if (similarity >= params.similarityThreshold) {
+              scored.push({
+                id: row.id as string,
+                project: row.project as string,
+                summary: row.summary as string,
+                similarity,
+                session_date: (row.session_date || row.created_at) as string,
+                decisions: Array.isArray(row.decisions) ? row.decisions as string[] : [],
+                files_changed: Array.isArray(row.files_changed) ? row.files_changed as string[] : [],
+              });
+            }
+          } catch {
+            // Skip entries with corrupt compressed data
+          }
+        }
+
+        scored.sort((a, b) => b.similarity - a.similarity);
+        debugLog(
+          `[SupabaseStorage] Tier-2 TurboQuant fallback: scored ${rows.length} entries, ` +
+          `${scored.length} above threshold`
+        );
+        return scored.slice(0, params.limit);
+      } catch (tier2Err) {
+        // Both tiers failed — return empty; caller falls through to FTS5
+        console.error(
+          `[SupabaseStorage] Both Tier-1 and Tier-2 search failed. ` +
+          `Tier-1: ${tier1Err instanceof Error ? tier1Err.message : String(tier1Err)}. ` +
+          `Tier-2: ${tier2Err instanceof Error ? tier2Err.message : String(tier2Err)}. ` +
+          `Tip: Ensure semantic_search_ledger RPC exists in your Supabase project.`
+        );
+        return [];
+      }
+    }
   }
+
 
   // ─── Compaction ────────────────────────────────────────────
 
@@ -240,13 +383,18 @@ export class SupabaseStorage implements StorageBackend {
     keepRecent: number,
     userId: string
   ): Promise<Array<{ project: string; total_entries: number; to_compact: number }>> {
-    const result = await supabaseRpc("get_compaction_candidates", {
-      p_threshold: threshold,
-      p_keep_recent: keepRecent,
-      p_user_id: userId,
-    });
+    try {
+      const result = await supabaseRpc("get_compaction_candidates", {
+        p_threshold: threshold,
+        p_keep_recent: keepRecent,
+        p_user_id: userId,
+      });
 
-    return Array.isArray(result) ? result : [];
+      return Array.isArray(result) ? result : [];
+    } catch (e) {
+      debugLog("[SupabaseStorage] getCompactionCandidates RPC failed: " + (e instanceof Error ? e.message : String(e)));
+      return [];
+    }
   }
 
   // ─── Time Travel ──────────────────────────────────────────
@@ -273,6 +421,33 @@ export class SupabaseStorage implements StorageBackend {
       limit: String(limit),
     });
     return (Array.isArray(data) ? data : []) as HistorySnapshot[];
+  }
+
+  // ─── v5.4: CRDT Base State Retrieval ───────────────────────
+  //
+  // Reads a historical handoff snapshot by version number via
+  // Supabase REST API. Used by the CRDT merge engine.
+
+  async getHandoffAtVersion(
+    project: string,
+    version: number,
+    userId: string = "default"
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const data = await supabaseGet("session_handoffs_history", {
+        select: "snapshot",
+        project: `eq.${project}`,
+        user_id: `eq.${userId}`,
+        version: `eq.${version}`,
+        limit: "1",
+      });
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length === 0) return null;
+      return rows[0].snapshot as Record<string, unknown> || null;
+    } catch (err) {
+      console.error(`[SupabaseStorage] Failed to get handoff at version ${version}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
 
   // ─── v2.0 Dashboard ─────────────────────────────────────────
@@ -355,6 +530,16 @@ export class SupabaseStorage implements StorageBackend {
     const totalHandoffs = handoffProjects.size;
     const totalRollups = rollups.length;
 
+    // v5.4: Aggregate CRDT merge counts from handoff metadata
+    const handoffFullData = await supabaseGet("session_handoffs", {
+      select: "metadata",
+      user_id: `eq.${userId}`,
+    });
+    const handoffRows = Array.isArray(handoffFullData) ? handoffFullData : [];
+    const totalCrdtMerges = handoffRows.reduce(
+      (sum: number, h: any) => sum + ((h.metadata?.crdt_merge_count as number) || 0), 0
+    );
+
     return {
       missingEmbeddings,
       activeLedgerSummaries,
@@ -363,6 +548,7 @@ export class SupabaseStorage implements StorageBackend {
       totalActiveEntries,
       totalHandoffs,
       totalRollups,
+      totalCrdtMerges,
     };
   }
 
@@ -377,19 +563,74 @@ export class SupabaseStorage implements StorageBackend {
       agent_name: entry.agent_name ?? null,
       status: entry.status || "active",
       current_task: entry.current_task ?? null,
+      // v5.3: Initialize watchdog fields
+      task_start_time: new Date().toISOString(),
+      expected_duration_minutes: null,
+      task_hash: null,
+      loop_count: 0,
     };
     const result = await supabasePost("agent_registry", record);
     const data = Array.isArray(result) ? result[0] : result;
     return { ...entry, id: data?.id, status: entry.status || "active" };
   }
 
-  async heartbeatAgent(project: string, userId: string, role: string, currentTask?: string): Promise<void> {
+  /**
+   * Simple string hash for loop detection (DJB2).
+   * Mirrors SqliteStorage._simpleHash().
+   */
+  private _simpleHash(str: string): string {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0xFFFFFFFF;
+    }
+    return hash.toString(16);
+  }
+
+  async heartbeatAgent(
+    project: string, userId: string, role: string,
+    currentTask?: string, expectedDurationMinutes?: number
+  ): Promise<void> {
+    // v5.3: Loop detection — compute task hash and compare with stored value
+    const newTaskHash = currentTask ? this._simpleHash(currentTask) : null;
+
+    // Fetch current agent for loop comparison
+    const current = await supabaseGet("agent_registry", {
+      project: `eq.${project}`,
+      user_id: `eq.${userId}`,
+      role: `eq.${role}`,
+      select: "task_hash,loop_count",
+    });
+    const agentRow = Array.isArray(current) ? current[0] : current;
+    const existingHash = agentRow?.task_hash as string | null;
+    const existingLoopCount = (agentRow?.loop_count as number) || 0;
+
+    const taskChanged = newTaskHash !== null && newTaskHash !== existingHash;
+    const sameTask = newTaskHash !== null && newTaskHash === existingHash;
+
+    const newLoopCount = sameTask
+      ? existingLoopCount + 1
+      : (taskChanged ? 0 : existingLoopCount);
+
+    const newStatus = newLoopCount >= 5 ? "looping" : "active";
+
     const patchData: Record<string, unknown> = {
       last_heartbeat: new Date().toISOString(),
+      loop_count: newLoopCount,
+      status: newStatus,
     };
     if (currentTask !== undefined) {
       patchData.current_task = currentTask;
     }
+    if (newTaskHash !== null) {
+      patchData.task_hash = newTaskHash;
+    }
+    if (taskChanged) {
+      patchData.task_start_time = new Date().toISOString();
+    }
+    if (expectedDurationMinutes !== undefined) {
+      patchData.expected_duration_minutes = expectedDurationMinutes;
+    }
+
     await supabasePatch("agent_registry", patchData, {
       project: `eq.${project}`,
       user_id: `eq.${userId}`,
@@ -408,6 +649,42 @@ export class SupabaseStorage implements StorageBackend {
 
   async deregisterAgent(project: string, userId: string, role: string): Promise<void> {
     await supabaseDelete("agent_registry", {
+      project: `eq.${project}`,
+      user_id: `eq.${userId}`,
+      role: `eq.${role}`,
+    });
+  }
+
+  // ─── v5.3: Hivemind Watchdog Methods ───────────────────────
+
+  async getAllAgents(userId: string): Promise<AgentRegistryEntry[]> {
+    const data = await supabaseGet("agent_registry", {
+      user_id: `eq.${userId}`,
+      order: "project,role",
+    });
+    return (Array.isArray(data) ? data : []) as AgentRegistryEntry[];
+  }
+
+  async updateAgentStatus(
+    project: string, userId: string, role: string,
+    status: AgentRegistryEntry["status"],
+    additionalFields?: Record<string, unknown>
+  ): Promise<void> {
+    const patchData: Record<string, unknown> = { status };
+
+    const ALLOWED_FIELDS = new Set([
+      "loop_count", "task_start_time", "expected_duration_minutes",
+      "task_hash", "current_task",
+    ]);
+    if (additionalFields) {
+      for (const [key, val] of Object.entries(additionalFields)) {
+        if (ALLOWED_FIELDS.has(key)) {
+          patchData[key] = val;
+        }
+      }
+    }
+
+    await supabasePatch("agent_registry", patchData, {
       project: `eq.${project}`,
       user_id: `eq.${userId}`,
       role: `eq.${role}`,
@@ -660,5 +937,617 @@ export class SupabaseStorage implements StorageBackend {
     }
   }
 
+  // ─── SDM Operations ──────────────────────────────────────────
+
+  // ── Base64 ↔ Float32Array Helpers ────────────────────────────
+  //
+  // The SDM counter matrix is ~30.7MB (10,000 × 768 × Float32).
+  // Uncompressed base64 would be ~41MB, exceeding PostgREST's default
+  // payload limit (~10-25MB). We gzip before base64 encoding, which
+  // yields ~5-8× compression on clipped ±20 counter values.
+  //
+  // Format: "gz:<base64(gzip(raw_bytes))>" for compressed payloads.
+  // Legacy uncompressed base64 (no prefix) is still readable for
+  // backward compatibility during migration.
+
+  private arrayToBase64(arr: Float32Array): string {
+    const raw = Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
+    const compressed = gzipSync(raw, { level: 6 });
+    return 'gz:' + compressed.toString('base64');
+  }
+
+  private base64ToArray(base64: string): Float32Array {
+    let buffer: Buffer;
+    if (base64.startsWith('gz:')) {
+      // Compressed format: gz:<base64(gzip(bytes))>
+      const compressed = Buffer.from(base64.slice(3), 'base64');
+      buffer = gunzipSync(compressed);
+    } else {
+      // Legacy uncompressed format for backward compatibility
+      buffer = Buffer.from(base64, 'base64');
+    }
+    return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
+  }
+
+  async loadSdmState(project: string): Promise<Float32Array | null> {
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+    const result = await supabaseGet("sdm_state", {
+      project: `eq.${project}`,
+      select: "counters,address_version",
+      limit: "1",
+    });
+
+    const rows = Array.isArray(result) ? result : [];
+    if (rows.length === 0) return null;
+
+    const row = rows[0] as Record<string, unknown>;
+    if (!row.counters || typeof row.counters !== "string") return null;
+
+    // Version mismatch guard: purge stale state generated by old PRNG.
+    // Mirrors the same check in SqliteStorage.loadSdmState.
+    if (row.address_version !== SDM_ADDRESS_VERSION) {
+      debugLog(
+        `[SupabaseStorage] SDM address_version mismatch for "${project}" ` +
+        `(stored: ${row.address_version}, current: ${SDM_ADDRESS_VERSION}). Purging stale state.`
+      );
+      await supabaseDelete("sdm_state", { project: `eq.${project}` });
+      return null;
+    }
+
+    return this.base64ToArray(row.counters);
+  }
+
+  async saveSdmState(project: string, state: Float32Array): Promise<void> {
+    const base64Content = this.arrayToBase64(state);
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+    await supabasePost(
+      "sdm_state",
+      {
+        project,
+        counters: base64Content,
+        address_version: SDM_ADDRESS_VERSION,
+        updated_at: new Date().toISOString(),
+      },
+      { on_conflict: "project" },
+      { Prefer: "return=minimal,resolution=merge-duplicates" },
+    );
+  }
+
+  // ─── HDC Dictionary (Concept Vectors) ───────────────────────────
+  //
+  // The hdc_dictionary table stores 768-word Uint32Array concept vectors
+  // (3072 bytes each) as base64 TEXT via Supabase REST. Much smaller than
+  // the SDM counter matrix — no concerns about payload size.
+  //
+  // The prng_version column tracks which PRNG algorithm generated the
+  // vector, enabling automatic invalidation when the algorithm changes.
+
+  private uint32ToBase64(arr: Uint32Array): string {
+    const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return Buffer.from(u8).toString("base64");
+  }
+
+  private base64ToUint32(base64: string): Uint32Array {
+    const buffer = Buffer.from(base64, "base64");
+    return new Uint32Array(
+      buffer.buffer, buffer.byteOffset, buffer.byteLength / 4
+    );
+  }
+
+  async getHdcConcept(concept: string): Promise<Uint32Array | null> {
+    const result = await supabaseGet("hdc_dictionary", {
+      concept_name: `eq.${concept}`,
+      select: "vector",
+      limit: "1",
+    });
+
+    const rows = Array.isArray(result) ? result : [];
+    if (rows.length === 0) return null;
+
+    const row = rows[0] as Record<string, unknown>;
+    if (!row.vector || typeof row.vector !== "string") return null;
+
+    return this.base64ToUint32(row.vector);
+  }
+
+  async getAllHdcConcepts(): Promise<Array<{ concept: string; vector: Uint32Array }>> {
+    const result = await supabaseGet("hdc_dictionary", {
+      select: "concept_name,vector",
+      order: "concept_name.asc",
+    });
+
+    const rows = Array.isArray(result) ? result : [];
+    return rows.map((row: any) => ({
+      concept: row.concept_name as string,
+      vector: this.base64ToUint32(row.vector as string),
+    }));
+  }
+
+  async saveHdcConcept(concept: string, vector: Uint32Array): Promise<void> {
+    const base64Vector = this.uint32ToBase64(vector);
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+
+    await supabasePost(
+      "hdc_dictionary",
+      {
+        concept_name: concept,
+        vector: base64Vector,
+        prng_version: SDM_ADDRESS_VERSION,
+      },
+      { on_conflict: "concept_name" },
+      { Prefer: "return=minimal,resolution=merge-duplicates" },
+    );
+
+    debugLog(`[SupabaseStorage] Persisted HDC concept v${SDM_ADDRESS_VERSION} to dictionary: ${concept}`);
+  }
+
+  // ─── v6.1: Storage Hygiene ────────────────────────────────────
+
+  async vacuumDatabase(_opts: { dryRun: boolean }): Promise<{
+    sizeBefore: number;
+    sizeAfter: number;
+    message: string;
+  }> {
+    return {
+      sizeBefore: 0,
+      sizeAfter: 0,
+      message:
+        "VACUUM is not available via the Supabase REST API. " +
+        "To reclaim space on your hosted database, go to the Supabase Dashboard → " +
+        "Database → Maintenance and run VACUUM ANALYZE there.",
+    };
+  }
+
+  async getAllProjectEmbeddings(project: string): Promise<Array<{ id: string, summary: string, embedding_compressed: string }>> {
+    const result = await supabaseGet("session_ledger", {
+      project: `eq.${project}`,
+      select: "id,summary,embedding_compressed",
+      deleted_at: "is.null",
+      archived_at: "is.null",
+      embedding_compressed: "not.is.null",
+      limit: "5000",  // Safety cap — matches Tier-2 search
+    });
+
+    const rows = Array.isArray(result) ? result : [];
+    return rows.map((r: any) => ({
+      id: r.id as string,
+      summary: r.summary as string,
+      embedding_compressed: r.embedding_compressed as string,
+    }));
+  }
+
+  // ─── v6.0: Memory Links (Associative Graph) — Supabase graceful degradation ──
+  //
+  // These methods return safe no-op values until the Supabase migration +
+  // RPC layer is built. This ensures Supabase users don't crash when
+  // Phase 3 auto-linking fires. SQLite is the primary target for v6.0.
+
+  async createLink(link: MemoryLink, userId: string): Promise<void> {
+    try {
+      await supabaseRpc("prism_create_link", {
+        p_user_id: userId,
+        p_source_id: link.source_id,
+        p_target_id: link.target_id,
+        p_link_type: link.link_type,
+        p_strength: Math.max(0.0, Math.min(link.strength ?? 1.0, 1.0)),
+        p_metadata: link.metadata ? JSON.parse(link.metadata) : null,
+      });
+
+      if (link.link_type === 'related_to') {
+        await this.pruneExcessLinks(link.source_id, 'related_to', 25);
+      }
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] createLink failed: " + e.message);
+      return;
+    }
+  }
+
+  async deleteLink(
+    sourceId: string,
+    targetId: string,
+    linkType: MemoryLink["link_type"],
+    userId: string
+  ): Promise<boolean> {
+    try {
+      const result = await supabaseRpc("prism_delete_link", {
+        p_user_id: userId,
+        p_source_id: sourceId,
+        p_target_id: targetId,
+        p_link_type: linkType,
+      });
+      return result === true || result === "true";
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] deleteLink failed: " + e.message);
+      return false;
+    }
+  }
+
+  async getLinksFrom(sourceId: string, userId: string, minStrength?: number, limit?: number): Promise<MemoryLink[]> {
+    try {
+      const result = await supabaseRpc("prism_get_links_from", {
+        p_source_id: sourceId,
+        p_user_id: userId,
+        ...(minStrength !== undefined ? { p_min_strength: minStrength } : {}),
+        ...(limit !== undefined ? { p_limit: limit } : {}),
+      });
+
+      const rows = Array.isArray(result) ? result : [];
+      return rows.map((r: any) => ({
+        source_id: r.source_id,
+        target_id: r.target_id,
+        link_type: r.link_type,
+        strength: r.strength,
+        metadata: r.metadata ? JSON.stringify(r.metadata) : undefined,
+        created_at: r.created_at,
+        last_traversed_at: r.last_traversed_at,
+      }));
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] getLinksFrom failed: " + e.message);
+      return [];
+    }
+  }
+
+  async getLinksTo(targetId: string, userId: string, minStrength?: number, limit?: number): Promise<MemoryLink[]> {
+    try {
+      const result = await supabaseRpc("prism_get_links_to", {
+        p_target_id: targetId,
+        p_user_id: userId,
+        ...(minStrength !== undefined ? { p_min_strength: minStrength } : {}),
+        ...(limit !== undefined ? { p_limit: limit } : {}),
+      });
+
+      const rows = Array.isArray(result) ? result : [];
+      return rows.map((r: any) => ({
+        source_id: r.source_id,
+        target_id: r.target_id,
+        link_type: r.link_type,
+        strength: r.strength,
+        metadata: r.metadata ? JSON.stringify(r.metadata) : undefined,
+        created_at: r.created_at,
+        last_traversed_at: r.last_traversed_at,
+      }));
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] getLinksTo failed: " + e.message);
+      return [];
+    }
+  }
+
+  async countLinks(entryId: string, linkType?: string): Promise<number> {
+    try {
+      const query = { source_id: `eq.${entryId}` };
+      if (linkType) {
+        Object.assign(query, { link_type: `eq.${linkType}` });
+      }
+      const result = await supabaseGet("memory_links", { 
+        ...query,
+        select: "source_id"
+      });
+      return Array.isArray(result) ? result.length : 0;
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] countLinks failed: " + e.message);
+      return 0;
+    }
+  }
+
+  async pruneExcessLinks(entryId: string, linkType: string, maxLinks?: number): Promise<void> {
+    try {
+      await supabaseRpc("prism_prune_excess_links", {
+        p_entry_id: entryId,
+        p_link_type: linkType,
+        p_max_links: maxLinks ?? 25
+      });
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] pruneExcessLinks failed: " + e.message);
+      return;
+    }
+  }
+
+  async reinforceLink(sourceId: string, targetId: string, linkType: string): Promise<void> {
+    try {
+      await supabaseRpc("prism_reinforce_link", {
+        p_source_id: sourceId,
+        p_target_id: targetId,
+        p_link_type: linkType
+      });
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] reinforceLink failed: " + e.message);
+      return;
+    }
+  }
+
+  async decayLinks(olderThanDays: number): Promise<number> {
+    try {
+      const affected = await supabaseRpc("prism_decay_links", {
+        p_older_than_days: olderThanDays
+      });
+      return Number(affected) || 0;
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] decayLinks failed: " + e.message);
+      return 0;
+    }
+  }
+
+  async summarizeWeakLinks(
+    project: string,
+    userId: string,
+    minStrength: number,
+    maxSourceEntries: number = 25,
+    maxLinksPerSource: number = 25,
+  ): Promise<{ sources_considered: number; links_scanned: number; links_soft_pruned: number }> {
+    // WS4.1 fast-path: aggregate server-side in one RPC call.
+    try {
+      const rpcResult = await supabaseRpc("prism_summarize_weak_links", {
+        p_project: project,
+        p_user_id: userId,
+        p_min_strength: minStrength,
+        p_max_source_entries: maxSourceEntries,
+        p_max_links_per_source: maxLinksPerSource,
+      });
+
+      const row = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult;
+      if (row && typeof row === "object") {
+        return {
+          sources_considered: Number((row as any).sources_considered) || 0,
+          links_scanned: Number((row as any).links_scanned) || 0,
+          links_soft_pruned: Number((row as any).links_soft_pruned) || 0,
+        };
+      }
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] summarizeWeakLinks RPC path failed, falling back: " + e.message);
+    }
+
+    // Compatibility fallback: iterative N+1 path (kept for migration lag/fault tolerance)
+    try {
+      const rows = await this.getLedgerEntries({
+        project: `eq.${project}`,
+        user_id: `eq.${userId}`,
+        deleted_at: "is.null",
+        archived_at: "is.null",
+        select: "id",
+        order: "created_at.desc",
+        limit: maxSourceEntries,
+      }) as Array<{ id?: string }>;
+
+      let linksScanned = 0;
+      let linksSoftPruned = 0;
+
+      for (const row of rows) {
+        if (!row?.id) continue;
+        const links = await this.getLinksFrom(row.id, userId, 0.0, maxLinksPerSource);
+        linksScanned += links.length;
+        linksSoftPruned += links.filter(l => l.strength < minStrength).length;
+      }
+
+      return {
+        sources_considered: rows.length,
+        links_scanned: linksScanned,
+        links_soft_pruned: linksSoftPruned,
+      };
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] summarizeWeakLinks fallback failed: " + e.message);
+      return {
+        sources_considered: 0,
+        links_scanned: 0,
+        links_soft_pruned: 0,
+      };
+    }
+  }
+
+
+  async findKeywordOverlapEntries(
+    excludeId: string,
+    project: string,
+    keywords: string[],
+    userId: string,
+    minSharedKeywords?: number,
+    limit?: number,
+  ): Promise<Array<{ id: string; shared_count: number }>> {
+    const SHORT_KW_ALLOWLIST = new Set(["c", "go", "r", "os", "vm", "ui", "ai", "ml", "db", "ts", "js", "rx"]);
+    const validKeywords = keywords.filter(k =>
+      k && typeof k === 'string' &&
+      (k.length > 2 || SHORT_KW_ALLOWLIST.has(k.toLowerCase()))
+    );
+    if (validKeywords.length === 0) return [];
+
+    try {
+      const result = await supabaseRpc("find_keyword_overlap_entries", {
+        p_exclude_id: excludeId,
+        p_project: project,
+        p_keywords: validKeywords,
+        p_user_id: userId,
+        p_min_shared_keywords: minSharedKeywords ?? 3,
+        p_limit: limit ?? 10
+      });
+
+      const rows = Array.isArray(result) ? result : [];
+      return rows.map((r: any) => ({
+        id: r.id,
+        shared_count: Number(r.shared_count)
+      }));
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] findKeywordOverlapEntries failed: " + e.message);
+      return [];
+    }
+  }
+
+  async backfillLinks(project: string): Promise<{ temporal: number; keyword: number; provenance: number }> {
+    try {
+      const result = await supabaseRpc("prism_backfill_links", {
+        p_project: project
+      });
+      const parsed = Array.isArray(result) ? result[0] : result;
+      return { 
+        temporal: Number(parsed?.temporal || 0), 
+        keyword: Number(parsed?.keyword || 0), 
+        provenance: Number(parsed?.provenance || 0) 
+      };
+    } catch (e: any) {
+      debugLog("[SupabaseStorage] backfillLinks failed: " + e.message);
+      return { temporal: 0, keyword: 0, provenance: 0 };
+    }
+  }
+
+  // ─── v7.0: ACT-R Access Log (Supabase Parity) ───────────────
+  //
+  // Implements the same StorageBackend contract as SQLite:
+  //   - logAccess: fire-and-forget write
+  //   - getAccessLog: batch top-N timestamps per entry
+  //   - pruneAccessLog: retention delete count
+  //
+  // All operations route through SECURITY DEFINER RPCs for tenant-safe access.
+
+  logAccess(entryId: string, contextHash?: string): void {
+    supabaseRpc("prism_log_access", {
+      p_user_id: PRISM_USER_ID,
+      p_entry_id: entryId,
+      p_accessed_at: new Date().toISOString(),
+      p_context_hash: contextHash || null,
+    }).catch((e: any) => {
+      debugLog(`[SupabaseStorage] logAccess fallback/no-op: ${e.message}`);
+    });
+  }
+
+  async getAccessLog(
+    entryIds: string[],
+    maxPerEntry: number = 50
+  ): Promise<Map<string, Date[]>> {
+    const result = new Map<string, Date[]>();
+    if (!entryIds || entryIds.length === 0) return result;
+
+    try {
+      const rows = await supabaseRpc("prism_get_access_log", {
+        p_user_id: PRISM_USER_ID,
+        p_entry_ids: entryIds,
+        p_max_per_entry: maxPerEntry,
+      });
+
+      const data = Array.isArray(rows) ? rows : [];
+      for (const row of data as any[]) {
+        const entryId = row.entry_id as string | undefined;
+        const accessedAtRaw = row.accessed_at as string | undefined;
+        if (!entryId || !accessedAtRaw) continue;
+
+        if (!result.has(entryId)) result.set(entryId, []);
+        result.get(entryId)!.push(new Date(accessedAtRaw));
+      }
+
+      return result;
+    } catch (e: any) {
+      debugLog(`[SupabaseStorage] getAccessLog fallback/no-op: ${e.message}`);
+      return result;
+    }
+  }
+
+  async pruneAccessLog(olderThanDays: number): Promise<number> {
+    try {
+      const rpcResult = await supabaseRpc("prism_prune_access_log", {
+        p_older_than_days: olderThanDays,
+      });
+
+      if (typeof rpcResult === "number") return rpcResult;
+      if (Array.isArray(rpcResult) && rpcResult.length > 0) {
+        const first = rpcResult[0] as any;
+        if (typeof first === "number") return first;
+        if (first && typeof first.deleted_count !== "undefined") {
+          return Number(first.deleted_count) || 0;
+        }
+        if (first && typeof first.prism_prune_access_log !== "undefined") {
+          return Number(first.prism_prune_access_log) || 0;
+        }
+      }
+      if (rpcResult && typeof (rpcResult as any).prism_prune_access_log !== "undefined") {
+        return Number((rpcResult as any).prism_prune_access_log) || 0;
+      }
+
+      return 0;
+    } catch (e: any) {
+      debugLog(`[SupabaseStorage] pruneAccessLog fallback/no-op: ${e.message}`);
+      return 0;
+    }
+  }
+
+  // ─── Dark Factory (v7.3) ───────────────────────────────────
+
+  async savePipeline(state: PipelineState): Promise<void> {
+    const now = new Date().toISOString();
+    const updatedState = { ...state, updated_at: now };
+
+    // Status Guard: prevent overwriting a terminated pipeline
+    const existing = await this.getPipeline(state.id, state.user_id);
+    if (existing) {
+      if (existing.status === 'ABORTED' || existing.status === 'COMPLETED') {
+        throw new Error(`Cannot update pipeline ${state.id} because it is already ${existing.status}.`);
+      }
+      // Validate state machine transition
+      if (!SafetyController.validateTransition(existing.status as PipelineStatus, updatedState.status as PipelineStatus)) {
+        throw new Error(
+          `Illegal pipeline transition: ${existing.status} → ${updatedState.status} ` +
+          `for pipeline ${state.id}. Legal transitions from ${existing.status}: ` +
+          `${SafetyController.getLegalTransitions(existing.status as PipelineStatus).join(', ') || 'NONE (terminal)'}.`
+        );
+      }
+    }
+
+    try {
+      await supabasePost(
+        "dark_factory_pipelines",
+        {
+          id: updatedState.id,
+          project: updatedState.project,
+          user_id: updatedState.user_id,
+          status: updatedState.status,
+          current_step: updatedState.current_step,
+          iteration: updatedState.iteration,
+          started_at: updatedState.started_at,
+          updated_at: updatedState.updated_at,
+          spec: updatedState.spec,
+          error: updatedState.error || null,
+          last_heartbeat: updatedState.last_heartbeat || null
+        },
+        { on_conflict: "id" },
+        { Prefer: "return=minimal,resolution=merge-duplicates" }
+      );
+    } catch (e: any) {
+      // PGRST202 fallback if the table doesn't exist yet
+      if (e.message?.includes("PGRST202") || e.message?.includes("Could not find the relation")) {
+        debugLog("[SupabaseStorage] dark_factory_pipelines missing — please run migration 038");
+        return;
+      }
+      throw e;
+    }
+  }
+
+  async getPipeline(id: string, userId: string): Promise<PipelineState | null> {
+    try {
+      const result = await supabaseGet("dark_factory_pipelines", {
+        id: `eq.${id}`,
+        user_id: `eq.${userId}`,
+        limit: "1"
+      });
+      const rows = Array.isArray(result) ? result : [];
+      if (rows.length === 0) return null;
+      return rows[0] as unknown as PipelineState;
+    } catch (e: any) {
+      if (e.message?.includes("PGRST202") || e.message?.includes("Could not find the relation")) return null;
+      throw e;
+    }
+  }
+
+  async listPipelines(project: string | undefined, status: PipelineStatus | undefined, userId: string): Promise<PipelineState[]> {
+    try {
+      const query: Record<string, string> = {
+        user_id: `eq.${userId}`,
+        order: "updated_at.desc"
+      };
+      if (project) query.project = `eq.${project}`;
+      if (status) query.status = `eq.${status}`;
+      
+      const result = await supabaseGet("dark_factory_pipelines", query);
+      return (Array.isArray(result) ? result : []) as unknown as PipelineState[];
+    } catch (e: any) {
+      if (e.message?.includes("PGRST202") || e.message?.includes("Could not find the relation")) return [];
+      throw e;
+    }
+  }
 }
 

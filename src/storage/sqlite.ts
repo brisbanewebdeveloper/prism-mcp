@@ -21,6 +21,8 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { randomUUID } from "crypto";
+import { AccessLogBuffer } from "../utils/accessLogBuffer.js";
+import { PRISM_ACTR_BUFFER_FLUSH_MS } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 
 import type {
@@ -35,13 +37,19 @@ import type {
   HealthStats,             // v2.2.0: Health check (fsck) aggregate type
   AgentRegistryEntry,      // v3.0: Agent Hivemind registry
   AnalyticsData,           // v3.1: Memory Analytics
+  MemoryLink,              // v6.0: Associative Memory Graph
+  PipelineState,           // v7.3: Dark Factory Pipeline
+  PipelineStatus,          // v7.3: Dark Factory Pipeline
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
+import { getSdmEngine } from "../sdm/sdmEngine.js";
+import { SafetyController } from "../darkfactory/safetyController.js";
 
 export class SqliteStorage implements StorageBackend {
   private db!: Client;
   private dbPath!: string;
+  private accessLogBuffer!: AccessLogBuffer;
 
   // ─── Lifecycle ─────────────────────────────────────────────
 
@@ -81,13 +89,27 @@ export class SqliteStorage implements StorageBackend {
     // Enable WAL mode for better concurrent read performance
     await this.db.execute("PRAGMA journal_mode=WAL");
 
+    // v6.0: Enable foreign key enforcement — required for ON DELETE CASCADE
+    // in memory_links table. Without this, CASCADE is silently ignored.
+    await this.db.execute("PRAGMA foreign_keys = ON");
+
     // Run all migrations
     await this.runMigrations();
+
+    // v7.0: Initialize the ACT-R access log write buffer.
+    // The buffer batches logAccess() calls into periodic single-INSERT flushes
+    // to prevent SQLite SQLITE_BUSY contention (Rule #1).
+    this.accessLogBuffer = new AccessLogBuffer(this.db, PRISM_ACTR_BUFFER_FLUSH_MS);
 
     debugLog(`[SqliteStorage] Initialized at ${this.dbPath}`);
   }
 
   async close(): Promise<void> {
+    // v7.0: Drain the access log buffer before closing the DB connection.
+    // This ensures any buffered access events are persisted on shutdown.
+    if (this.accessLogBuffer) {
+      await this.accessLogBuffer.dispose();
+    }
     this.db.close();
     debugLog("[SqliteStorage] Closed");
   }
@@ -266,45 +288,53 @@ export class SqliteStorage implements StorageBackend {
       // Column doesn't exist — do the table rebuild
       debugLog("[SqliteStorage] v3.0 migration: rebuilding session_handoffs with role column");
 
-      // Step 1: Create new table with correct constraint
-      await this.db.execute(`
-        CREATE TABLE session_handoffs_v2 (
-          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-          project TEXT NOT NULL,
-          user_id TEXT NOT NULL DEFAULT 'default',
-          role TEXT NOT NULL DEFAULT 'global',
-          last_summary TEXT DEFAULT NULL,
-          pending_todo TEXT DEFAULT '[]',
-          active_decisions TEXT DEFAULT '[]',
-          keywords TEXT DEFAULT '[]',
-          key_context TEXT DEFAULT NULL,
-          active_branch TEXT DEFAULT NULL,
-          version INTEGER NOT NULL DEFAULT 1,
-          metadata TEXT DEFAULT '{}',
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now')),
-          UNIQUE(project, user_id, role)
-        )
-      `);
+      const tx = await this.db.transaction();
+      try {
+        // Step 1: Create new table with correct constraint
+        await tx.execute(`
+          CREATE TABLE session_handoffs_v2 (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+            project TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            role TEXT NOT NULL DEFAULT 'global',
+            last_summary TEXT DEFAULT NULL,
+            pending_todo TEXT DEFAULT '[]',
+            active_decisions TEXT DEFAULT '[]',
+            keywords TEXT DEFAULT '[]',
+            key_context TEXT DEFAULT NULL,
+            active_branch TEXT DEFAULT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project, user_id, role)
+          )
+        `);
 
-      // Step 2: Copy data with explicit column names (Pro-Tip 2)
-      await this.db.execute(`
-        INSERT INTO session_handoffs_v2
-          (id, project, user_id, role, last_summary, pending_todo,
-           active_decisions, keywords, key_context, active_branch,
-           version, metadata, created_at, updated_at)
-        SELECT
-          id, project, user_id, 'global', last_summary, pending_todo,
-          active_decisions, keywords, key_context, active_branch,
-          version, metadata, created_at, updated_at
-        FROM session_handoffs
-      `);
+        // Step 2: Copy data with explicit column names (Pro-Tip 2)
+        await tx.execute(`
+          INSERT INTO session_handoffs_v2
+            (id, project, user_id, role, last_summary, pending_todo,
+             active_decisions, keywords, key_context, active_branch,
+             version, metadata, created_at, updated_at)
+          SELECT
+            id, project, user_id, 'global', last_summary, pending_todo,
+            active_decisions, keywords, key_context, active_branch,
+            version, metadata, created_at, updated_at
+          FROM session_handoffs
+        `);
 
-      // Step 3: Drop old and rename
-      await this.db.execute(`DROP TABLE session_handoffs`);
-      await this.db.execute(`ALTER TABLE session_handoffs_v2 RENAME TO session_handoffs`);
-
-      debugLog("[SqliteStorage] v3.0 migration: session_handoffs rebuilt with UNIQUE(project, user_id, role)");
+        // Step 3: Drop old and rename
+        await tx.execute(`DROP TABLE session_handoffs`);
+        await tx.execute(`ALTER TABLE session_handoffs_v2 RENAME TO session_handoffs`);
+        
+        await tx.commit();
+        debugLog("[SqliteStorage] v3.0 migration: session_handoffs rebuilt with UNIQUE(project, user_id, role)");
+      } catch (txError) {
+        await tx.rollback();
+        console.error("[SqliteStorage] v3.0 migration: session_handoffs rebuild failed, rolled back", txError);
+        throw txError;
+      }
     }
 
     // agent_registry: new table for Hivemind coordination
@@ -435,6 +465,232 @@ export class SqliteStorage implements StorageBackend {
     } catch (e: any) {
       if (!e.message?.includes("duplicate column name")) throw e;
     }
+
+    // ─── v5.2 Migration: Cognitive Memory — Last Accessed Tracking ───
+    //
+    // REVIEWER NOTE: last_accessed_at enables dynamic importance decay
+    // computed at retrieval time: effective = base * 0.95^days_since_access.
+    // No background workers needed — decay is a pure function of time.
+    // This column is updated fire-and-forget on each search hit.
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE session_ledger ADD COLUMN last_accessed_at TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v5.2 migration: added last_accessed_at column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    // ── v5.3: Hivemind Watchdog columns on agent_registry ────────
+    // These enable the server-side health monitor to detect frozen agents,
+    // task overruns, and infinite loops. Safe no-op if columns already exist.
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE agent_registry ADD COLUMN task_start_time TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v5.3 migration: added task_start_time column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE agent_registry ADD COLUMN expected_duration_minutes INTEGER DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v5.3 migration: added expected_duration_minutes column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE agent_registry ADD COLUMN task_hash TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v5.3 migration: added task_hash column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE agent_registry ADD COLUMN loop_count INTEGER DEFAULT 0`
+      );
+      debugLog("[SqliteStorage] v5.3 migration: added loop_count column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    // ─── v5.5 Migration: Superposed Distributed Memory (SDM) ───
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS sdm_state (
+        project TEXT PRIMARY KEY,
+        counters BLOB NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    // v6.5 Migration: Add address_version column if missing
+    try {
+      await this.db.execute(`ALTER TABLE sdm_state ADD COLUMN address_version INTEGER DEFAULT 1`);
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    // ─── v6.0 Migration: Associative Memory Graph ──────────────
+    //
+    // REVIEWER NOTE: memory_links implements a typed, weighted edge table
+    // that turns the flat session_ledger into an associative graph.
+    // See: memory_links_rfc.md (approved 2026-03-30, 2 rounds external review)
+    //
+    // KEY DESIGN:
+    //   - Composite PK (source_id, target_id, link_type) prevents duplicate edges
+    //   - Bidirectional: 'related_to' inserts dual rows (A→B + B→A)
+    //   - Directed: 'temporal_next', 'spawned_from' use single rows
+    //   - ON DELETE CASCADE: deleting a ledger entry auto-removes its links
+    //   - Requires PRAGMA foreign_keys = ON (set in initialize())
+    //   - 25-link cap enforced in application logic, NOT triggers
+    //
+    // STORAGE: ~100 bytes/link → 10MB per 100k links (laptop-safe)
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS memory_links (
+        source_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        link_type TEXT NOT NULL,
+        strength REAL DEFAULT 1.0 CHECK (strength >= 0.0 AND strength <= 1.0),
+        metadata TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_traversed_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (source_id, target_id, link_type),
+        FOREIGN KEY (source_id) REFERENCES session_ledger(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_id) REFERENCES session_ledger(id) ON DELETE CASCADE
+      )
+    `);
+
+    // NOTE: idx_mem_links_source is intentionally OMITTED.
+    // The composite PK (source_id, target_id, link_type) already provides
+    // a covering index for source_id as the leading column.
+    //
+    // Reverse lookups: "who links TO this entry?"
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_mem_links_target ON memory_links(target_id)`
+    );
+    // Filter by link type (e.g., only temporal_next for chain traversal)
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_mem_links_type ON memory_links(link_type)`
+    );
+    // Decay queries: find links not traversed in N days
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_mem_links_traversed ON memory_links(last_traversed_at)`
+    );
+    // LRU compaction ordering optimization
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_session_ledger_last_accessed ON session_ledger(last_accessed_at)`
+    );
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS hdc_dictionary (
+        concept_name TEXT PRIMARY KEY,
+        vector BLOB NOT NULL
+      )
+    `);
+
+    // v6.5 Migration: Add prng_version column if missing
+    try {
+      await this.db.execute(`ALTER TABLE hdc_dictionary ADD COLUMN prng_version INTEGER DEFAULT 1`);
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    // ─── v7.0 Migration: ACT-R Memory Access Log ──────────────
+    //
+    // REVIEWER NOTE: This table drives the ACT-R base-level activation
+    // formula: B_i = ln(Σ t_j^(-d)). Each row is a single "access" event
+    // recorded fire-and-forget via AccessLogBuffer.
+    //
+    // DESIGN:
+    //   - INTEGER PRIMARY KEY = SQLite implicit rowid (fastest inserts)
+    //   - entry_id NOT NULL FK → session_ledger (ON DELETE CASCADE)
+    //   - accessed_at TEXT ISO-8601 — enables julianday() math in queries
+    //   - context_hash TEXT — optional search query fingerprint for
+    //     future "what queries retrieve this memory?" analytics
+    //
+    // INDEXES:
+    //   - (entry_id, accessed_at DESC): covers the window-function query
+    //     used by getAccessLog(). DESC order makes recent-first scans
+    //     sequential reads (no reverse B-tree traversal).
+    //   - (accessed_at): covers the retention sweep in pruneAccessLog().
+    //
+    // STORAGE: ~80 bytes/row → 100K accesses ≈ 8 MB → laptop-safe.
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS memory_access_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id TEXT NOT NULL,
+        accessed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        context_hash TEXT DEFAULT NULL,
+        FOREIGN KEY (entry_id) REFERENCES session_ledger(id) ON DELETE CASCADE
+      )
+    `);
+
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_access_log_entry_time
+       ON memory_access_log(entry_id, accessed_at DESC)`
+    );
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_access_log_time
+       ON memory_access_log(accessed_at)`
+    );
+
+    // ─── v7.3 Migration: Dark Factory Pipelines ───────────────
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS dark_factory_pipelines (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        status TEXT NOT NULL,
+        current_step TEXT NOT NULL,
+        iteration INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        error TEXT,
+        last_heartbeat TEXT
+      )
+    `);
+    
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_pipelines_status ON dark_factory_pipelines(user_id, project, status)`
+    );
+
+    // ─── v6.1 Migration: Integrity Check ──────────────────────
+    //
+    // REVIEWER NOTE: PRAGMA integrity_check scans the B-tree structure of
+    // every table and index for corruption (missing pages, duplicate rows,
+    // invalid records). Runtime is O(N) in database size — typically <1s
+    // for a 50MB Prism DB. We run it once at startup and log the result;
+    // we do NOT throw on failure to avoid blocking the MCP server on a
+    // marginal but still-readable database.
+    //
+    // The check is non-blocking from the user's perspective because it
+    // runs during server startup (before any tool calls are accepted).
+    try {
+      const integrityResult = await this.db.execute("PRAGMA integrity_check");
+      const status = integrityResult.rows[0]?.["integrity_check"] ?? integrityResult.rows[0]?.[0];
+      if (status !== "ok") {
+        console.error(
+          `[SqliteStorage] CRITICAL: PRAGMA integrity_check returned non-ok status: ${JSON.stringify(status)}. ` +
+          `Consider running 'sqlite3 prism.db ".recover"' to attempt recovery.`
+        );
+      } else {
+        debugLog("[SqliteStorage] v6.1: integrity_check passed ✓");
+      }
+    } catch (e) {
+      // Non-fatal: some older libSQL versions may not support all integrity_check modes.
+      debugLog(`[SqliteStorage] v6.1: integrity_check skipped (${(e as Error).message})`);
+    }
   }
 
   // ─── PostgREST Filter Parser ───────────────────────────────
@@ -456,24 +712,42 @@ export class SqliteStorage implements StorageBackend {
     for (const [key, value] of Object.entries(params)) {
       // Special params (not filters)
       if (key === "select") {
+        if (value === "*") {
+           select = "*";
+           continue;
+        }
+
+        const VALID_COLUMNS = [
+          'id', 'user_id', 'project', 'conversation_id', 'summary',
+          'files_changed', 'todos', 'decisions', 'metrics', 'keywords',
+          'session_date', 'schema_version', 'created_at', 'updated_at',
+          'deleted_at', 'archived_at', 'is_rollup', 'rollup_type',
+          'last_accessed_at', 'importance'
+        ];
+        
+        const requestedColumns = value.split(',').map(c => c.trim());
+        const isSafe = requestedColumns.every(c => VALID_COLUMNS.includes(c) || c === '*');
+        
+        if (!isSafe) {
+          throw new Error('Invalid select column format: contains prohibited columns.');
+        }
+
         select = value;
         continue;
       }
       if (key === "order") {
-        // e.g., "created_at.desc" → "created_at DESC"
-        const parts = value.split(".");
-        const col = parts[0];
-        // ── SQL Injection Guard ──────────────────────────────────────────
-        // col is interpolated directly into the ORDER BY clause. We must
-        // reject anything that isn't a plain identifier (letters, digits,
-        // underscores) before it touches the query string.
-        // Note: @libsql/client already blocks stacked queries (;DROP TABLE),
-        // but CASE WHEN / expression injection is still possible without this.
-        if (!/^[a-zA-Z0-9_]+$/.test(col)) {
-          throw new Error(`Invalid order column: "${col}". Only alphanumeric identifiers are allowed.`);
-        }
-        const dir = parts[1]?.toUpperCase() === "DESC" ? "DESC" : "ASC";
-        order = `ORDER BY ${col} ${dir}`;
+        const orderClauses = value.split(",").map(clause => {
+          const parts = clause.split(".");
+          const col = parts[0];
+          // ── SQL Injection Guard ──────────────────────────────────────────
+          if (!/^[a-zA-Z0-9_]+$/.test(col)) {
+            throw new Error(`Invalid order column: "${col}". Only alphanumeric identifiers are allowed.`);
+          }
+          const dir = parts[1]?.toUpperCase() === "DESC" ? "DESC" : "ASC";
+          const nulls = parts[2]?.toUpperCase() === "NULLSFIRST" ? "NULLS FIRST" : (parts[2]?.toUpperCase() === "NULLSLAST" ? "NULLS LAST" : "");
+          return `${col} ${dir} ${nulls}`.trim();
+        });
+        order = `ORDER BY ${orderClauses.join(", ")}`;
         continue;
       }
       if (key === "limit") {
@@ -544,16 +818,35 @@ export class SqliteStorage implements StorageBackend {
     return [];
   }
 
-  /** Convert a SQLite row to a shape matching Supabase's response format */
+  /**
+   * A safe JSON.parse wrapper that never throws.
+   * Used for parsing columns like `metadata` that may contain
+   * user-supplied or migrated data that could be invalid JSON.
+   *
+   * @param text   - Raw string from a DB column. May be null/undefined.
+   * @param fallback - Value returned when text is absent or unparseable.
+   */
+  private safeJsonParse<T = unknown>(text: string | null | undefined, fallback: T): T {
+    if (!text) return fallback;
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      debugLog(`[SqliteStorage] safeJsonParse: invalid JSON in DB column — ${(e as Error).message}`);
+      return fallback;
+    }
+  }
+
+  /** Convert a SQLite row to a shape matching Supabase's response format.
+   *  Only parses fields that exist in the raw row — respects SELECT projections
+   *  so getLedgerEntries({ select: "id,project" }) doesn't fabricate empty arrays. */
   private rowToLedgerEntry(row: Record<string, unknown>): Record<string, unknown> {
-    return {
-      ...row,
-      todos: this.parseJsonColumn(row.todos),
-      files_changed: this.parseJsonColumn(row.files_changed),
-      decisions: this.parseJsonColumn(row.decisions),
-      keywords: this.parseJsonColumn(row.keywords),
-      is_rollup: Boolean(row.is_rollup),
-    };
+    const result = { ...row };
+    if ('todos' in row) result.todos = this.parseJsonColumn(row.todos);
+    if ('files_changed' in row) result.files_changed = this.parseJsonColumn(row.files_changed);
+    if ('decisions' in row) result.decisions = this.parseJsonColumn(row.decisions);
+    if ('keywords' in row) result.keywords = this.parseJsonColumn(row.keywords);
+    if ('is_rollup' in row) result.is_rollup = Boolean(row.is_rollup);
+    return result;
   }
 
   // ─── Ledger Operations ─────────────────────────────────────
@@ -596,15 +889,46 @@ export class SqliteStorage implements StorageBackend {
       ],
     });
 
+    // ── v7.0 Rule #3: Creation = Access Seeding ─────────────────────
+    // Seed the access log with a single event at creation time so that
+    // brand-new entries have a non-empty access history. Without this,
+    // new entries would have B_i = -∞ (ln(0)) and never surface in
+    // ACT-R re-ranking until they're accessed at least once.
+    //
+    // Uses the buffer for consistency — the creation seed is batched
+    // with other access events and flushed on the next cycle.
+    if (this.accessLogBuffer) {
+      this.accessLogBuffer.push(id, 'creation_seed');
+    }
+
     // Return Supabase-compatible shape: handlers expect [{ id, ... }]
     return [{ id, project: entry.project, created_at: now }];
   }
 
   async patchLedger(id: string, data: Record<string, unknown>): Promise<void> {
+    // ── Column Allowlist (Defense-in-Depth) ────────────────────────
+    // Column names are interpolated directly into SQL (not parameterizable).
+    // This allowlist prevents accidental or malicious injection via the key.
+    // Currently, patchLedger is only called from internal handler code,
+    // but this guard protects against future misuse if the method is
+    // exposed to less-controlled callers.
+    const ALLOWED_COLUMNS = new Set([
+      'embedding', 'embedding_compressed', 'embedding_format', 'embedding_turbo_radius',
+      'archived_at', 'deleted_at', 'deleted_reason', 'is_rollup', 'rollup_count',
+      'importance', 'last_accessed_at', 'keywords', 'todos', 'files_changed', 'decisions',
+      'summary', 'confidence_score', 'event_type', 'role',
+    ]);
+
     const sets: string[] = [];
     const args: InValue[] = [];
 
     for (const [key, value] of Object.entries(data)) {
+      if (!ALLOWED_COLUMNS.has(key)) {
+        throw new Error(
+          `[SqliteStorage] patchLedger: rejected unknown column "${key}". ` +
+          `Allowed: ${[...ALLOWED_COLUMNS].join(', ')}`
+        );
+      }
       if (key === "embedding") {
         // Use libSQL's native vector() function for F32_BLOB columns.
         // The value is a JSON-stringified number[] from the handler.
@@ -625,13 +949,26 @@ export class SqliteStorage implements StorageBackend {
     });
   }
 
-  async getLedgerEntries(params: Record<string, string>): Promise<unknown[]> {
-    const { where, args, select, order, limit } = this.parsePostgRESTFilters(params);
+  async getLedgerEntries(params: Record<string, any>): Promise<unknown[]> {
+    const { ids, ...restParams } = params;
+    const { where, args, select, order, limit } = this.parsePostgRESTFilters(restParams as Record<string, string>);
+
+    let finalWhere = where;
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      const placeholders = ids.map(() => "?").join(", ");
+      const inClause = `id IN (${placeholders})`;
+      if (finalWhere) {
+        finalWhere += ` AND ${inClause}`;
+      } else {
+        finalWhere = `WHERE ${inClause}`;
+      }
+      args.push(...ids);
+    }
 
     // Build column list from select param
     const columns = select === "*" ? "*" : select;
 
-    let sql = `SELECT ${columns} FROM session_ledger ${where}`;
+    let sql = `SELECT ${columns} FROM session_ledger ${finalWhere}`;
     if (order) sql += ` ${order}`;
     if (limit) {
       sql += ` LIMIT ?`;
@@ -811,6 +1148,23 @@ export class SqliteStorage implements StorageBackend {
     });
   }
 
+  async updateLastAccessed(ids: string[]): Promise<void> {
+    if (!ids || ids.length === 0) return;
+    const CHUNK_SIZE = 500;
+    const now = new Date().toISOString(); // JS generates ISO-8601 with Z suffix
+
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(", ");
+
+      // Pass 'now' as the first argument, followed by the chunk IDs
+      await this.db.execute({
+        sql: `UPDATE session_ledger SET last_accessed_at = ? WHERE id IN (${placeholders})`,
+        args: [now, ...chunk],
+      });
+    }
+  }
+
   // ─── Load Context (Progressive) ────────────────────────────
 
   async loadContext(
@@ -877,7 +1231,7 @@ export class SqliteStorage implements StorageBackend {
     if (level === "standard") {
       // Add recent ledger entries (role-scoped)
       const recentLedger = await this.db.execute({
-        sql: `SELECT summary, decisions, session_date, created_at
+        sql: `SELECT id, summary, decisions, session_date, created_at, importance, last_accessed_at
               FROM session_ledger
               WHERE project = ? AND user_id = ? AND role = ?
                 AND archived_at IS NULL AND deleted_at IS NULL
@@ -887,9 +1241,13 @@ export class SqliteStorage implements StorageBackend {
       });
 
       context.recent_sessions = recentLedger.rows.map(r => ({
+        id: r.id,
         summary: r.summary,
         decisions: this.parseJsonColumn(r.decisions),
         session_date: r.session_date || r.created_at,
+        importance: r.importance,
+        last_accessed_at: r.last_accessed_at,
+        created_at: r.created_at,
       }));
 
       // v3.0: Team Roster injection — show active teammates
@@ -922,7 +1280,7 @@ export class SqliteStorage implements StorageBackend {
 
     // Deep: add full session history (role-scoped)
     const fullLedger = await this.db.execute({
-      sql: `SELECT summary, decisions, files_changed, todos, session_date, created_at
+      sql: `SELECT id, summary, decisions, files_changed, todos, session_date, created_at, importance, last_accessed_at
             FROM session_ledger
             WHERE project = ? AND user_id = ? AND role = ?
               AND archived_at IS NULL AND deleted_at IS NULL
@@ -932,11 +1290,15 @@ export class SqliteStorage implements StorageBackend {
     });
 
     context.session_history = fullLedger.rows.map(r => ({
+      id: r.id,
       summary: r.summary,
       decisions: this.parseJsonColumn(r.decisions),
       files_changed: this.parseJsonColumn(r.files_changed),
       todos: this.parseJsonColumn(r.todos),
       session_date: r.session_date || r.created_at,
+      importance: r.importance,
+      last_accessed_at: r.last_accessed_at,
+      created_at: r.created_at,
     }));
 
     return context;
@@ -953,53 +1315,54 @@ export class SqliteStorage implements StorageBackend {
     userId: string;
     role?: string | null;  // v3.0: optional role filter
   }): Promise<KnowledgeSearchResult | null> {
-    // Build FTS5 query from keywords
-    // "stripe webhook auth" → "stripe OR webhook OR auth"
+    // Build FTS5 query from keywords + queryText (both contribute)
+    // "stripe webhook auth" → '"stripe" OR "webhook" OR "auth"'
     const searchTerms = params.keywords
       .filter(k => k.length > 2)
       .map(k => `"${k.replace(/"/g, "")}"`)
       .join(" OR ");
 
-    if (!searchTerms && !params.queryText) return null;
+    // Combine both sets — wrap queryText in quotes to sanitize FTS5 control
+    // characters (*, ^, OR, NOT) that would crash the MATCH expression.
+    const ftsParts: string[] = [];
+    if (searchTerms) ftsParts.push(`(${searchTerms})`);
+    if (params.queryText) {
+      ftsParts.push(`"${params.queryText.replace(/"/g, "")}"`);
+    }
+    const ftsQuery = ftsParts.join(" OR ");
+    if (!ftsQuery) return null;
 
-    const ftsQuery = searchTerms || params.queryText || "";
-
-    // Build query with optional project filter
-    let sql: string;
-    const args: InValue[] = [];
+    // Build query with optional project + role filters
+    const conditions: string[] = [
+      "ledger_fts MATCH ?",
+      "l.user_id = ?",
+      "l.archived_at IS NULL",
+      "l.deleted_at IS NULL",
+    ];
+    const args: InValue[] = [ftsQuery, params.userId];
 
     if (params.project) {
-      sql = `
-        SELECT l.id, l.project, l.summary, l.decisions, l.keywords,
-               l.files_changed, l.session_date, l.created_at,
-               rank AS relevance
-        FROM ledger_fts f
-        JOIN session_ledger l ON f.rowid = l.rowid
-        WHERE ledger_fts MATCH ?
-          AND l.project = ?
-          AND l.user_id = ?
-          AND l.archived_at IS NULL
-          AND l.deleted_at IS NULL
-        ORDER BY rank
-        LIMIT ?
-      `;
-      args.push(ftsQuery, params.project, params.userId, params.limit);
-    } else {
-      sql = `
-        SELECT l.id, l.project, l.summary, l.decisions, l.keywords,
-               l.files_changed, l.session_date, l.created_at,
-               rank AS relevance
-        FROM ledger_fts f
-        JOIN session_ledger l ON f.rowid = l.rowid
-        WHERE ledger_fts MATCH ?
-          AND l.user_id = ?
-          AND l.archived_at IS NULL
-          AND l.deleted_at IS NULL
-        ORDER BY rank
-        LIMIT ?
-      `;
-      args.push(ftsQuery, params.userId, params.limit);
+      conditions.push("l.project = ?");
+      args.push(params.project);
     }
+    if (params.role) {
+      conditions.push("l.role = ?");
+      args.push(params.role);
+    }
+
+    args.push(params.limit);
+
+    const sql = `
+      SELECT l.id, l.project, l.summary, l.decisions, l.keywords,
+             l.files_changed, l.session_date, l.created_at,
+             l.importance, l.last_accessed_at,
+             rank AS relevance
+      FROM ledger_fts f
+      JOIN session_ledger l ON f.rowid = l.rowid
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY rank
+      LIMIT ?
+    `;
 
     try {
       const result = await this.db.execute({ sql, args });
@@ -1014,13 +1377,16 @@ export class SqliteStorage implements StorageBackend {
         keywords: this.parseJsonColumn(r.keywords),
         files_changed: this.parseJsonColumn(r.files_changed),
         session_date: r.session_date || r.created_at,
+        created_at: r.created_at,
+        importance: r.importance,
+        last_accessed_at: r.last_accessed_at,
         relevance: r.relevance,
       }));
 
       return { count: results.length, results };
     } catch (err) {
       // FTS5 query syntax error — fall back to LIKE search
-      console.error(`[SqliteStorage] FTS5 search failed, falling back to LIKE: ${err}`);
+      console.error(`[SqliteStorage] FTS5 search failed, falling back to LIKE: ${err instanceof Error ? err.message : String(err)}`);
       return this.searchKnowledgeFallback(params);
     }
   }
@@ -1032,6 +1398,7 @@ export class SqliteStorage implements StorageBackend {
     queryText?: string | null;
     limit: number;
     userId: string;
+    role?: string | null;  // v6.0: role filter for Hivemind isolation
   }): Promise<KnowledgeSearchResult | null> {
     const conditions: string[] = ["user_id = ?", "archived_at IS NULL", "deleted_at IS NULL"];
     const args: InValue[] = [params.userId];
@@ -1039,6 +1406,10 @@ export class SqliteStorage implements StorageBackend {
     if (params.project) {
       conditions.push("project = ?");
       args.push(params.project);
+    }
+    if (params.role) {
+      conditions.push("role = ?");
+      args.push(params.role);
     }
 
     // Add LIKE conditions for each keyword
@@ -1050,10 +1421,18 @@ export class SqliteStorage implements StorageBackend {
       }
     }
 
+    // BUG FIX: queryText was previously ignored — if keywords were empty,
+    // zero search filters were added, returning unfiltered top-N results.
+    if (params.queryText) {
+      conditions.push("(summary LIKE ? OR keywords LIKE ? OR decisions LIKE ?)");
+      const pattern = `%${params.queryText}%`;
+      args.push(pattern, pattern, pattern);
+    }
+
     args.push(params.limit);
 
     const result = await this.db.execute({
-      sql: `SELECT id, project, summary, decisions, keywords, files_changed, session_date, created_at
+      sql: `SELECT id, project, summary, decisions, keywords, files_changed, session_date, created_at, importance, last_accessed_at
             FROM session_ledger
             WHERE ${conditions.join(" AND ")}
             ORDER BY created_at DESC
@@ -1071,6 +1450,9 @@ export class SqliteStorage implements StorageBackend {
       keywords: this.parseJsonColumn(r.keywords),
       files_changed: this.parseJsonColumn(r.files_changed),
       session_date: r.session_date || r.created_at,
+      created_at: r.created_at,
+      importance: r.importance,
+      last_accessed_at: r.last_accessed_at,
     }));
 
     return { count: results.length, results };
@@ -1088,39 +1470,34 @@ export class SqliteStorage implements StorageBackend {
     // vector_distance_cos() returns distance (0 to 2).
     // Similarity = 1 - distance. Higher is better.
     try {
-      let sql: string;
-      const args: InValue[] = [];
+      const conditions: string[] = [
+        "l.embedding IS NOT NULL",
+        "l.user_id = ?",
+        "l.archived_at IS NULL",
+        "l.deleted_at IS NULL",
+      ];
+      const args: InValue[] = [params.queryEmbedding, params.userId];
 
       if (params.project) {
-        sql = `
-          SELECT l.id, l.project, l.summary, l.decisions, l.files_changed,
-                 l.session_date, l.created_at,
-                 (1 - vector_distance_cos(l.embedding, vector(?))) AS similarity
-          FROM session_ledger l
-          WHERE l.embedding IS NOT NULL
-            AND l.user_id = ?
-            AND l.project = ?
-            AND l.archived_at IS NULL
-            AND l.deleted_at IS NULL
-          ORDER BY similarity DESC
-          LIMIT ?
-        `;
-        args.push(params.queryEmbedding, params.userId, params.project, params.limit);
-      } else {
-        sql = `
-          SELECT l.id, l.project, l.summary, l.decisions, l.files_changed,
-                 l.session_date, l.created_at,
-                 (1 - vector_distance_cos(l.embedding, vector(?))) AS similarity
-          FROM session_ledger l
-          WHERE l.embedding IS NOT NULL
-            AND l.user_id = ?
-            AND l.archived_at IS NULL
-            AND l.deleted_at IS NULL
-          ORDER BY similarity DESC
-          LIMIT ?
-        `;
-        args.push(params.queryEmbedding, params.userId, params.limit);
+        conditions.push("l.project = ?");
+        args.push(params.project);
       }
+      if (params.role) {
+        conditions.push("l.role = ?");
+        args.push(params.role);
+      }
+
+      args.push(params.limit);
+
+      const sql = `
+        SELECT l.id, l.project, l.summary, l.decisions, l.files_changed,
+               l.session_date, l.created_at,
+               (1 - vector_distance_cos(l.embedding, vector(?))) AS similarity
+        FROM session_ledger l
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY similarity DESC
+        LIMIT ?
+      `;
 
       const result = await this.db.execute({ sql, args });
 
@@ -1163,7 +1540,7 @@ export class SqliteStorage implements StorageBackend {
       //   For typical Prism datasets (< 10K entries), linear scan
       //   completes in < 100ms — acceptable for a memory search.
       debugLog(
-        `[SqliteStorage] Tier-1 vector search failed, trying Tier-2 TurboQuant fallback: ${err}`
+        `[SqliteStorage] Tier-1 vector search failed, trying Tier-2 TurboQuant fallback: ${err instanceof Error ? err.message : String(err)}`
       );
 
       try {
@@ -1174,33 +1551,29 @@ export class SqliteStorage implements StorageBackend {
         const queryVec: number[] = JSON.parse(params.queryEmbedding);
 
         // Fetch all entries that have compressed embeddings
-        let fallbackSql: string;
-        const fallbackArgs: InValue[] = [];
+        const fallbackConditions: string[] = [
+          "embedding_compressed IS NOT NULL",
+          "user_id = ?",
+          "archived_at IS NULL",
+          "deleted_at IS NULL",
+        ];
+        const fallbackArgs: InValue[] = [params.userId];
 
         if (params.project) {
-          fallbackSql = `
-            SELECT id, project, summary, decisions, files_changed,
-                   session_date, created_at, embedding_compressed, embedding_turbo_radius
-            FROM session_ledger
-            WHERE embedding_compressed IS NOT NULL
-              AND user_id = ?
-              AND project = ?
-              AND archived_at IS NULL
-              AND deleted_at IS NULL
-          `;
-          fallbackArgs.push(params.userId, params.project);
-        } else {
-          fallbackSql = `
-            SELECT id, project, summary, decisions, files_changed,
-                   session_date, created_at, embedding_compressed, embedding_turbo_radius
-            FROM session_ledger
-            WHERE embedding_compressed IS NOT NULL
-              AND user_id = ?
-              AND archived_at IS NULL
-              AND deleted_at IS NULL
-          `;
-          fallbackArgs.push(params.userId);
+          fallbackConditions.push("project = ?");
+          fallbackArgs.push(params.project);
         }
+        if (params.role) {
+          fallbackConditions.push("role = ?");
+          fallbackArgs.push(params.role);
+        }
+
+        const fallbackSql = `
+          SELECT id, project, summary, decisions, files_changed,
+                 session_date, created_at, embedding_compressed, embedding_turbo_radius
+          FROM session_ledger
+          WHERE ${fallbackConditions.join(" AND ")}
+        `;
 
         const fallbackResult = await this.db.execute({ sql: fallbackSql, args: fallbackArgs });
 
@@ -1321,7 +1694,40 @@ export class SqliteStorage implements StorageBackend {
     }));
   }
 
-  // ─── v2.0 Dashboard ─────────────────────────────────────────
+  // ─── v2.0 Dashboard ─────────────────────────────────────────────
+
+  // ─── v5.4: CRDT Base State Retrieval ───────────────────────
+  //
+  // Reads a historical handoff snapshot by version number.
+  // Used by the CRDT merge engine to reconstruct the base state
+  // that both concurrent agents originally read.
+  //
+  // This leverages the EXISTING session_handoffs_history table
+  // (created by Time Travel v2.0) — no schema changes needed.
+
+  async getHandoffAtVersion(
+    project: string,
+    version: number,
+    userId: string = "default"
+  ): Promise<Record<string, unknown> | null> {
+    const result = await this.db.execute({
+      sql: `SELECT snapshot FROM session_handoffs_history
+            WHERE project = ? AND user_id = ? AND version = ?
+            LIMIT 1`,
+      args: [project, userId, version],
+    });
+
+    if (result.rows.length === 0 || !result.rows[0].snapshot) return null;
+
+    try {
+      const snapshot = result.rows[0].snapshot;
+      if (typeof snapshot === "string") return JSON.parse(snapshot) as Record<string, unknown>;
+      return snapshot as unknown as Record<string, unknown>;
+    } catch {
+      console.error(`[SqliteStorage] Failed to parse history snapshot for ${project} v${version}`);
+      return null;
+    }
+  }
 
   async listProjects(): Promise<string[]> {
     const result = await this.db.execute(
@@ -1445,6 +1851,16 @@ export class SqliteStorage implements StorageBackend {
     const totalHandoffs = Number(totalsResult.rows[0]?.handoffs ?? 0);
     const totalRollups = Number(totalsResult.rows[0]?.rollups ?? 0);
 
+    // ── v5.4: Aggregate CRDT merge counts from handoff metadata ───
+    // Each successful CRDT merge increments metadata.crdt_merge_count.
+    // We sum across all handoffs for the health report.
+    const mergesResult = await this.db.execute({
+      sql: `SELECT SUM(CAST(json_extract(metadata, '$.crdt_merge_count') AS INTEGER)) as total
+            FROM session_handoffs WHERE user_id = ?`,
+      args: [userId],
+    });
+    const totalCrdtMerges = Number(mergesResult.rows[0]?.total ?? 0);
+
     // ── Return the complete raw health stats ─────────────────────
     // healthCheck.ts engine will analyze this + produce HealthReport
     return {
@@ -1455,6 +1871,7 @@ export class SqliteStorage implements StorageBackend {
       totalActiveEntries,    // grand total of active entries
       totalHandoffs,         // grand total of handoff records
       totalRollups,          // grand total of rollup entries
+      totalCrdtMerges,       // v5.4: total CRDT auto-merges
     };
   }
 
@@ -1469,8 +1886,9 @@ export class SqliteStorage implements StorageBackend {
       // Try INSERT first
       await this.db.execute({
         sql: `INSERT INTO agent_registry
-          (id, project, user_id, role, agent_name, status, current_task)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          (id, project, user_id, role, agent_name, status, current_task,
+           task_start_time, expected_duration_minutes, task_hash, loop_count)
+          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), NULL, NULL, 0)`,
         args: [
           id,
           entry.project,
@@ -1485,13 +1903,17 @@ export class SqliteStorage implements StorageBackend {
       debugLog(`[SqliteStorage] Agent registered: ${entry.project}/${role}`);
       return { ...entry, id, status };
     } catch (err) {
-      // UNIQUE constraint → update existing
+      // UNIQUE constraint → update existing — reset watchdog fields on re-registration
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("UNIQUE") || msg.includes("constraint")) {
         await this.db.execute({
           sql: `UPDATE agent_registry
             SET agent_name = ?, status = ?, current_task = ?,
-                last_heartbeat = datetime('now')
+                last_heartbeat = datetime('now'),
+                task_start_time = datetime('now'),
+                expected_duration_minutes = NULL,
+                task_hash = NULL,
+                loop_count = 0
             WHERE project = ? AND user_id = ? AND role = ?`,
           args: [
             entry.agent_name ?? null,
@@ -1514,14 +1936,63 @@ export class SqliteStorage implements StorageBackend {
     project: string,
     userId: string,
     role: string,
-    currentTask?: string
+    currentTask?: string,
+    expectedDurationMinutes?: number
   ): Promise<void> {
-    const setClauses = ["last_heartbeat = datetime('now')"];
-    const args: InValue[] = [];
+    // v5.3: Loop detection — compute task hash and compare with stored value.
+    // If the hash matches, increment loop_count. If different, reset counter.
+    // This runs inline with the heartbeat UPDATE for zero additional queries.
+    const newTaskHash = currentTask
+      ? this._simpleHash(currentTask)
+      : null;
+
+    // Fetch current agent state for loop comparison (single SELECT)
+    const current = await this.db.execute({
+      sql: `SELECT task_hash, loop_count FROM agent_registry
+        WHERE project = ? AND user_id = ? AND role = ?`,
+      args: [project, userId, role],
+    });
+
+    const existingHash = current.rows[0]?.task_hash as string | null;
+    const existingLoopCount = (current.rows[0]?.loop_count as number) || 0;
+
+    // Determine if task changed
+    const taskChanged = newTaskHash !== null && newTaskHash !== existingHash;
+    const sameTask = newTaskHash !== null && newTaskHash === existingHash;
+
+    const newLoopCount = sameTask
+      ? existingLoopCount + 1
+      : (taskChanged ? 0 : existingLoopCount);
+
+    // Auto-detect LOOPING: if same task repeated >= 5 times, flag it
+    const newStatus = newLoopCount >= 5 ? "looping" : "active";
+
+    const setClauses = [
+      "last_heartbeat = datetime('now')",
+      "loop_count = ?",
+      "status = ?",
+    ];
+    const args: InValue[] = [newLoopCount, newStatus];
 
     if (currentTask !== undefined) {
       setClauses.push("current_task = ?");
       args.push(currentTask);
+    }
+
+    if (newTaskHash !== null) {
+      setClauses.push("task_hash = ?");
+      args.push(newTaskHash);
+    }
+
+    // Task changed → reset task_start_time
+    if (taskChanged) {
+      setClauses.push("task_start_time = datetime('now')");
+    }
+
+    // Store expected duration if provided
+    if (expectedDurationMinutes !== undefined) {
+      setClauses.push("expected_duration_minutes = ?");
+      args.push(expectedDurationMinutes);
     }
 
     args.push(project, userId, role);
@@ -1534,12 +2005,24 @@ export class SqliteStorage implements StorageBackend {
     });
   }
 
+  /**
+   * Simple string hash for loop detection.
+   * Uses DJB2 — fast, deterministic, no crypto overhead.
+   */
+  private _simpleHash(str: string): string {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0xFFFFFFFF;
+    }
+    return hash.toString(16);
+  }
+
   async listTeam(
     project: string,
     userId: string,
     staleMinutes: number = 30
   ): Promise<AgentRegistryEntry[]> {
-    // Auto-prune stale agents first
+    // Auto-prune OFFLINE agents (>30min without heartbeat)
     await this.db.execute({
       sql: `DELETE FROM agent_registry
         WHERE project = ? AND user_id = ?
@@ -1547,10 +2030,11 @@ export class SqliteStorage implements StorageBackend {
       args: [project, userId, staleMinutes],
     });
 
-    // Fetch remaining active agents
+    // Fetch remaining agents (including watchdog columns)
     const result = await this.db.execute({
       sql: `SELECT id, project, user_id, role, agent_name, status,
-                   current_task, last_heartbeat, created_at
+                   current_task, last_heartbeat, created_at,
+                   task_start_time, expected_duration_minutes, task_hash, loop_count
             FROM agent_registry
             WHERE project = ? AND user_id = ?
             ORDER BY last_heartbeat DESC`,
@@ -1563,10 +2047,14 @@ export class SqliteStorage implements StorageBackend {
       user_id: r.user_id as string,
       role: r.role as string,
       agent_name: r.agent_name as string | null,
-      status: (r.status as "active" | "idle" | "shutdown"),
+      status: (r.status as AgentRegistryEntry["status"]),
       current_task: r.current_task as string | null,
       last_heartbeat: r.last_heartbeat as string,
       created_at: r.created_at as string,
+      task_start_time: r.task_start_time as string | null,
+      expected_duration_minutes: r.expected_duration_minutes as number | null,
+      task_hash: r.task_hash as string | null,
+      loop_count: (r.loop_count as number) || 0,
     }));
   }
 
@@ -1580,6 +2068,68 @@ export class SqliteStorage implements StorageBackend {
       args: [project, userId, role],
     });
     debugLog(`[SqliteStorage] Agent deregistered: ${project}/${role}`);
+  }
+
+  // ─── v5.3: Hivemind Watchdog Methods ───────────────────────
+
+  async getAllAgents(userId: string): Promise<AgentRegistryEntry[]> {
+    const result = await this.db.execute({
+      sql: `SELECT id, project, user_id, role, agent_name, status,
+                   current_task, last_heartbeat, created_at,
+                   task_start_time, expected_duration_minutes, task_hash, loop_count
+            FROM agent_registry
+            WHERE user_id = ?
+            ORDER BY project, role`,
+      args: [userId],
+    });
+
+    return result.rows.map(r => ({
+      id: r.id as string,
+      project: r.project as string,
+      user_id: r.user_id as string,
+      role: r.role as string,
+      agent_name: r.agent_name as string | null,
+      status: (r.status as AgentRegistryEntry["status"]),
+      current_task: r.current_task as string | null,
+      last_heartbeat: r.last_heartbeat as string,
+      created_at: r.created_at as string,
+      task_start_time: r.task_start_time as string | null,
+      expected_duration_minutes: r.expected_duration_minutes as number | null,
+      task_hash: r.task_hash as string | null,
+      loop_count: (r.loop_count as number) || 0,
+    }));
+  }
+
+  async updateAgentStatus(
+    project: string, userId: string, role: string,
+    status: AgentRegistryEntry["status"],
+    additionalFields?: Record<string, unknown>
+  ): Promise<void> {
+    const setClauses = ["status = ?"];
+    const args: InValue[] = [status];
+
+    // Allow watchdog to set arbitrary safe fields (e.g., loop_count reset)
+    const ALLOWED_FIELDS = new Set([
+      "loop_count", "task_start_time", "expected_duration_minutes",
+      "task_hash", "current_task",
+    ]);
+    if (additionalFields) {
+      for (const [key, val] of Object.entries(additionalFields)) {
+        if (ALLOWED_FIELDS.has(key)) {
+          setClauses.push(`${key} = ?`);
+          args.push(val as InValue);
+        }
+      }
+    }
+
+    args.push(project, userId, role);
+
+    await this.db.execute({
+      sql: `UPDATE agent_registry
+        SET ${setClauses.join(", ")}
+        WHERE project = ? AND user_id = ? AND role = ?`,
+      args,
+    });
   }
 
   // ─── System Settings (v3.0 Dashboard) — proxy to configStorage ───
@@ -1953,5 +2503,833 @@ export class SqliteStorage implements StorageBackend {
     return { purged: eligible, eligible, reclaimedBytes };
   }
 
+  // ─── v5.5: SDM Persistence ───────────────────────────────────
+
+  async loadSdmState(project: string): Promise<Float32Array | null> {
+    const result = await this.db.execute({
+      sql: `SELECT counters, address_version FROM sdm_state WHERE project = ?`,
+      args: [project],
+    });
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    // Check address_version: if persisted state was generated with a different
+    // PRNG algorithm, the hard-location addresses will mismatch. Reject stale state.
+    const storedVersion = (result.rows[0].address_version as number) ?? 1;
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+    if (storedVersion !== SDM_ADDRESS_VERSION) {
+      debugLog(`[SqliteStorage] SDM state version mismatch for ${project}: stored v${storedVersion}, current v${SDM_ADDRESS_VERSION}. Rebuilding.`);
+      // Delete the stale row so it gets regenerated cleanly
+      await this.db.execute({ sql: `DELETE FROM sdm_state WHERE project = ?`, args: [project] });
+      return null;
+    }
+
+    const blob = result.rows[0].counters as any;
+    // libSQL returns blobs as ArrayBuffer.
+    // We instantiate a Float32Array directly over the buffer.
+    if (blob instanceof ArrayBuffer) {
+      return new Float32Array(blob);
+    } else if (blob instanceof Uint8Array) {
+      // In case it's returned as a Uint8Array view
+      return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+    } else {
+      throw new Error(`[SqliteStorage] Unexpected blob type returned for SDM state`);
+    }
+  }
+
+  async saveSdmState(project: string, state: Float32Array): Promise<void> {
+    // The state is a Float32Array. We need its underlying buffer for SQLite.
+    // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
+    const buffer = new Uint8Array(state.buffer, state.byteOffset, state.byteLength);
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+    
+    // We do an UPSERT (INSERT ... ON CONFLICT REPLACE).
+    await this.db.execute({
+      sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at) 
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(project) DO UPDATE SET 
+              counters = excluded.counters,
+              address_version = excluded.address_version,
+              updated_at = excluded.updated_at`,
+      args: [project, buffer, SDM_ADDRESS_VERSION],
+    });
+    
+    debugLog(`[SqliteStorage] Persisted SDM state v${SDM_ADDRESS_VERSION} to disk for project: ${project}`);
+  }
+
+  // ─── v6.5: HDC State Machines & Cognitive Logic ───────────────────────
+
+  async getHdcConcept(concept: string): Promise<Uint32Array | null> {
+    const result = await this.db.execute({
+      sql: `SELECT vector FROM hdc_dictionary WHERE concept_name = ?`,
+      args: [concept]
+    });
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const blob = result.rows[0].vector as any;
+    // libSQL returns blobs as ArrayBuffer.
+    // We instantiate a Uint32Array directly over the buffer.
+    if (blob instanceof ArrayBuffer) {
+      return new Uint32Array(blob);
+    } else if (blob instanceof Uint8Array) {
+      return new Uint32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+    } else {
+      throw new Error(`[SqliteStorage] Unexpected blob type returned for HDC vector`);
+    }
+  }
+
+  async getAllHdcConcepts(): Promise<Array<{ concept: string; vector: Uint32Array }>> {
+    const result = await this.db.execute(`SELECT concept_name, vector FROM hdc_dictionary`);
+    return result.rows.map(row => {
+      const blob = row.vector as any;
+      let vec: Uint32Array;
+      if (blob instanceof ArrayBuffer) {
+        vec = new Uint32Array(blob);
+      } else if (blob instanceof Uint8Array) {
+        vec = new Uint32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+      } else {
+        throw new Error(`[SqliteStorage] Unexpected blob type returned for HDC vector`);
+      }
+      return { concept: row.concept_name as string, vector: vec };
+    });
+  }
+
+  async saveHdcConcept(concept: string, vector: Uint32Array): Promise<void> {
+    // The vector is a Uint32Array. We need its underlying buffer for SQLite.
+    // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
+    const buffer = new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
+    const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
+    
+    await this.db.execute({
+      sql: `INSERT INTO hdc_dictionary (concept_name, vector, prng_version) 
+            VALUES (?, ?, ?)
+            ON CONFLICT(concept_name) DO UPDATE SET 
+              vector = excluded.vector,
+              prng_version = excluded.prng_version`,
+      args: [concept, buffer, SDM_ADDRESS_VERSION],
+    });
+    
+    debugLog(`[SqliteStorage] Persisted HDC orthogonal concept v${SDM_ADDRESS_VERSION} to dictionary: ${concept}`);
+  }
+
+  // ─── v6.1: Storage Hygiene ────────────────────────────────────────────
+
+  /**
+   * Returns the current SQLite database file size in bytes using
+   * SQLite's own page count/size pragmas (accurate, no filesystem stat needed).
+   */
+  private async getDatabaseSize(): Promise<number> {
+    const result = await this.db.execute(
+      `SELECT page_count * page_size AS size
+       FROM pragma_page_count(), pragma_page_size()`
+    );
+    return Number(result.rows[0]?.size ?? 0);
+  }
+
+  /**
+   * Reclaim disk space by running VACUUM on the SQLite database.
+   *
+   * REVIEWER NOTE (v6.1):
+   * VACUUM rewrites the entire database file, reclaiming pages freed by
+   * DELETE/UPDATE operations. It acquires an exclusive lock for the
+   * duration — no other connections may read or write during VACUUM.
+   * In Prism's single-process MCP model this is safe: the MCP server
+   * handles one tool call at a time, so the lock is always available.
+   *
+   * Runtime: O(N) in database size (~1s per 100MB on an SSD).
+   * Recommended: call after `deep_storage_purge` removes ≥1,000 entries.
+   */
+  async vacuumDatabase(opts: { dryRun: boolean }): Promise<{
+    sizeBefore: number;
+    sizeAfter: number;
+    message: string;
+  }> {
+    const sizeBefore = await this.getDatabaseSize();
+
+    if (!opts.dryRun) {
+      debugLog("[SqliteStorage] Starting VACUUM — acquiring exclusive DB lock");
+      try {
+        await this.db.execute("VACUUM");
+        debugLog("[SqliteStorage] VACUUM complete");
+      } catch (err: any) {
+        // SQLITE_BUSY (error code 5) means another connection holds the lock.
+        // Surface a clear, retryable error instead of crashing.
+        const isBusy = err.message?.includes('SQLITE_BUSY') ||
+                       err.message?.includes('database is locked') ||
+                       err.code === 5;
+        if (isBusy) {
+          throw new Error(
+            '[SqliteStorage] VACUUM failed: database is locked by another connection. ' +
+            'Retry after other operations complete. (SQLITE_BUSY)'
+          );
+        }
+        throw err; // Re-throw non-lock errors
+      }
+    }
+
+    const sizeAfter = await this.getDatabaseSize();
+    const savedMb = ((sizeBefore - sizeAfter) / (1024 * 1024)).toFixed(2);
+
+    return {
+      sizeBefore,
+      sizeAfter,
+      message: opts.dryRun
+        ? `Dry run: no changes made. Current database size: ${(sizeBefore / (1024 * 1024)).toFixed(2)} MB. ` +
+          `Note: Large databases may take up to 60 seconds to vacuum.`
+        : `VACUUM completed successfully. Reclaimed ${savedMb} MB. ` +
+          `Note: Large databases may take up to 60 seconds to vacuum.`,
+    };
+  }
+
+  async getAllProjectEmbeddings(project: string): Promise<Array<{ id: string, summary: string, embedding_compressed: string }>> {
+    const res = await this.db.execute({
+      sql: `SELECT id, summary, embedding_compressed FROM session_ledger
+            WHERE project = ? AND deleted_at IS NULL AND embedding_compressed IS NOT NULL`,
+      args: [project]
+    });
+
+    return res.rows.map(r => ({
+      id: r.id as string,
+      summary: r.summary as string,
+      embedding_compressed: r.embedding_compressed as string
+    }));
+  }
+
+  // ─── v6.0: Associative Memory Graph ─────────────────────────
+  //
+  // These methods implement the memory_links RFC (approved 2026-03-30).
+  // All use @libsql/client's execute({ sql, args }) pattern.
+  // Cap enforcement and reinforcement are designed to be called from
+  // application logic (not triggers) per the RFC design decisions.
+
+  async createLink(link: MemoryLink, _userId: string): Promise<void> {
+    // INSERT OR IGNORE — idempotent on composite PK (source, target, type)
+    // Strength is clamped by CHECK constraint (0.0–1.0) in schema.
+    // Note: _userId accepted for interface parity with Supabase (which validates
+    // tenant ownership via prism_create_link RPC). SQLite is single-tenant.
+    await this.db.execute({
+      sql: `INSERT OR IGNORE INTO memory_links
+            (source_id, target_id, link_type, strength, metadata)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [
+        link.source_id,
+        link.target_id,
+        link.link_type,
+        Math.max(0.0, Math.min(link.strength ?? 1.0, 1.0)),
+        link.metadata ?? null,
+      ],
+    });
+
+    // Atomically enforce 25-link cap for auto-generated link types.
+    // Manual/structural links (temporal_next, spawned_from) are exempt.
+    if (link.link_type === 'related_to') {
+      await this.pruneExcessLinks(link.source_id, 'related_to');
+    }
+  }
+
+  async deleteLink(
+    sourceId: string,
+    targetId: string,
+    linkType: MemoryLink['link_type'],
+    _userId: string
+  ): Promise<boolean> {
+    const result = await this.db.execute({
+      sql: `DELETE FROM memory_links
+            WHERE source_id = ? AND target_id = ? AND link_type = ?`,
+      args: [sourceId, targetId, linkType],
+    });
+    return (result.rowsAffected ?? 0) > 0;
+  }
+
+  async getLinksFrom(
+    sourceId: string,
+    userId: string,
+    minStrength: number = 0.0,
+    limit: number = 25
+  ): Promise<MemoryLink[]> {
+    // JOIN session_ledger to enforce:
+    //   1. Tenant isolation (target.user_id = userId)
+    //   2. GDPR tombstone filtering (target.deleted_at IS NULL)
+    //   3. TTL/archive filtering (target.archived_at IS NULL)
+    const result = await this.db.execute({
+      sql: `SELECT m.source_id, m.target_id, m.link_type, m.strength, m.metadata,
+                   m.created_at, m.last_traversed_at
+            FROM memory_links m
+            JOIN session_ledger target ON m.target_id = target.id
+            WHERE m.source_id = ? AND m.strength >= ?
+              AND target.user_id = ?
+              AND target.deleted_at IS NULL
+              AND (target.archived_at IS NULL OR m.link_type IN ('spawned_from', 'supersedes'))
+            ORDER BY m.strength DESC, m.last_traversed_at DESC
+            LIMIT ?`,
+      args: [sourceId, minStrength, userId, limit],
+    });
+
+    return result.rows.map((r) => ({
+      source_id: r.source_id as string,
+      target_id: r.target_id as string,
+      link_type: r.link_type as MemoryLink['link_type'],
+      strength: r.strength as number,
+      metadata: r.metadata as string | null,
+      created_at: r.created_at as string,
+      last_traversed_at: r.last_traversed_at as string,
+    }));
+  }
+
+  async getLinksTo(
+    targetId: string,
+    userId: string,
+    minStrength: number = 0.0,
+    limit: number = 25
+  ): Promise<MemoryLink[]> {
+    // JOIN session_ledger to enforce tenant isolation + GDPR visibility
+    // on the SOURCE side ("who links to me?" — verify the linker is visible)
+    const result = await this.db.execute({
+      sql: `SELECT m.source_id, m.target_id, m.link_type, m.strength, m.metadata,
+                   m.created_at, m.last_traversed_at
+            FROM memory_links m
+            JOIN session_ledger source ON m.source_id = source.id
+            WHERE m.target_id = ? AND m.strength >= ?
+              AND source.user_id = ?
+              AND source.deleted_at IS NULL
+              AND (source.archived_at IS NULL OR m.link_type IN ('spawned_from', 'supersedes'))
+            ORDER BY m.strength DESC, m.last_traversed_at DESC
+            LIMIT ?`,
+      args: [targetId, minStrength, userId, limit],
+    });
+
+    return result.rows.map((r) => ({
+      source_id: r.source_id as string,
+      target_id: r.target_id as string,
+      link_type: r.link_type as MemoryLink['link_type'],
+      strength: r.strength as number,
+      metadata: r.metadata as string | null,
+      created_at: r.created_at as string,
+      last_traversed_at: r.last_traversed_at as string,
+    }));
+  }
+
+  async countLinks(entryId: string, linkType?: string): Promise<number> {
+    if (linkType) {
+      const result = await this.db.execute({
+        sql: `SELECT COUNT(*) as count FROM memory_links
+              WHERE source_id = ? AND link_type = ?`,
+        args: [entryId, linkType],
+      });
+      return Number(result.rows[0]?.count) || 0;
+    } else {
+      const result = await this.db.execute({
+        sql: `SELECT COUNT(*) as count FROM memory_links
+              WHERE source_id = ?`,
+        args: [entryId],
+      });
+      return Number(result.rows[0]?.count) || 0;
+    }
+  }
+
+  async pruneExcessLinks(
+    entryId: string,
+    linkType: string,
+    maxLinks: number = 25
+  ): Promise<void> {
+    // Atomic cap enforcement: delete ALL links beyond the top N by strength.
+    // Uses NOT IN subquery to keep the strongest links, eliminating TOCTOU
+    // races that could occur with separate COUNT + DELETE operations.
+    // Safe to call unconditionally — no-ops when count <= maxLinks.
+    await this.db.execute({
+      sql: `DELETE FROM memory_links
+            WHERE source_id = ? AND link_type = ?
+              AND rowid NOT IN (
+                SELECT rowid FROM memory_links
+                WHERE source_id = ? AND link_type = ?
+                ORDER BY strength DESC, last_traversed_at DESC
+                LIMIT ?
+              )`,
+      args: [entryId, linkType, entryId, linkType, maxLinks],
+    });
+  }
+
+  async reinforceLink(
+    sourceId: string,
+    targetId: string,
+    linkType: string
+  ): Promise<void> {
+    // Increment strength by +0.1, capped at 1.0 (enforced by CHECK constraint).
+    // Update last_traversed_at to prevent decay from targeting active links.
+    // This method is designed to be called fire-and-forget via setImmediate().
+    await this.db.execute({
+      sql: `UPDATE memory_links
+            SET strength = MIN(strength + 0.1, 1.0),
+                last_traversed_at = datetime('now')
+            WHERE source_id = ? AND target_id = ? AND link_type = ?`,
+      args: [sourceId, targetId, linkType],
+    });
+  }
+
+  async decayLinks(olderThanDays: number): Promise<number> {
+    // Reduce strength by -0.05 for non-structural associative links not traversed in N days.
+    // Floor at 0.0 (enforced by CHECK constraint) — links at 0.0 are
+    // effectively dead but preserved for provenance audit.
+    // We only decay related_to heuristical links, not factual structural links.
+    const result = await this.db.execute({
+      sql: `UPDATE memory_links
+            SET strength = MAX(strength - 0.05, 0.0)
+            WHERE last_traversed_at < datetime('now', ?)
+              AND link_type IN ('related_to')`,
+      args: [`-${olderThanDays} days`],
+    });
+    return result.rowsAffected;
+  }
+
+  async summarizeWeakLinks(
+    project: string,
+    userId: string,
+    minStrength: number,
+    maxSourceEntries: number = 25,
+    maxLinksPerSource: number = 25,
+  ): Promise<{ sources_considered: number; links_scanned: number; links_soft_pruned: number }> {
+    const entries = await this.db.execute({
+      sql: `SELECT id
+            FROM session_ledger
+            WHERE project = ?
+              AND user_id = ?
+              AND deleted_at IS NULL
+              AND archived_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT ?`,
+      args: [project, userId, maxSourceEntries],
+    });
+
+    let linksScanned = 0;
+    let linksSoftPruned = 0;
+
+    for (const row of entries.rows) {
+      const sourceId = row.id as string;
+      const links = await this.getLinksFrom(sourceId, userId, 0.0, maxLinksPerSource);
+      linksScanned += links.length;
+      linksSoftPruned += links.filter(l => l.strength < minStrength).length;
+    }
+
+    return {
+      sources_considered: entries.rows.length,
+      links_scanned: linksScanned,
+      links_soft_pruned: linksSoftPruned,
+    };
+  }
+
+  // ─── v6.0 Phase 3: Keyword Overlap Finder ──────────────────
+  //
+  // Pushes heavy intersection logic to the DB layer.
+  // Strategy: CTE-first json_each explosion with hash join.
+  //
+  // 1. input_kw CTE: explodes the input keyword array into rows
+  // 2. JOIN json_each(sl.keywords): explodes each entry's stored keywords
+  // 3. HAVING COUNT: filters to entries with ≥ minSharedKeywords matches
+  //
+  // This is O(N * K) where N = number of entries and K = avg keywords per entry.
+  // Much better than the O(N²) self-join alternative.
+
+  async findKeywordOverlapEntries(
+    excludeId: string,
+    project: string,
+    keywords: string[],
+    userId: string,
+    minSharedKeywords: number = 3,
+    limit: number = 10,
+  ): Promise<Array<{ id: string; shared_count: number }>> {
+    // ── Short keyword allowlist ──────────────────────────────────────────
+    // The length > 2 filter eliminates noise ("is", "to", "at") but also
+    // accidentally drops valid technical identifiers like "C", "Go", "R",
+    // "OS", "VM", etc. The allowlist exempts known short tech keywords so
+    // that sessions tagged with "go" still create graph edges with others.
+    const SHORT_KW_ALLOWLIST = new Set(["c", "go", "r", "os", "vm", "ui", "ai", "ml", "db", "ts", "js", "rx"]);
+    const validKeywords = keywords.filter(k =>
+      k && typeof k === 'string' &&
+      (k.length > 2 || SHORT_KW_ALLOWLIST.has(k.toLowerCase()))
+    );
+    if (validKeywords.length === 0) return [];
+
+
+    // Build the VALUES list for the input keywords CTE.
+    // Each keyword becomes a row: VALUES ('kw1'), ('kw2'), ...
+    // We use parameterized queries to avoid SQL injection.
+    const placeholders = validKeywords.map(() => "(?)").join(", ");
+    const args: (string | number)[] = [...validKeywords, userId, project, excludeId, minSharedKeywords, limit];
+
+    const result = await this.db.execute({
+      sql: `
+        WITH input_kw(kw) AS (VALUES ${placeholders})
+        SELECT sl.id, COUNT(DISTINCT ik.kw) AS shared_count
+        FROM session_ledger sl,
+             json_each(sl.keywords) AS je,
+             input_kw ik
+        WHERE sl.user_id = ?
+          AND sl.project = ?
+          AND sl.id != ?
+          AND sl.deleted_at IS NULL
+          AND sl.archived_at IS NULL
+          AND je.value = ik.kw
+        GROUP BY sl.id
+        HAVING COUNT(DISTINCT ik.kw) >= ?
+        ORDER BY shared_count DESC
+        LIMIT ?
+      `,
+      args,
+    });
+
+    return result.rows.map((r) => ({
+      id: r.id as string,
+      shared_count: Number(r.shared_count),
+    }));
+  }
+
+  async backfillLinks(
+    project: string
+  ): Promise<{ temporal: number; keyword: number; provenance: number }> {
+    // ─── v6.0 Phase 3: Full Backfill Engine ──────────────────
+    //
+    // Retroactively creates graph edges for all existing entries.
+    // Each strategy runs a single INSERT OR IGNORE SQL statement
+    // for idempotency — safe to re-run multiple times.
+
+    let temporal = 0;
+    let keyword = 0;
+    let provenance = 0;
+
+    debugLog(`[SqliteStorage] backfillLinks starting for project: ${project}`);
+
+    // ── Strategy 1: Temporal Chaining via LEAD() ──────────────
+    //
+    // Links consecutive entries within the same conversation using
+    // the LEAD() window function. This replaces O(N²) self-joins
+    // with O(N) window scans.
+    //
+    // SQL: For each entry partitioned by conversation_id, get the
+    // "next" entry by created_at. Insert a temporal_next directed edge.
+    try {
+      const temporalResult = await this.db.execute({
+        sql: `
+          INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, metadata)
+          SELECT
+            id AS source_id,
+            next_id AS target_id,
+            'temporal_next' AS link_type,
+            1.0 AS strength,
+            json_object('backfill', 'temporal', 'conversation_id', conversation_id) AS metadata
+          FROM (
+            SELECT
+              id,
+              conversation_id,
+              LEAD(id) OVER (
+                PARTITION BY conversation_id
+                ORDER BY created_at ASC
+              ) AS next_id
+            FROM session_ledger
+            WHERE project = ?
+              AND deleted_at IS NULL
+              AND conversation_id IS NOT NULL
+              AND conversation_id != ''
+          )
+          WHERE next_id IS NOT NULL
+        `,
+        args: [project],
+      });
+      temporal = temporalResult.rowsAffected;
+      debugLog(`[SqliteStorage] backfillLinks temporal: ${temporal} links created`);
+    } catch (err) {
+      debugLog(`[SqliteStorage] backfillLinks temporal strategy failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // ── Strategy 2: Keyword Intersection via CTE + json_each ─
+    //
+    // Finds pairs of entries that share ≥ 3 keywords. Uses a CTE to
+    // explode each entry's keywords JSON array into rows, then groups
+    // by pair to count shared keywords.
+    //
+    // NOTE: This creates BIDIRECTIONAL links (A→B and B→A).
+    // The WHERE a.id < b.id prevents duplicates in the same INSERT.
+    try {
+      const keywordResult = await this.db.execute({
+        sql: `
+          INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, metadata)
+          SELECT
+            a_id AS source_id,
+            b_id AS target_id,
+            'related_to' AS link_type,
+            MIN(0.3 + (shared_count * 0.1), 1.0) AS strength,
+            json_object('backfill', 'keyword', 'shared_keywords', shared_count) AS metadata
+          FROM (
+            SELECT
+              a.id AS a_id,
+              b.id AS b_id,
+              COUNT(DISTINCT ja.value) AS shared_count
+            FROM session_ledger a
+            JOIN json_each(a.keywords) AS ja
+            JOIN session_ledger b ON b.project = ? AND b.deleted_at IS NULL AND b.archived_at IS NULL
+            JOIN json_each(b.keywords) AS jb ON ja.value = jb.value
+            WHERE a.project = ?
+              AND a.deleted_at IS NULL
+              AND a.archived_at IS NULL
+              AND a.id < b.id
+              AND a.keywords IS NOT NULL
+              AND b.keywords IS NOT NULL
+            GROUP BY a.id, b.id
+            HAVING COUNT(DISTINCT ja.value) >= 3
+          )
+        `,
+        args: [project, project],
+      });
+      // This creates A→B links. Now create reverse B→A links.
+      const keywordReverseResult = await this.db.execute({
+        sql: `
+          INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, metadata)
+          SELECT
+            b_id AS source_id,
+            a_id AS target_id,
+            'related_to' AS link_type,
+            MIN(0.3 + (shared_count * 0.1), 1.0) AS strength,
+            json_object('backfill', 'keyword_reverse', 'shared_keywords', shared_count) AS metadata
+          FROM (
+            SELECT
+              a.id AS a_id,
+              b.id AS b_id,
+              COUNT(DISTINCT ja.value) AS shared_count
+            FROM session_ledger a
+            JOIN json_each(a.keywords) AS ja
+            JOIN session_ledger b ON b.project = ? AND b.deleted_at IS NULL AND b.archived_at IS NULL
+            JOIN json_each(b.keywords) AS jb ON ja.value = jb.value
+            WHERE a.project = ?
+              AND a.deleted_at IS NULL
+              AND a.archived_at IS NULL
+              AND a.id < b.id
+              AND a.keywords IS NOT NULL
+              AND b.keywords IS NOT NULL
+            GROUP BY a.id, b.id
+            HAVING COUNT(DISTINCT ja.value) >= 3
+          )
+        `,
+        args: [project, project],
+      });
+      keyword = keywordResult.rowsAffected + keywordReverseResult.rowsAffected;
+      debugLog(`[SqliteStorage] backfillLinks keyword: ${keyword} links created (${keywordResult.rowsAffected} forward + ${keywordReverseResult.rowsAffected} reverse)`);
+    } catch (err) {
+      debugLog(`[SqliteStorage] backfillLinks keyword strategy failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // ── Strategy 3: Provenance (Rollup → Archived Originals) ──
+    //
+    // Links compaction rollup entries to the archived originals they
+    // summarize. Uses temporal proximity: archived entries whose
+    // archived_at timestamp is within 5 minutes of the rollup's
+    // created_at are considered provenance targets.
+    try {
+      const provenanceResult = await this.db.execute({
+        sql: `
+          INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, metadata)
+          SELECT
+            rollup.id AS source_id,
+            archived.id AS target_id,
+            'spawned_from' AS link_type,
+            0.8 AS strength,
+            json_object('backfill', 'provenance') AS metadata
+          FROM session_ledger rollup
+          JOIN session_ledger archived
+            ON archived.project = rollup.project
+            AND archived.archived_at IS NOT NULL
+            AND archived.deleted_at IS NULL
+            AND ABS(
+              julianday(archived.archived_at) - julianday(rollup.created_at)
+            ) < (5.0 / 1440.0)
+          WHERE rollup.project = ?
+            AND rollup.deleted_at IS NULL
+            AND rollup.summary LIKE '%[ROLLUP]%'
+        `,
+        args: [project],
+      });
+      provenance = provenanceResult.rowsAffected;
+      debugLog(`[SqliteStorage] backfillLinks provenance: ${provenance} links created`);
+    } catch (err) {
+      debugLog(`[SqliteStorage] backfillLinks provenance strategy failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    debugLog(
+      `[SqliteStorage] backfillLinks complete for "${project}": ` +
+      `temporal=${temporal}, keyword=${keyword}, provenance=${provenance}`
+    );
+    return { temporal, keyword, provenance };
+  }
+
+  // ─── v7.0: ACT-R Access Log Methods ────────────────────────────
+  //
+  // These three methods support the ACT-R base-level activation model.
+  // Read the interface.ts docstrings for the full spec.
+
+  /**
+   * Record a memory access event (synchronous, fire-and-forget via buffer).
+   * Rule #1: Write contention prevention.
+   */
+  logAccess(entryId: string, contextHash?: string): void {
+    this.accessLogBuffer.push(entryId, contextHash);
+  }
+
+  /**
+   * Batch-fetch access timestamps for multiple entries using window functions.
+   * Rule #2: Prevents N+1 query explosion.
+   *
+   * SQL STRATEGY:
+   *   Uses ROW_NUMBER() OVER (PARTITION BY entry_id ORDER BY accessed_at DESC)
+   *   to rank accesses per entry, then filters to the top `maxPerEntry`.
+   *   This converts N separate queries into 1 query with O(N*K) work
+   *   where N = entries and K = max accesses per entry.
+   *
+   *   We use a CTE subquery pattern because SQLite doesn't support
+   *   WHERE on a window function alias in the same SELECT scope.
+   */
+  async getAccessLog(
+    entryIds: string[],
+    maxPerEntry: number = 50
+  ): Promise<Map<string, Date[]>> {
+    const result = new Map<string, Date[]>();
+
+    if (entryIds.length === 0) return result;
+
+    // Build parameterized IN clause
+    const placeholders = entryIds.map(() => "?").join(", ");
+
+    const rows = await this.db.execute({
+      sql: `
+        WITH ranked AS (
+          SELECT
+            entry_id,
+            accessed_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY entry_id
+              ORDER BY accessed_at DESC
+            ) AS rn
+          FROM memory_access_log
+          WHERE entry_id IN (${placeholders})
+        )
+        SELECT entry_id, accessed_at
+        FROM ranked
+        WHERE rn <= ?
+        ORDER BY entry_id, accessed_at DESC
+      `,
+      args: [...entryIds, maxPerEntry],
+    });
+
+    // Assemble the Map from flat rows
+    for (const row of rows.rows) {
+      const entryId = row.entry_id as string;
+      const accessedAt = new Date(row.accessed_at as string);
+
+      if (!result.has(entryId)) {
+        result.set(entryId, []);
+      }
+      result.get(entryId)!.push(accessedAt);
+    }
+
+    return result;
+  }
+
+  /**
+   * Prune access log entries older than N days.
+   * Called by the sleep-cycle scheduler to bound table growth.
+   */
+  async pruneAccessLog(olderThanDays: number): Promise<number> {
+    const result = await this.db.execute({
+      sql: `DELETE FROM memory_access_log
+            WHERE accessed_at < datetime('now', ?)`,
+      args: [`-${olderThanDays} days`],
+    });
+    const pruned = result.rowsAffected;
+    debugLog(`[SqliteStorage] pruneAccessLog: removed ${pruned} entries older than ${olderThanDays} days`);
+    return pruned;
+  }
+
+  // ─── Dark Factory (v7.3) ───────────────────────────────────
+
+  async savePipeline(state: PipelineState): Promise<void> {
+    const now = new Date().toISOString();
+    const updatedState = { ...state, updated_at: now };
+
+    // Status Guard: prevent overwriting a terminated pipeline
+    const existing = await this.getPipeline(state.id, state.user_id);
+    if (existing) {
+      if (existing.status === 'ABORTED' || existing.status === 'COMPLETED') {
+        throw new Error(`Cannot update pipeline ${state.id} because it is already ${existing.status}.`);
+      }
+      // Validate state machine transition
+      if (!SafetyController.validateTransition(existing.status as PipelineStatus, updatedState.status as PipelineStatus)) {
+        throw new Error(
+          `Illegal pipeline transition: ${existing.status} → ${updatedState.status} ` +
+          `for pipeline ${state.id}. Legal transitions from ${existing.status}: ` +
+          `${SafetyController.getLegalTransitions(existing.status as PipelineStatus).join(', ') || 'NONE (terminal)'}.`
+        );
+      }
+    }
+
+    await this.db.execute({
+      sql: `
+        INSERT INTO dark_factory_pipelines (id, project, user_id, status, current_step, iteration, started_at, updated_at, spec, error, last_heartbeat)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          current_step = excluded.current_step,
+          iteration = excluded.iteration,
+          updated_at = excluded.updated_at,
+          spec = excluded.spec,
+          error = excluded.error,
+          last_heartbeat = excluded.last_heartbeat
+      `,
+      args: [
+        updatedState.id,
+        updatedState.project,
+        updatedState.user_id,
+        updatedState.status,
+        updatedState.current_step,
+        updatedState.iteration,
+        updatedState.started_at,
+        updatedState.updated_at,
+        updatedState.spec,
+        updatedState.error || null,
+        updatedState.last_heartbeat || null
+      ]
+    });
+  }
+
+  async getPipeline(id: string, userId: string): Promise<PipelineState | null> {
+    const result = await this.db.execute({
+      sql: `SELECT * FROM dark_factory_pipelines WHERE id = ? AND user_id = ?`,
+      args: [id, userId]
+    });
+    
+    if (result.rows.length === 0) return null;
+    return result.rows[0] as unknown as PipelineState;
+  }
+
+  async listPipelines(project: string | undefined, status: PipelineStatus | undefined, userId: string): Promise<PipelineState[]> {
+    const conditions: string[] = ['user_id = ?'];
+    const args: any[] = [userId];
+    
+    if (project) {
+      conditions.push('project = ?');
+      args.push(project);
+    }
+    if (status) {
+      conditions.push('status = ?');
+      args.push(status);
+    }
+    
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT * FROM dark_factory_pipelines ${where} ORDER BY updated_at DESC`;
+    
+    const result = await this.db.execute({ sql, args });
+    return result.rows as unknown as PipelineState[];
+  }
 }
 
