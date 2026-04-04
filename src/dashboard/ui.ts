@@ -1434,15 +1434,15 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             html += '<span style="font-weight:600;color:var(--text-primary)">' + emoji + ' ' + p.status + '</span>';
             html += '<span style="font-size:0.7rem;font-family:var(--font-mono);color:var(--text-muted)">' + p.id.slice(0, 8) + '…</span>';
             html += '</div>';
-            html += '<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.35rem">' + objective + '</div>';
+            html += '<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.35rem">' + escapeHtml(objective) + '</div>';
             html += '<div style="display:flex;gap:1rem;font-size:0.72rem;color:var(--text-muted);flex-wrap:wrap">';
-            html += '<span>📁 ' + (p.project || '?') + '</span>';
+            html += '<span>📁 ' + escapeHtml(p.project || '?') + '</span>';
             html += '<span>🔄 ' + p.iteration + ' / ' + maxIter + '</span>';
-            html += '<span>📍 ' + (p.current_step || '?') + '</span>';
+            html += '<span>📍 ' + escapeHtml(p.current_step || '?') + '</span>';
             html += '<span>🕐 ' + new Date(p.updated_at).toLocaleString() + '</span>';
             html += '</div>';
             if (p.error) {
-              html += '<div style="font-size:0.72rem;color:var(--accent-rose);margin-top:0.35rem;padding:0.3rem 0.5rem;background:rgba(244,63,94,0.08);border-radius:4px">⚠ ' + p.error.slice(0, 200) + '</div>';
+              html += '<div style="font-size:0.72rem;color:var(--accent-rose);margin-top:0.35rem;padding:0.3rem 0.5rem;background:rgba(244,63,94,0.08);border-radius:4px">⚠ ' + escapeHtml(p.error.slice(0, 200)) + '</div>';
             }
             if (isActive) {
               html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(this.dataset.id)" data-id="' + p.id + '" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
@@ -1463,7 +1463,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           }
         })
         .catch(function(err) {
-          document.getElementById('factoryList').innerHTML = '<div style="color:var(--accent-rose);padding:1rem">Failed to load pipelines: ' + err.message + '</div>';
+          document.getElementById('factoryList').innerHTML = '<div style="color:var(--accent-rose);padding:1rem">Failed to load pipelines: ' + escapeHtml(err.message) + '</div>';
         });
     }
 
@@ -1604,12 +1604,39 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         var select = document.getElementById('projectSelect');
         if (data.projects && data.projects.length > 0) {
           select.innerHTML = '<option value="">— Select a project —</option>' +
-            data.projects.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
+            data.projects.map(function(p) { return '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>'; }).join('');
+
+          // Fetch sequentially to avoid spiking concurrent loadContext calls on SQLite-backed setups.
+          var pIndex = 0;
+          function fetchNextHealth() {
+            if (pIndex >= data.projects.length) return;
+            var p = data.projects[pIndex++];
+            fetch('/api/intent-health?project=' + encodeURIComponent(p))
+              .then(function(healthRes) { return healthRes.json(); })
+              .then(function(healthData) {
+                if (healthData && typeof healthData.score === 'number') {
+                  var icon = healthData.score >= 80 ? '🟢' : (healthData.score >= 50 ? '🟡' : '🔴');
+                  var opt = null;
+                  for (var optionIndex = 0; optionIndex < select.options.length; optionIndex++) {
+                    if (select.options[optionIndex].value === p) {
+                      opt = select.options[optionIndex];
+                      break;
+                    }
+                  }
+                  if (opt) opt.textContent = icon + ' ' + p;
+                }
+                fetchNextHealth();
+              })
+              .catch(function() {
+                fetchNextHealth();
+              });
+          }
+          fetchNextHealth();
 
           var gp = document.getElementById('graphProjectFilter');
           if (gp) {
             gp.innerHTML = '<option value="">All Projects</option>' +
-              data.projects.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
+              data.projects.map(function(p) { return '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>'; }).join('');
           }
 
           var lastProject = '';
@@ -1632,7 +1659,15 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
     async function loadProject() {
       var project = document.getElementById('projectSelect').value;
-      if (!project) return;
+      if (!project) {
+        var intentCard = document.getElementById('intentHealthCard');
+        if (intentCard) intentCard.style.display = 'none';
+        var welcomeEl = document.getElementById('welcome');
+        var contentEl = document.getElementById('content');
+        if (contentEl) contentEl.style.display = 'none';
+        if (welcomeEl) welcomeEl.style.display = 'flex';
+        return;
+      }
 
       try {
         localStorage.setItem('prism_last_project', project);
@@ -1696,7 +1731,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             var snap = h.snapshot || {};
             var summary = snap.last_summary || snap.summary || 'Snapshot';
             return '<div class="timeline-item history">' +
-              '<div class="meta"><span class="badge badge-purple">v' + h.version + '</span>' +
+              '<div class="meta"><span class="badge badge-purple">v' + escapeHtml(h.version) + '</span>' +
               '<span>' + formatDate(h.created_at) + '</span></div>' +
               escapeHtml(summary) + '</div>';
           }).join('');
@@ -1715,7 +1750,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
               try {
                 var parsed = typeof decisions === 'string' ? JSON.parse(decisions) : decisions;
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                  extra = '<div style="margin-top:0.3rem;font-size:0.75rem;color:var(--accent-cyan)">Decisions: ' + parsed.join(', ') + '</div>';
+                  extra = '<div style="margin-top:0.3rem;font-size:0.75rem;color:var(--accent-cyan)">Decisions: ' + parsed.map(function(d) { return escapeHtml(d); }).join(', ') + '</div>';
                 }
               } catch(e) {}
             }
@@ -1777,7 +1812,9 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
         document.getElementById('content').className = 'grid grid-main fade-in';
         document.getElementById('content').style.display = 'grid';
-  projectLoaded = true;
+    projectLoaded = true;
+
+    fetchIntentHealth(project);
 
         // v3.1: Analytics + Lifecycle Controls + Import
         document.getElementById('analyticsCard').style.display = 'block';
@@ -2174,7 +2211,12 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
     function escapeHtml(str) {
       if (!str) return '';
-      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return String(str)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#039;');
     }
 
     function formatDate(isoStr) {
@@ -3480,6 +3522,62 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
       t.textContent = (ok === false ? '❌ ' : '✅ ') + msg;
       t.classList.add('show');
       setTimeout(function() { t.classList.remove('show'); }, 3500);
+    }
+
+    function fetchIntentHealth(project) {
+      var container = document.getElementById('intentHealthCardContent');
+      var card = document.getElementById('intentHealthCard');
+      if (!container || !card) return;
+
+      card.style.display = 'block';
+      container.innerHTML = '<div style="color:#8b949e;padding:16px;">Computing intent debt...</div>';
+
+      fetch('/api/intent-health?project=' + encodeURIComponent(project))
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.error) {
+            container.innerHTML = '<div style="color:#ff7b72;padding:16px;">Error: ' + escapeHtml(data.error) + '</div>';
+            return;
+          }
+          renderIntentHealthCard(data);
+        })
+        .catch(function() {
+          container.innerHTML = '<div style="color:#ff7b72;padding:16px;">Failed to load intent health.</div>';
+        });
+    }
+
+    function renderIntentHealthCard(data) {
+      var container = document.getElementById('intentHealthCardContent');
+      if (!container) return;
+
+      var scoreColor = '#2ea043';
+      if (data.score < 50) {
+        scoreColor = '#ff7b72';
+      } else if (data.score < 80) {
+        scoreColor = '#d29922';
+      }
+
+      var signalsHtml = '';
+      for (var signalIndex = 0; signalIndex < data.signals.length; signalIndex++) {
+        var sig = data.signals[signalIndex];
+        var icon = '🟢';
+        if (sig.severity === 'warn') icon = '🟡';
+        if (sig.severity === 'critical') icon = '🔴';
+        signalsHtml += '<div style="margin-bottom:8px;font-size:13px;">' + icon + ' ' + escapeHtml(sig.message) + '</div>';
+      }
+
+      container.innerHTML = '' +
+        '<div style="display:flex;gap:24px;align-items:center;padding:16px;">' +
+          '<div style="text-align:center;flex-shrink:0;min-width:80px;">' +
+            '<div style="font-size:42px;font-weight:bold;color:' + scoreColor + ';line-height:1;">' +
+              (typeof data.score === 'number' ? data.score : '—') +
+            '</div>' +
+            '<div style="font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-top:8px;">Health Score</div>' +
+          '</div>' +
+          '<div style="flex-grow:1;border-left:1px solid var(--border-glass);padding-left:24px;">' +
+            signalsHtml +
+          '</div>' +
+        '</div>';
     }
 
     // ─── PWA Service Worker Registration ───
