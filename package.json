@@ -1,12 +1,13 @@
 {
   "name": "prism-mcp-server",
-  "version": "7.3.1",
+  "version": "7.4.0",
   "mcpName": "io.github.dcostenco/prism-mcp",
-  "description": "The Mind Palace for AI Agents — fail-closed Dark Factory autonomous pipelines (3-gate parse→type→scope validation), persistent memory (SQLite/Supabase), ACT-R cognitive retrieval, behavioral learning & IDE rules sync, multi-agent Hivemind, time travel, visual dashboard. Zero-config local mode.",
+  "description": "The Mind Palace for AI Agents — adversarial evaluation (PLAN_CONTRACT→EVALUATE anti-sycophancy), fail-closed Dark Factory autonomous pipelines (3-gate parse→type→scope), persistent memory (SQLite/Supabase), ACT-R cognitive retrieval, behavioral learning & IDE rules sync, multi-agent Hivemind, time travel, visual dashboard. Zero-config local mode.",
   "module": "index.ts",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
+    "prism": "dist/cli.js",
     "prism-mcp-server": "dist/server.js",
     "prism-import": "dist/utils/universalImporter.js"
   },
@@ -15,6 +16,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "lint:dashboard": "node scripts/lint-dashboard-es5.cjs",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -107,6 +109,7 @@
     "@supabase/supabase-js": "^2.99.3",
     "@tavily/core": "^0.6.0",
     "cheerio": "^1.2.0",
+    "commander": "^14.0.3",
     "dotenv": "^16.5.0",
     "fflate": "^0.8.2",
     "jsdom": "^29.0.1",

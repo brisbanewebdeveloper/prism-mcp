@@ -20,14 +20,19 @@
 
 import { getStorage } from '../storage/index.js';
 import type { PipelineState, PipelineStatus } from '../storage/interface.js';
-import type { PipelineSpec, DarkFactoryStep, IterationResult, ExecutionStepResult, ActionPayload } from './schema.js';
+import type { PipelineSpec, DarkFactoryStep, IterationResult, ExecutionStepResult, ActionPayload, ContractPayload, EvaluationPayload } from './schema.js';
 import { VALID_ACTION_TYPES } from './schema.js';
 import { SafetyController } from './safetyController.js';
 import { invokeClawAgent } from './clawInvocation.js';
-import { PRISM_DARK_FACTORY_POLL_MS, PRISM_DARK_FACTORY_MAX_RUNTIME_MS, PRISM_USER_ID } from '../config.js';
+import { PRISM_DARK_FACTORY_POLL_MS, PRISM_DARK_FACTORY_MAX_RUNTIME_MS, PRISM_USER_ID, PRISM_VERIFICATION_LAYERS, PRISM_VERIFICATION_DEFAULT_SEVERITY } from '../config.js';
 import { debugLog } from '../utils/logger.js';
 import path from 'path';
 import fs from 'fs';
+import * as crypto from 'crypto';
+import { Gatekeeper } from '../verification/gatekeeper.js';
+import { VerificationRunner } from '../verification/runner.js';
+import { computeRubricHash, type ValidationResult, type VerificationConfig, type VerificationHarness } from '../verification/schema.js';
+import { VerificationGateError } from '../errors.js';
 
 /** Interval handle for graceful shutdown */
 let runnerInterval: ReturnType<typeof setInterval> | null = null;
@@ -210,29 +215,23 @@ async function emitExperienceEvent(
  *
  * @internal Exported for unit testing only. Not part of the public API.
  */
-export function parseExecuteOutput(raw: string): { parsed: ExecutionStepResult | null; error: string | null } {
+function extractJsonFromLlmOutput(raw: string): { json: string | null; error: string | null } {
   if (!raw || typeof raw !== 'string' || raw.trim() === '') {
-    return { parsed: null, error: 'JSON Parse Error: empty or non-string input' };
+    return { json: null, error: 'JSON Parse Error: empty or non-string input' };
   }
 
   const cleaned = raw.trim();
   let jsonCandidate: string | null = null;
 
-  // Strategy 1: Try raw trimmed input as-is
   if (cleaned.startsWith('{')) {
     jsonCandidate = cleaned;
   }
-
-  // Strategy 2: Strip markdown code fences
   if (!jsonCandidate) {
-    // Match ```json or ``` blocks anywhere in the text (not just start/end of string)
     const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
     if (fenceMatch) {
       jsonCandidate = fenceMatch[1].trim();
     }
   }
-
-  // Strategy 3: Brace extraction — find first { to last }
   if (!jsonCandidate) {
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
@@ -242,18 +241,22 @@ export function parseExecuteOutput(raw: string): { parsed: ExecutionStepResult |
   }
 
   if (!jsonCandidate) {
-    return { parsed: null, error: 'JSON Parse Error: no JSON object found in LLM output' };
+    return { json: null, error: 'JSON Parse Error: no JSON object found in LLM output' };
   }
+  return { json: jsonCandidate, error: null };
+}
 
-  // Attempt JSON parse
+export function parseExecuteOutput(raw: string): { parsed: ExecutionStepResult | null; error: string | null } {
+  const ext = extractJsonFromLlmOutput(raw);
+  if (ext.error || !ext.json) return { parsed: null, error: ext.error };
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(jsonCandidate);
+    parsed = JSON.parse(ext.json);
   } catch {
     return { parsed: null, error: 'JSON Parse Error: LLM output is not valid JSON' };
   }
 
-  // Shape validation: must be an object with an 'actions' array
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { parsed: null, error: 'Shape Error: output is not a JSON object' };
   }
@@ -264,7 +267,6 @@ export function parseExecuteOutput(raw: string): { parsed: ExecutionStepResult |
 
   const result = parsed as ExecutionStepResult;
 
-  // Validate each action in the array
   for (let i = 0; i < result.actions.length; i++) {
     const action = result.actions[i];
     if (!action || typeof action !== 'object' || Array.isArray(action)) {
@@ -279,6 +281,68 @@ export function parseExecuteOutput(raw: string): { parsed: ExecutionStepResult |
   }
 
   return { parsed: result, error: null };
+}
+
+export function parseContractOutput(raw: string): { parsed: ContractPayload | null; error: string | null } {
+  const ext = extractJsonFromLlmOutput(raw);
+  if (ext.error || !ext.json) return { parsed: null, error: ext.error };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(ext.json);
+  } catch {
+    return { parsed: null, error: 'JSON Parse Error: LLM output is not valid JSON' };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).criteria)) {
+    return { parsed: null, error: 'Shape Error: output missing required "criteria" array' };
+  }
+
+  // Validate each criterion element has the required string fields
+  for (let i = 0; i < (parsed as any).criteria.length; i++) {
+    const c = (parsed as any).criteria[i];
+    if (!c || typeof c !== 'object' || typeof c.id !== 'string' || typeof c.description !== 'string') {
+      return { parsed: null, error: `Shape Error: criteria[${i}] must have string "id" and "description"` };
+    }
+  }
+
+  return { parsed: parsed as ContractPayload, error: null };
+}
+
+export function parseEvaluationOutput(raw: string): { parsed: EvaluationPayload | null; error: string | null } {
+  const ext = extractJsonFromLlmOutput(raw);
+  if (ext.error || !ext.json) return { parsed: null, error: ext.error };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(ext.json);
+  } catch {
+    return { parsed: null, error: 'JSON Parse Error: LLM output is not valid JSON' };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || typeof (parsed as any).pass !== 'boolean') {
+    return { parsed: null, error: 'Shape Error: output missing required "pass" boolean' };
+  }
+
+  const p = parsed as any;
+  if (p.findings !== undefined) {
+    if (!Array.isArray(p.findings)) {
+      return { parsed: null, error: 'Shape Error: "findings" must be an array when present' };
+    }
+    // Fix #3: Each failing finding must supply an evidence object so the
+    // Evaluator cannot submit bare severity claims without evidence pointers.
+    for (let i = 0; i < p.findings.length; i++) {
+      const f = p.findings[i];
+      if (!f || typeof f !== 'object') {
+        return { parsed: null, error: `Shape Error: findings[${i}] must be an object` };
+      }
+      if (f.pass_fail === false && (!f.evidence || typeof f.evidence !== 'object')) {
+        return { parsed: null, error: `Shape Error: findings[${i}] is missing required "evidence" object for failure` };
+      }
+    }
+  }
+
+  return { parsed: parsed as EvaluationPayload, error: null };
 }
 
 // ─── Step Execution ────────────────────────────────────────────
@@ -311,8 +375,8 @@ async function executeStep(
     // - Timeout enforcement
     const { success, resultText } = await invokeClawAgent(spec, pipeline);
 
-    // For non-EXECUTE steps, return as-is (free-form text)
-    if (step !== 'EXECUTE') {
+    // For non-JSON steps, return as-is (free-form text)
+    if (step !== 'EXECUTE' && step !== 'PLAN_CONTRACT' && step !== 'EVALUATE') {
       return {
         iteration: pipeline.iteration,
         step,
@@ -322,8 +386,6 @@ async function executeStep(
         notes: resultText.slice(0, 2000),
       };
     }
-
-    // ── v7.3.1: EXECUTE step — parse and validate structured output ──
 
     if (!success) {
       // LLM invocation itself failed (timeout, error, etc.)
@@ -337,7 +399,68 @@ async function executeStep(
       };
     }
 
-    // Parse the structured JSON output
+    // Parse appropriate JSON output depending on step
+    if (step === 'PLAN_CONTRACT') {
+      const { parsed, error: parseError } = parseContractOutput(resultText);
+      if (parseError || !parsed) {
+        debugLog(`[DarkFactory] PLAN_CONTRACT output parse failure: ${parseError}`);
+        return {
+          iteration: pipeline.iteration,
+          step,
+          started_at: stepStart,
+          completed_at: new Date().toISOString(),
+          success: false,
+          notes: parseError || 'Unknown parse error',
+        };
+      }
+      
+      return {
+        iteration: pipeline.iteration,
+        step,
+        started_at: stepStart,
+        completed_at: new Date().toISOString(),
+        success: true,
+        notes: `Contract accepted with ${parsed.criteria.length} criteria.`,
+        contractPayload: parsed, // Passthrough for runner to write to disk
+      } as any;
+    }
+    
+    if (step === 'EVALUATE') {
+      const { parsed, error: parseError } = parseEvaluationOutput(resultText);
+      if (parseError || !parsed) {
+        debugLog(`[DarkFactory] EVALUATE output parse failure: ${parseError}`);
+        return {
+          iteration: pipeline.iteration,
+          step,
+          started_at: stepStart,
+          completed_at: new Date().toISOString(),
+          success: false,
+          notes: parseError || 'Unknown parse error',
+        };
+      }
+      
+      // Fix #2: Serialize findings array into notes so the Generator's retry
+      // prompt receives the full line-by-line critique, not just a summary string.
+      const findingsText = parsed.findings && parsed.findings.length > 0
+        ? '\nFindings:\n' + parsed.findings.map((f: any) =>
+            `- [${f.severity}] Criterion ${f.criterion_id}: ${
+              f.evidence?.description || 'Failed'
+            } (${f.evidence?.file || 'unknown'}:${f.evidence?.line ?? '?'})`
+          ).join('\n')
+        : '';
+
+      return {
+        iteration: pipeline.iteration,
+        step,
+        started_at: stepStart,
+        completed_at: new Date().toISOString(),
+        success: parsed.pass,
+        notes: (parsed.notes || `Evaluation complete: ${parsed.pass ? 'PASS' : 'FAIL'}`) + findingsText,
+        evaluationPayload: parsed, // Passthrough for orchestrator logic
+      } as any;
+    }
+
+    // EXECUTE
     const { parsed, error: parseError } = parseExecuteOutput(resultText);
 
     if (parseError || !parsed) {
@@ -551,16 +674,162 @@ async function runnerTick(): Promise<void> {
       return;
     }
 
-    // Determine next step based on result
     const currentStep = pipeline.current_step as DarkFactoryStep;
-    const nextStep = SafetyController.getNextStep(
-      currentStep,
-      pipeline.iteration,
+
+    // ── Phase 4: Verification Pipeline Orchestrator ──
+    if (currentStep === 'VERIFY' && spec.workingDirectory) {
+      const harnessPath = path.join(path.resolve(spec.workingDirectory), 'verification_harness.json');
+      if (fs.existsSync(harnessPath)) {
+        try {
+          const rawHarness = fs.readFileSync(harnessPath, 'utf8');
+          const harnessData = JSON.parse(rawHarness);
+
+          // GAP-5 fix: Persist the harness so CLI drift detection works for DarkFactory runs
+          const rubricHash = computeRubricHash(harnessData.tests);
+          const harness: VerificationHarness = {
+            ...harnessData,
+            project: pipeline.project,
+            conversation_id: `dark-factory-${pipeline.id}`,
+            created_at: new Date().toISOString(),
+            rubric_hash: rubricHash,
+          };
+          await storage.saveVerificationHarness(harness, pipeline.user_id);
+
+          // GAP-2 fix: Build VerificationConfig from env vars so PRISM_VERIFICATION_LAYERS
+          // and PRISM_VERIFICATION_DEFAULT_SEVERITY are respected in DarkFactory pipelines
+          const vConfig: VerificationConfig = {
+            enabled: true,
+            layers: PRISM_VERIFICATION_LAYERS,
+            default_severity: PRISM_VERIFICATION_DEFAULT_SEVERITY,
+          };
+          const verificationResult = await VerificationRunner.runSuite(rawHarness, {
+            harness,
+            layers: PRISM_VERIFICATION_LAYERS,
+            config: vConfig,
+          });
+          
+          const coverageScore = verificationResult.total > 0 ? (verificationResult.total - verificationResult.skipped_count) / verificationResult.total : 0;
+          const executedCount = verificationResult.total - verificationResult.skipped_count;
+          const passRate = executedCount > 0 ? verificationResult.passed_count / executedCount : 0;
+
+          // GAP-4 fix: Use proper ValidationResult type instead of `any`
+          const valResult: ValidationResult = {
+            id: crypto.randomUUID(),
+            rubric_hash: rubricHash,
+            project: pipeline.project,
+            conversation_id: `dark-factory-${pipeline.id}`,
+            run_at: new Date().toISOString(),
+            passed: passRate >= harnessData.min_pass_rate && verificationResult.severity_gate.action !== "abort",
+            pass_rate: passRate,
+            critical_failures: verificationResult.severity_gate.failed_assertions.length,
+            coverage_score: coverageScore,
+            result_json: JSON.stringify(verificationResult),
+            gate_action: verificationResult.severity_gate.action,
+            gate_override: false,
+          };
+          
+          const { canContinue, validatedResult } = Gatekeeper.executeGate(valResult); 
+          await storage.saveVerificationRun(validatedResult, pipeline.user_id);
+
+          // GAP-3 fix: Emit verification experience event for ML routing feedback
+          try {
+            const confidenceScore = Math.round(passRate * 100);
+            await storage.saveLedger({
+              project: pipeline.project,
+              conversation_id: `dark-factory-${pipeline.id}`,
+              user_id: pipeline.user_id,
+              event_type: 'validation_result',
+              summary: `[VERIFY] ${verificationResult.passed_count}/${verificationResult.total} passed (gate: ${verificationResult.severity_gate.action})`,
+              keywords: ['dark-factory', 'verification', pipeline.project],
+              importance: verificationResult.severity_gate.action === 'abort' ? 2 : 0,
+              confidence_score: confidenceScore,
+            });
+          } catch { /* experience events are advisory — never block execution */ }
+
+          if (!canContinue) {
+             result.success = false;
+             result.notes = (result.notes ? result.notes + '\n\n' : '') + `[GATE BLOCKED] Pipeline verification runner failed the security gate.`;
+          } else {
+             result.success = result.success && validatedResult.passed;
+          }
+        } catch (err: any) {
+          if (err instanceof VerificationGateError) {
+            debugLog(`[DarkFactory] Pipeline ${pipeline.id} ABORTED by Verification Gate.`);
+            try {
+              await storage.savePipeline({
+                ...pipeline,
+                status: 'FAILED',
+                error: `[GATE ABORT] ${err.message}`,
+              });
+            } catch { /* Status guard */ }
+            await emitExperienceEvent(pipeline, 'failure', `[GATE ABORT] ${err.message}`);
+            return;
+          } else {
+            console.error(`[DarkFactory] Verification harness crash: ${err.message}`);
+            result.success = false;
+            result.notes = `[GATE CRASH] Verification suite failed to execute: ${err.message}`;
+          }
+        }
+      }
+    }
+
+    if (currentStep === 'PLAN_CONTRACT' && spec.workingDirectory && result.success && (result as any).contractPayload) {
+      const contractPath = path.join(path.resolve(spec.workingDirectory), 'contract_rubric.json');
+      try {
+        fs.writeFileSync(contractPath, JSON.stringify((result as any).contractPayload, null, 2), 'utf8');
+        debugLog(`[DarkFactory] contract_rubric.json written to ${contractPath}`);
+      } catch (writeErr: any) {
+        // Disk/permissions error — fail the pipeline immediately so it doesn't
+        // loop on PLAN_CONTRACT forever (each tick would re-attempt the write).
+        debugLog(`[DarkFactory] Failed to write contract_rubric.json: ${writeErr.message}`);
+        try {
+          await storage.savePipeline({
+            ...pipeline,
+            status: 'FAILED',
+            error: `PLAN_CONTRACT failed: could not write contract_rubric.json — ${writeErr.message}`,
+          });
+        } catch { /* status guard */ }
+        await emitExperienceEvent(pipeline, 'failure', `contract_rubric.json write failed: ${writeErr.message}`);
+        return;
+      }
+    }
+
+    if (currentStep === 'EVALUATE' && (result as any).evaluationPayload) {
+      // Emit ML learning event for evaluation outcome.
+      // Using 'learning' (valid LedgerEntry event type) rather than
+      // a non-existent 'evaluation_result' to avoid runtime cast issues.
+      try {
+        await storage.saveLedger({
+          project: pipeline.project,
+          conversation_id: `dark-factory-${pipeline.id}`,
+          user_id: pipeline.user_id,
+          event_type: 'learning',
+          summary: `[EVALUATE] ${result.success ? 'PASS' : 'FAIL'} on iter ${pipeline.iteration} rev ${pipeline.eval_revisions ?? 0}`,
+          keywords: ['dark-factory', 'evaluation', pipeline.project],
+          importance: result.success ? 3 : 1,
+          confidence_score: result.success ? 90 : 50,
+        });
+      } catch { /* advisory — never block execution */ }
+    }
+
+    // ─── Determine plan_viable from evaluation payload ───
+    // Default to false (conservative): a parse failure or missing payload means
+    // we don't know if the plan is viable, so escalate to PLAN re-planning
+    // rather than burning eval_revisions on more EXECUTE retries.
+    let evalPlanViable = false;
+    if (currentStep === 'EVALUATE' && (result as any).evaluationPayload) {
+      // plan_viable defaults false if null/missing (same conservative principle)
+      evalPlanViable = (result as any).evaluationPayload.plan_viable ?? false;
+    }
+
+    const nextStepInfo = SafetyController.getNextStep(
+      pipeline,
       spec,
-      result.success // For VERIFY step: success means tests passed
+      result.success,
+      evalPlanViable
     );
 
-    if (nextStep === null || currentStep === 'FINALIZE') {
+    if (nextStepInfo === null || currentStep === 'FINALIZE') {
       // Pipeline complete — determine final status
       const finalStatus: PipelineStatus = result.success ? 'COMPLETED' : 'FAILED';
       const finalError = result.success ? null : `Pipeline ended at step=${currentStep}: ${result.notes?.slice(0, 500)}`;
@@ -593,13 +862,26 @@ async function runnerTick(): Promise<void> {
 
       debugLog(`[DarkFactory] Pipeline ${pipeline.id} finished: ${finalStatus}`);
     } else {
-      // Advance to next step
       try {
+        const updatedPayload = currentStep === 'PLAN_CONTRACT' && (result as any).contractPayload 
+          ? (result as any).contractPayload 
+          : pipeline.contract_payload;
+        // Forward the most informative notes available:
+        // EXECUTE notes = what the generator did
+        // EVALUATE notes = what the evaluator found
+        // Other steps: preserve existing notes
+        const updatedNotes = (currentStep === 'EXECUTE' || currentStep === 'EVALUATE') && result.notes
+          ? result.notes
+          : pipeline.notes;
+
         await storage.savePipeline({
           ...pipeline,
-          current_step: nextStep.step,
-          iteration: nextStep.iteration,
+          current_step: nextStepInfo.step,
+          iteration: nextStepInfo.iteration,
+          eval_revisions: nextStepInfo.eval_revisions,
           last_heartbeat: new Date().toISOString(),
+          contract_payload: updatedPayload,
+          notes: updatedNotes,
         });
       } catch (err) {
         // Kill switch detection
@@ -610,7 +892,7 @@ async function runnerTick(): Promise<void> {
         throw err;
       }
 
-      debugLog(`[DarkFactory] Pipeline ${pipeline.id} advanced: ${currentStep} → ${nextStep.step} (iter ${nextStep.iteration})`);
+      debugLog(`[DarkFactory] Pipeline ${pipeline.id} advanced: ${currentStep} → ${nextStepInfo.step} (iter ${nextStepInfo.iteration}, rev ${nextStepInfo.eval_revisions ?? 0})`);
     }
   } catch (err) {
     // Top-level catch: NEVER let runner errors crash the MCP server

@@ -1373,12 +1373,20 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     // ═══════════════════════════════════════════════════════════════════
 
     // ─── TABS & SEARCH (v6.0) ───
+    var projectLoaded = false;
+
     function switchMainTab(tabId) {
       document.getElementById('mtab-project').classList.toggle('active', tabId === 'project');
       document.getElementById('mtab-search').classList.toggle('active', tabId === 'search');
       document.getElementById('mtab-factory').classList.toggle('active', tabId === 'factory');
 
-      document.getElementById('content').style.display = tabId === 'project' ? '' : 'none';
+      if (tabId === 'project') {
+        document.getElementById('welcome').style.display = projectLoaded ? 'none' : '';
+        document.getElementById('content').style.display = projectLoaded ? 'grid' : 'none';
+      } else {
+        document.getElementById('welcome').style.display = 'none';
+        document.getElementById('content').style.display = 'none';
+      }
       document.getElementById('search-content').style.display = tabId === 'search' ? 'block' : 'none';
       document.getElementById('factory-content').style.display = tabId === 'factory' ? 'block' : 'none';
 
@@ -1437,7 +1445,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
               html += '<div style="font-size:0.72rem;color:var(--accent-rose);margin-top:0.35rem;padding:0.3rem 0.5rem;background:rgba(244,63,94,0.08);border-radius:4px">⚠ ' + p.error.slice(0, 200) + '</div>';
             }
             if (isActive) {
-              html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(\\'' + p.id + '\\')" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
+              html += '<div style="margin-top:0.5rem"><button onclick="abortPipeline(this.dataset.id)" data-id="' + p.id + '" class="cleanup-btn" style="font-size:0.72rem">🛑 Abort Pipeline</button></div>';
             }
             html += '</div>';
           }
@@ -1603,6 +1611,15 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             gp.innerHTML = '<option value="">All Projects</option>' +
               data.projects.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
           }
+
+          var lastProject = '';
+          try {
+            lastProject = localStorage.getItem('prism_last_project') || '';
+          } catch(e) {}
+          if (lastProject && data.projects.indexOf(lastProject) !== -1) {
+            select.value = lastProject;
+            loadProject();
+          }
         } else {
           select.innerHTML = '<option value="">No projects found</option>';
         }
@@ -1616,6 +1633,10 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     async function loadProject() {
       var project = document.getElementById('projectSelect').value;
       if (!project) return;
+
+      try {
+        localStorage.setItem('prism_last_project', project);
+      } catch(e) {}
 
       document.getElementById('welcome').style.display = 'none';
       document.getElementById('content').style.display = 'none';
@@ -1756,6 +1777,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 
         document.getElementById('content').className = 'grid grid-main fade-in';
         document.getElementById('content').style.display = 'grid';
+  projectLoaded = true;
 
         // v3.1: Analytics + Lifecycle Controls + Import
         document.getElementById('analyticsCard').style.display = 'block';
