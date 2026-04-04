@@ -24,5 +24,7 @@ CREATE TABLE IF NOT EXISTS public.verification_runs (
   gate_action TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_verification_runs_project 
+CREATE INDEX IF NOT EXISTS idx_verification_runs_project
 ON public.verification_runs(project, run_at DESC);
+
+NOTIFY pgrst, 'reload schema';

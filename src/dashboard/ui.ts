@@ -2788,11 +2788,20 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     // text_provider  → governs generateText()  (gemini | openai | anthropic)
     // embedding_provider → governs generateEmbedding() (auto | gemini | openai)
 
+    function usesOpenAIEmbeddings(textVal, embedVal) {
+      return embedVal === 'openai' || (embedVal === 'auto' && textVal === 'openai');
+    }
+
+    function looksLikeEmbeddingModelName(value) {
+      return /embed(ding)?/i.test((value || '').trim());
+    }
+
     // Called when the TEXT provider dropdown changes.
     function onTextProviderChange(value) {
       document.getElementById('provider-fields-gemini').style.display    = value === 'gemini'    ? '' : 'none';
       document.getElementById('provider-fields-openai').style.display    = value === 'openai'    ? '' : 'none';
       document.getElementById('provider-fields-anthropic').style.display = value === 'anthropic' ? '' : 'none';
+      document.getElementById('embed-fields-openai').style.display = usesOpenAIEmbeddings(value, document.getElementById('select-embedding-provider').value) ? '' : 'none';
       // Refresh the Anthropic warning — its visibility depends on both dropdowns
       refreshAnthropicWarning(value, document.getElementById('select-embedding-provider').value);
       saveBootSetting('text_provider', value);
@@ -2801,8 +2810,8 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
     // Called when the EMBEDDING provider dropdown changes.
     function onEmbeddingProviderChange(value) {
       var textVal = document.getElementById('select-text-provider').value;
-      // Show the OpenAI embedding model field only when embedding=openai
-      document.getElementById('embed-fields-openai').style.display = value === 'openai' ? '' : 'none';
+      // Show the OpenAI embedding model field when embeddings resolve to OpenAI.
+      document.getElementById('embed-fields-openai').style.display = usesOpenAIEmbeddings(textVal, value) ? '' : 'none';
       refreshAnthropicWarning(textVal, value);
       saveBootSetting('embedding_provider', value);
     }
@@ -2834,7 +2843,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         var embedProvider = s.embedding_provider || 'auto';
         var embedSel = document.getElementById('select-embedding-provider');
         if (embedSel) embedSel.value = embedProvider;
-        document.getElementById('embed-fields-openai').style.display = embedProvider === 'openai' ? '' : 'none';
+        document.getElementById('embed-fields-openai').style.display = usesOpenAIEmbeddings(textProvider, embedProvider) ? '' : 'none';
         refreshAnthropicWarning(textProvider, embedProvider);
 
         // ── Gemini fields ─────────────────────────────────────────────────
@@ -2856,7 +2865,13 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
         var oMod = document.getElementById('input-openai-model');
         if (oMod && s.openai_model) oMod.value = s.openai_model;
         var oEmb = document.getElementById('input-openai-embedding-model');
-        if (oEmb && s.openai_embedding_model) oEmb.value = s.openai_embedding_model;
+        if (oEmb) {
+          oEmb.value = s.openai_embedding_model || (
+            usesOpenAIEmbeddings(textProvider, embedProvider) && looksLikeEmbeddingModelName(s.openai_model || '')
+              ? s.openai_model
+              : ''
+          );
+        }
 
       } catch(e) { console.warn('AI provider settings load failed:', e); }
     }

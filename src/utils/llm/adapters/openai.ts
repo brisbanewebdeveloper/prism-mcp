@@ -63,6 +63,32 @@ const EMBEDDING_DIMS = 768;
 // 8000 chars ≈ 1500-2000 tokens for typical session summaries.
 const MAX_EMBEDDING_CHARS = 8000;
 
+function looksLikeEmbeddingModel(model: string): boolean {
+  return /embed(ding)?/i.test(model.trim());
+}
+
+export function resolveOpenAIEmbeddingModel(
+  getSetting: (key: string, defaultValue?: string) => string = getSettingSync
+): string {
+  const explicitModel = getSetting("openai_embedding_model", "").trim();
+  if (explicitModel) {
+    return explicitModel;
+  }
+
+  const textProvider = getSetting("text_provider", "gemini").trim();
+  const embeddingProvider = getSetting("embedding_provider", "auto").trim();
+  const openaiModel = getSetting("openai_model", "").trim();
+  const usesOpenAIEmbeddings =
+    embeddingProvider === "openai" ||
+    (embeddingProvider === "auto" && textProvider === "openai");
+
+  if (usesOpenAIEmbeddings && openaiModel && looksLikeEmbeddingModel(openaiModel)) {
+    return openaiModel;
+  }
+
+  return "text-embedding-3-small";
+}
+
 export class OpenAIAdapter implements LLMProvider {
   // The OpenAI SDK client — stateful, holds the API key + base URL.
   // One instance per factory singleton = one instance per MCP server process.
@@ -130,7 +156,7 @@ export class OpenAIAdapter implements LLMProvider {
     }
 
     // Read embedding model at call time for hot-swap support.
-    const model = getSettingSync("openai_embedding_model", "text-embedding-3-small");
+    const model = resolveOpenAIEmbeddingModel();
 
     // ── Truncation Guard ───────────────────────────────────────────────────
     // text-embedding-3-small accepts up to 8191 tokens.

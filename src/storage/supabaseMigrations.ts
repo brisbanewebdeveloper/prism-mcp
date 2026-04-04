@@ -210,9 +210,9 @@ export const MIGRATIONS: Migration[] = [
     name: "cognitive_memory_last_accessed",
     sql: `
       ALTER TABLE session_ledger ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ DEFAULT NULL;
-      
+
       -- Added B-Tree index for LRU high-performance sorting
-      CREATE INDEX IF NOT EXISTS idx_session_ledger_last_accessed 
+      CREATE INDEX IF NOT EXISTS idx_session_ledger_last_accessed
       ON session_ledger(last_accessed_at);
     `,
   },
@@ -233,7 +233,7 @@ export const MIGRATIONS: Migration[] = [
     // zombie-lock recovery: if a node crashes without releasing the lock,
     // the next node can acquire it after 1 minute.
     //
-    // The `prism_acquire_lock` RPC handles the atomic ON CONFLICT 
+    // The `prism_acquire_lock` RPC handles the atomic ON CONFLICT
     // DO UPDATE WHERE pattern that PostgREST cannot express natively.
     //
     // Heartbeat: UPDATE expires_at = NOW() + '1 minute' every 30s.
@@ -277,7 +277,7 @@ export const MIGRATIONS: Migration[] = [
 
           -- Check if WE are the ones who hold it now
           SELECT EXISTS (
-              SELECT 1 FROM scheduler_locks 
+              SELECT 1 FROM scheduler_locks
               WHERE key = p_key AND pid = p_pid AND expires_at = v_expires_at
           ) INTO v_success;
 
@@ -783,6 +783,70 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE public.dark_factory_pipelines
         ADD CONSTRAINT chk_pipeline_status
         CHECK (status IN ('PENDING', 'RUNNING', 'PAUSED', 'ABORTED', 'COMPLETED', 'FAILED'));
+    `
+  },
+  {
+    version: 39,
+    name: "verification_runs",
+    sql: `
+      -- v7.2.0: Verification Harness & Runs
+      CREATE TABLE IF NOT EXISTS public.verification_harnesses (
+        rubric_hash TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        min_pass_rate REAL NOT NULL,
+        tests TEXT NOT NULL,
+        metadata TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS public.verification_runs (
+        id TEXT PRIMARY KEY,
+        rubric_hash TEXT NOT NULL REFERENCES public.verification_harnesses(rubric_hash),
+        project TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        run_at TEXT NOT NULL,
+        passed INTEGER NOT NULL,
+        pass_rate REAL NOT NULL,
+        critical_failures INTEGER NOT NULL,
+        coverage_score REAL NOT NULL,
+        result_json TEXT NOT NULL,
+        gate_action TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_verification_runs_project
+        ON public.verification_runs(project, run_at DESC);
+
+      NOTIFY pgrst, 'reload schema';
+    `
+  },
+  {
+    version: 40,
+    name: "pipeline_orchestration_overrides",
+    sql: `
+      -- v7.3: Pipeline orchestration override fields for verification runs
+      ALTER TABLE public.verification_runs
+        ADD COLUMN IF NOT EXISTS gate_override INTEGER DEFAULT 0;
+      ALTER TABLE public.verification_runs
+        ADD COLUMN IF NOT EXISTS override_reason TEXT;
+
+      NOTIFY pgrst, 'reload schema';
+    `
+  },
+  {
+    version: 41,
+    name: "verification_user_id_parity",
+    sql: `
+      -- v7.5: Tenant isolation parity for verification tables
+      ALTER TABLE public.verification_harnesses
+        ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'default';
+      ALTER TABLE public.verification_runs
+        ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'default';
+
+      CREATE INDEX IF NOT EXISTS idx_verification_runs_user
+        ON public.verification_runs(user_id, project);
+
+      NOTIFY pgrst, 'reload schema';
     `
   },
 

@@ -92,6 +92,19 @@ type ResourceUpdateNotifier = (project: string) => void;
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
 import { computeEffectiveImportance, recordMemoryAccess } from "../utils/cognitiveMemory.js";
+
+function getEmbeddingProviderOrNull(context: string) {
+  try {
+    return getLLMProvider();
+  } catch (err) {
+    debugLog(
+      `[${context}] Embedding generation unavailable (non-fatal): ` +
+      `${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+}
+
 export async function sessionSaveLedgerHandler(args: unknown) {
   if (!isSessionSaveLedgerArgs(args)) {
     throw new Error("Invalid arguments for session_save_ledger");
@@ -139,13 +152,14 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   });
 
   // ─── Fire-and-forget embedding generation ───
-  if (GOOGLE_API_KEY && result) {
+  const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_ledger") : null;
+  if (embeddingProvider && result) {
     const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
+      embeddingProvider.generateEmbedding(embeddingText)
         .then(async (embedding) => {
           // Build atomic patch — float32 + TurboQuant in ONE DB update
           const patchData: Record<string, unknown> = {
@@ -249,7 +263,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         (todos?.length ? `TODOs: ${todos.length} items\n` : "") +
         (files_changed?.length ? `Files changed: ${files_changed.length}\n` : "") +
         (decisions?.length ? `Decisions: ${decisions.length}\n` : "") +
-        (GOOGLE_API_KEY ? `📊 Embedding generation queued for semantic search.\n` : "") +
+        (embeddingProvider ? `📊 Embedding generation queued for semantic search.\n` : "") +
         repoPathWarning +
         `\nRaw response: ${JSON.stringify(result)}`,
     }],
@@ -1323,13 +1337,14 @@ export async function sessionSaveExperienceHandler(args: unknown) {
   });
 
   // Fire-and-forget embedding generation
-  if (GOOGLE_API_KEY && result) {
+  const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_experience") : null;
+  if (embeddingProvider && result) {
     const embeddingText = summary;
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
+      embeddingProvider.generateEmbedding(embeddingText)
         .then(async (embedding) => {
           await storage.patchLedger(entryId, {
             embedding: JSON.stringify(embedding),
