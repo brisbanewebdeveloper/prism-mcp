@@ -30,6 +30,9 @@ import { fileURLToPath } from "node:url";
  *   PRISM_DASHBOARD_PORT   — (optional) Mind Palace dashboard HTTP port. Defaults to 3000.
  *   PRISM_USER_ID          — (optional) Unique tenant ID for multi-user Supabase instances.
  *                            Defaults to "default". Set per-user in Claude Desktop config.
+ *   VOYAGE_API_KEY         — (optional) API key for Voyage AI embeddings. Enables embedding_provider=voyage.
+ *                            Voyage AI is the embedding provider recommended by Anthropic for use with
+ *                            Claude. Get a free key at https://dash.voyageai.com.
  *
  * If a required key is missing, the process exits immediately.
  * If an optional key is missing, a warning is logged but the server continues
@@ -332,6 +335,16 @@ if (!BRAVE_ANSWERS_API_KEY) {
     "Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Set BRAVE_ANSWERS_API_KEY or PRISM_BRAVE_ANSWERS_API_KEY to enable Brave Answers."
   );
 }
+
+// ─── Optional: Voyage AI API Key ──────────────────────────────
+// Used when embedding_provider = "voyage" in the dashboard.
+// Voyage AI is the embedding provider recommended by Anthropic for use
+// alongside Claude. voyage-3 supports 768-dim output via MRL truncation,
+// matching Prism's storage schema for zero-migration drop-in replacement.
+// Without this, VoyageAdapter construction will throw at server start if
+// embedding_provider=voyage is selected.
+
+export const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
 
 // ─── Optional: MCP Transport Mode ──────────────────────────────
 

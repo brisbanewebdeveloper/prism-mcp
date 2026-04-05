@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [7.7.1] - 2026-04-04
+
+### Added
+- **Smithery Registry Manifest** — Implemented an unauthenticated `/.well-known/mcp/server-card.json` endpoint to seamlessly expose MCP capabilities to cloud registries (like Smithery.ai) bypassing "chicken-and-egg" startup timeout blocks.
+  - Manifest is hosted independently and ahead of the Dashboard Auth Gate to guarantee 100% public discovery while protecting active sessions.
+  - Generates a static index via `getAllPossibleTools()` ensuring maximum visibility (exposing Hivemind and Dark Factory tools dynamically) without requiring local environment variable injection.
+  - Includes extended boolean configuration schemas for `prismEnableHivemind`, `prismDarkFactoryEnabled`, and `prismTaskRouterEnabled` allowing instant configuration directly via Smithery UI.
+
+## [7.7.0] - 2026-04-04
+
+### Added
+- **SSE Transport Mode** — Full native support for Server-Sent Events network connections (`SSEServerTransport`). Prism is now a cloud-ready, network-accessible MCP server capable of running on Render, Smithery, or any remote host.
+  - Dynamically provisions unique `createServer()` instances per connection mapping them via a persistent `activeSSETransports` register.
+  - Exposes `GET /sse` for stream initialization and `POST /messages` for JSON-RPC message delivery.
+  - Strictly inherits Dashboard UI credentials via shared HTTP auth. Unauthenticated connections elegantly decline with `401 Unauthorized` JSON.
+
+### Security
+- **Auth Guard Integrity** — Enhanced the basic HTTP auth gate to explicitly catch MCP SSE endpoints alongside `/api/` returning clean JSON errors. Eliminates parsing crashes in remote MCP clients where unexpected HTML documents cause breaks.
+- **Fail-Closed Network Guarding** — Wrapped SSE initialization handshake in `try/catch` and cleanup block. Protects the main NodeJS server loop against unhandled promise rejections triggering crashes on flaky client network connections.
+- **Cors Hardening** — Pre-flight `OPTIONS` calls for `Access-Control-Allow-Headers` now comprehensively include `Authorization` allowing browsers to relay Dashboard Credentials seamlessly.
+
+## [7.6.0] - 2026-04-04
+
+### Added
+- **Voyage AI Embedding Provider** — Introduced native `VoyageAdapter` as a pluggable embedding provider alongside OpenAI and Gemini. 
+  - Allows semantic vector embedding using Voyage AI models inside the Mind Palace architecture.
+  - Exposes config via `VOYAGE_API_KEY` mapped directly into the LLM adapter factory.
+  - Added dedicated unit tests guaranteeing semantic fidelity.
+
 ## [7.5.0] - 2026-04-04
 
 ### Added
