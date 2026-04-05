@@ -411,7 +411,7 @@ return false;}
           console.error("[Dashboard] SSE Connection failed:", err);
           activeSSETransports.delete(transport.sessionId);
         }
-        
+
         return; // SSEServerTransport handles keeping the response open
       }
 
@@ -979,7 +979,7 @@ return false;}
             llm = getLLMProvider();
           } catch {
             res.writeHead(503, { "Content-Type": "application/json" });
-            return res.end(JSON.stringify({ error: "LLM Provider not configured for semantic search. Provide a GOOGLE_API_KEY or equivalent." }));
+            return res.end(JSON.stringify({ error: "Embedding provider not configured for semantic search. Configure one in AI Providers and restart the server." }));
           }
 
           const queryEmbedding = await llm.generateEmbedding(queryText);

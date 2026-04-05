@@ -34,7 +34,7 @@ import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdt
 // containing: strategy, scores, latency breakdown (embedding/storage/total), and metadata.
 // See src/utils/tracing.ts for full type definitions and design decisions.
 import { createMemoryTrace, traceToContentBlock } from "../utils/tracing.js";
-import { GOOGLE_API_KEY, PRISM_USER_ID, PRISM_AUTO_CAPTURE, PRISM_CAPTURE_PORTS } from "../config.js";
+import { PRISM_USER_ID, PRISM_AUTO_CAPTURE, PRISM_CAPTURE_PORTS } from "../config.js";
 import { captureLocalEnvironment } from "../utils/autoCapture.js";
 import { fireCaptionAsync } from "../utils/imageCaptioner.js";
 import {
@@ -182,7 +182,7 @@ export async function knowledgeSearchHandler(args: unknown) {
     if (resultIds.length > 0) {
       recordMemoryAccess(resultIds);
     }
-    
+
     // Mutate results to surface effective importance
     for (const r of data.results as any[]) {
       if (typeof r.importance === 'number' && r.importance > 0) {
@@ -391,21 +391,25 @@ export async function sessionSearchMemoryHandler(args: unknown) {
   // Phase 1: Start total latency timer BEFORE any work (embedding + storage)
   const totalStart = performance.now();
 
-  // Step 1: Generate embedding for the search query
-  if (!GOOGLE_API_KEY) {
+  let llmProvider;
+  try {
+    llmProvider = getLLMProvider();
+  } catch (err) {
     return {
       content: [{
         type: "text",
-        text: `❌ Semantic search requires GOOGLE_API_KEY for embedding generation.\n` +
-          `Set this environment variable and restart the server.\n\n` +
-          `💡 As a workaround, try knowledge_search (keyword-based) instead.`,
+        text: `❌ Semantic search requires a configured embedding provider.\n` +
+          `Configure embeddings in Dashboard -> AI Providers and restart the server.\n\n` +
+          `Supported providers include Gemini, OpenAI-compatible endpoints such as Ollama, and Voyage.\n\n` +
+          `💡 As a workaround, try knowledge_search (keyword-based) instead.\n` +
+          `Details: ${err instanceof Error ? err.message : String(err)}`,
       }],
       isError: true,
     };
   }
 
   let queryEmbedding: number[];
-  // Phase 1: Start embedding latency timer — isolates Gemini API call time.
+  // Phase 1: Start embedding latency timer — isolates provider embedding call time.
   // This is the most variable component: 50ms on a good day, 2000ms under load.
   const embeddingStart = performance.now();
 
@@ -441,7 +445,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
   }
 
   try {
-    queryEmbedding = await getLLMProvider().generateEmbedding(effectiveQuery);
+    queryEmbedding = await llmProvider.generateEmbedding(effectiveQuery);
   } catch (err) {
     return {
       content: [{
@@ -491,7 +495,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
           `Tips:\n` +
           `• Lower the similarity_threshold (e.g., 0.5) for broader results\n` +
           `• Try knowledge_search for keyword-based matching\n` +
-          `• Ensure sessions have been saved with embeddings (requires GOOGLE_API_KEY)`,
+          `• Ensure sessions have been saved with embeddings through your configured provider`,
       }];
 
       // Phase 1: Trace is still valuable on empty results — it proves the search
@@ -559,7 +563,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
           const timestamps = accessTimestamps.length > 0
             ? accessTimestamps
             : [new Date(r.created_at || now)];
-            
+
           // Rollups represent consolidated semantic knowledge over many sessions.
           // They should decay 50% slower than raw episodic chatter to retain long-term context.
           const decayRate = r.is_rollup ? PRISM_ACTR_DECAY * 0.5 : PRISM_ACTR_DECAY;
@@ -1225,9 +1229,9 @@ export async function synthesizeEdgesCore({
 
       for (const match of similar) {
         if (match.id === entry.id) continue;
-        
+
         candidatesEvaluated++;
-        
+
         if (match.similarity < similarity_threshold) {
           belowThreshold++;
           continue;
@@ -1236,7 +1240,7 @@ export async function synthesizeEdgesCore({
         if (neighborsFound >= max_neighbors_per_entry) {
           continue; // We have enough top neighbors above threshold
         }
-        
+
         neighborsFound++;
 
         if (existingTargetIds.has(match.id)) {
@@ -1251,11 +1255,11 @@ export async function synthesizeEdgesCore({
           newLinks++;
         }
       }
-      
+
       totalCandidates += candidatesEvaluated;
       totalBelow += belowThreshold;
     }
-    
+
     return {
       success: true,
       entriesScanned,
@@ -1318,7 +1322,7 @@ export async function sessionSynthesizeEdgesHandler(args: unknown) {
 export async function assembleTestMeContext(nodeId: string, project: string, storage: any) {
   // 1. Gather outbound graph links (top 5)
   const outboundLinks = await storage.getLinksFrom(nodeId, PRISM_USER_ID, 0.0, 5);
-  
+
   // 2. Gather semantic neighbors (top 5) via true search
   const semanticResult = await storage.searchKnowledge({
     project,
@@ -1326,10 +1330,10 @@ export async function assembleTestMeContext(nodeId: string, project: string, sto
     limit: 5,
     userId: PRISM_USER_ID
   });
-  
+
   // 3. Deduplicate and compactly format the results
   const contextMap = new Map<string, string>();
-  
+
   for (const link of outboundLinks) {
     // If the target is an entry, fetch its summary to provide context
     try {
@@ -1341,14 +1345,14 @@ export async function assembleTestMeContext(nodeId: string, project: string, sto
       }
     } catch {}
   }
-  
+
   const semanticEntries = semanticResult?.results || [];
   for (const entry of semanticEntries as any[]) {
     if (entry.id && !contextMap.has(entry.id) && entry.summary) {
       contextMap.set(entry.id, entry.summary.substring(0, 300));
     }
   }
-  
+
   return {
     nodeId,
     project,
@@ -1360,7 +1364,7 @@ export async function generateTestMeQuestions(context: any, nodeId: string) {
   try {
     const provider = getLLMProvider();
 
-    const payloadContext = context.contextItems.length > 0 
+    const payloadContext = context.contextItems.length > 0
       ? context.contextItems.join("\\n---\\n")
       : "No direct graph context available.";
 
@@ -1379,18 +1383,18 @@ Example:
 ]`;
 
     const responseText = await provider.generateText(prompt);
-    
+
     // Attempt to parse strictly
     let textToParse = responseText.trim();
     if (textToParse.startsWith("\`\`\`json")) {
       textToParse = textToParse.replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
     }
-    
+
     const parsed = JSON.parse(textToParse);
     if (!Array.isArray(parsed) || parsed.length !== 3 || !parsed[0].q || !parsed[0].a) {
       throw new Error("Invalid output shape");
     }
-    
+
     return { questions: parsed };
   } catch (err: any) {
     if (err.message?.includes("API key") || err.message?.includes("auth")) {

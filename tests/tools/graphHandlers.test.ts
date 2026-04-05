@@ -41,7 +41,58 @@ vi.mock("../../src/utils/llm/factory.js", () => ({
 
 // ─── Import mocked modules ──────────────────────────────────────
 const { getStorage } = await import("../../src/storage/index.js");
+const { getLLMProvider } = await import("../../src/utils/llm/factory.js");
 const graphHandlers = await import("../../src/tools/graphHandlers.js");
+
+describe("sessionSearchMemoryHandler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the configured embedding provider even without a Gemini API key gate", async () => {
+    const storageMock = {
+      searchMemory: vi.fn(async () => []),
+    };
+    (getStorage as any).mockResolvedValue(storageMock);
+    (getLLMProvider as any).mockReturnValueOnce({
+      generateEmbedding: vi.fn(async () => [0.11, 0.22, 0.33]),
+    });
+
+    const result = await graphHandlers.sessionSearchMemoryHandler({
+      query: "create new strategy runner smoke test",
+      project: "buy-lottery",
+      limit: 5,
+      similarity_threshold: 0.65,
+    });
+
+    expect(result.isError).toBe(false);
+    expect(storageMock.searchMemory).toHaveBeenCalledWith(expect.objectContaining({
+      queryEmbedding: JSON.stringify([0.11, 0.22, 0.33]),
+      project: "buy-lottery",
+      similarityThreshold: 0.65,
+    }));
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("No semantically similar sessions found");
+    expect(text).toContain("configured provider");
+  });
+
+  it("returns a provider-agnostic configuration error when embeddings are unavailable", async () => {
+    (getLLMProvider as any).mockImplementationOnce(() => {
+      throw new Error("No provider configured");
+    });
+
+    const result = await graphHandlers.sessionSearchMemoryHandler({
+      query: "create new strategy runner smoke test",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(getStorage).not.toHaveBeenCalled();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("configured embedding provider");
+    expect(text).toContain("Ollama");
+    expect(text).toContain("No provider configured");
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // SYNTHESIS — synthesizeEdgesCore
