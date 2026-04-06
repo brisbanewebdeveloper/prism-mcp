@@ -96,7 +96,7 @@ BEGIN
   VALUES (
     p_source_id, p_target_id, p_link_type, v_strength, p_metadata
   )
-  ON CONFLICT (source_id, target_id, link_type)
+  ON CONFLICT ON CONSTRAINT memory_links_pkey
   DO UPDATE SET
     strength = EXCLUDED.strength,
     metadata = EXCLUDED.metadata,

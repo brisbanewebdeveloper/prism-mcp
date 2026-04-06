@@ -7,6 +7,26 @@ import {
 import { performWebSearchRawWithCredentials } from "../../src/utils/braveApi.js";
 
 describe("parseGoogleSearchCredentials", () => {
+  it("accepts PRISM_GOOGLE_SEARCH_CREDENTIALS as a structured alias", () => {
+    const env = {
+      PRISM_GOOGLE_SEARCH_CREDENTIALS: JSON.stringify({
+        strategy: "random",
+        credentials: [
+          { apiKey: "prism-key-1", cx: "prism-cx-1" },
+          { apiKey: "prism-key-2", channel: "prism-cx-2" },
+        ],
+      }),
+    };
+
+    const result = parseGoogleSearchCredentials(env);
+
+    expect(result.credentials).toEqual([
+      { apiKey: "prism-key-1", cx: "prism-cx-1" },
+      { apiKey: "prism-key-2", cx: "prism-cx-2" },
+    ]);
+    expect(result.selectionStrategy).toBe("random");
+  });
+
   it("prefers GOOGLE_SEARCH_CREDENTIALS JSON entries", () => {
     const env = {
       GOOGLE_SEARCH_CREDENTIALS:
@@ -90,6 +110,20 @@ describe("parseGoogleSearchCredentials", () => {
     ).toBe(true);
   });
 
+  it("falls back to Prism-scoped single credentials", () => {
+    const env = {
+      PRISM_GOOGLE_SEARCH_API_KEY: "prism-single-key",
+      PRISM_GOOGLE_SEARCH_CX: "prism-single-cx",
+    };
+
+    const result = parseGoogleSearchCredentials(env);
+
+    expect(result.credentials).toEqual([
+      { apiKey: "prism-single-key", cx: "prism-single-cx" },
+    ]);
+    expect(result.selectionStrategy).toBe("failover");
+  });
+
   it("does not treat the Brave Answers alias as Google search credentials", () => {
     const env = {
       PRISM_BRAVE_ANSWERS_API_KEY: "brave-answers-only",
@@ -98,6 +132,26 @@ describe("parseGoogleSearchCredentials", () => {
     const result = parseGoogleSearchCredentials(env);
 
     expect(result.credentials).toEqual([]);
+    expect(result.selectionStrategy).toBe("failover");
+  });
+
+  it("prefers unscoped Google credentials when both alias sets are present", () => {
+    const env = {
+      GOOGLE_SEARCH_CREDENTIALS: JSON.stringify([
+        { apiKey: "google-key", cx: "google-cx" },
+      ]),
+      PRISM_GOOGLE_SEARCH_CREDENTIALS: JSON.stringify([
+        { apiKey: "prism-key", cx: "prism-cx" },
+      ]),
+      PRISM_GOOGLE_SEARCH_API_KEY: "prism-single-key",
+      PRISM_GOOGLE_SEARCH_CX: "prism-single-cx",
+    };
+
+    const result = parseGoogleSearchCredentials(env);
+
+    expect(result.credentials).toEqual([
+      { apiKey: "google-key", cx: "google-cx" },
+    ]);
     expect(result.selectionStrategy).toBe("failover");
   });
 });

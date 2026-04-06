@@ -3,6 +3,20 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+function firstDefinedEnv(
+  env: Record<string, string | undefined>,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = normalizeEnvValue(env[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * Configuration & Environment Variables
  *
@@ -17,6 +31,9 @@ import { fileURLToPath } from "node:url";
  *                               Each entry: { "apiKey": "...", "cx": "..." }.
  *                               Supported strategies: "failover" and "random".
  *                               The alias field "channel" is also accepted instead of "cx".
+ *   PRISM_GOOGLE_SEARCH_API_KEY — (optional) Prism-scoped alias for GOOGLE_SEARCH_API_KEY.
+ *   PRISM_GOOGLE_SEARCH_CX — (optional) Prism-scoped alias for GOOGLE_SEARCH_CX.
+ *   PRISM_GOOGLE_SEARCH_CREDENTIALS — (optional) Prism-scoped alias for GOOGLE_SEARCH_CREDENTIALS.
  *   BRAVE_API_KEY          — (optional) API key for Brave local search endpoints.
  *   GOOGLE_API_KEY         — (optional) API key for Google AI Studio / Gemini. Enables paper analysis.
  *   BRAVE_ANSWERS_API_KEY  — (optional) API key for Brave Answers (AI grounding). Enables brave_answers tool.
@@ -246,7 +263,11 @@ export function parseGoogleSearchCredentials(
 ): GoogleSearchCredentialParseResult {
   const warnings: string[] = [];
 
-  const structuredRaw = normalizeEnvValue(env.GOOGLE_SEARCH_CREDENTIALS);
+  const structuredRaw = firstDefinedEnv(
+    env,
+    "GOOGLE_SEARCH_CREDENTIALS",
+    "PRISM_GOOGLE_SEARCH_CREDENTIALS"
+  );
   if (structuredRaw) {
     const structured = parseStructuredGoogleSearchCredentials(structuredRaw);
     warnings.push(...structured.warnings);
@@ -259,18 +280,26 @@ export function parseGoogleSearchCredentials(
     }
 
     warnings.push(
-      "Falling back to GOOGLE_SEARCH_API_KEY[_N] and GOOGLE_SEARCH_CX[_N] variables because GOOGLE_SEARCH_CREDENTIALS had no valid entries."
+      "Falling back to GOOGLE_SEARCH_API_KEY[_N]/PRISM_GOOGLE_SEARCH_API_KEY[_N] and GOOGLE_SEARCH_CX[_N]/PRISM_GOOGLE_SEARCH_CX[_N] variables because GOOGLE_SEARCH_CREDENTIALS had no valid entries."
     );
   }
 
   const indexed = parseIndexedGoogleSearchCredentials(env);
   warnings.push(...indexed.warnings);
 
-  const singleApiKey = normalizeEnvValue(env.GOOGLE_SEARCH_API_KEY);
-  const singleCx = normalizeEnvValue(env.GOOGLE_SEARCH_CX);
+  const singleApiKey = firstDefinedEnv(
+    env,
+    "GOOGLE_SEARCH_API_KEY",
+    "PRISM_GOOGLE_SEARCH_API_KEY"
+  );
+  const singleCx = firstDefinedEnv(
+    env,
+    "GOOGLE_SEARCH_CX",
+    "PRISM_GOOGLE_SEARCH_CX"
+  );
   if ((singleApiKey && !singleCx) || (!singleApiKey && singleCx)) {
     warnings.push(
-      "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must both be set for single-credential mode; the incomplete single credential was ignored."
+      "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must both be set for single-credential mode; the incomplete single credential was ignored. PRISM_GOOGLE_SEARCH_API_KEY and PRISM_GOOGLE_SEARCH_CX follow the same rule."
     );
   }
 
@@ -302,7 +331,7 @@ export const GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY =
   googleSearchCredentialResult.selectionStrategy;
 if (GOOGLE_SEARCH_CREDENTIALS.length === 0) {
   console.error(
-    "Warning: Google Search credentials are missing. Configure GOOGLE_SEARCH_CREDENTIALS or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX for web search tools."
+    "Warning: Google Search credentials are missing. Configure GOOGLE_SEARCH_CREDENTIALS, PRISM_GOOGLE_SEARCH_CREDENTIALS, or GOOGLE_SEARCH_API_KEY/PRISM_GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX/PRISM_GOOGLE_SEARCH_CX for web search tools."
   );
 }
 
