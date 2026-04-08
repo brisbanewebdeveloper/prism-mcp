@@ -101,9 +101,26 @@ describe("sessionSaveLedgerHandler embedding queue", () => {
     expect(entryId).toBe("entry-1");
     expect(patch).toEqual(expect.objectContaining({
       embedding: JSON.stringify([0.1, 0.2, 0.3]),
+      embedding_status: "ready",
     }));
 
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("Embedding generation queued for semantic search");
+  });
+
+  it("rejects blank ledger entries before they can create unrepairable embedding gaps", async () => {
+    mockGetLLMProvider.mockReturnValue({
+      generateEmbedding: vi.fn(),
+    });
+
+    await expect(sessionSaveLedgerHandler({
+      project: "brain-health-test",
+      conversation_id: "conv-blank",
+      summary: "   ",
+      decisions: ["  ", "\n"],
+    })).rejects.toThrow("session_save_ledger requires a non-empty summary or decision.");
+
+    expect(mockSaveLedger).not.toHaveBeenCalled();
+    expect(mockPatchLedger).not.toHaveBeenCalled();
   });
 });

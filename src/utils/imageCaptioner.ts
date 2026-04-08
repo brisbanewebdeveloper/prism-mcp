@@ -35,6 +35,10 @@ import { debugLog } from "./logger.js";
 import { PRISM_USER_ID } from "../config.js";
 import { getTracer } from "./telemetry.js";
 import { SpanStatusCode, context as otelContext, trace } from "@opentelemetry/api";
+import {
+  createFailedEmbeddingState,
+  createReadyEmbeddingState,
+} from "./ledgerEmbedding.js";
 
 // ─── Size Caps ────────────────────────────────────────────────────────────────
 
@@ -188,7 +192,7 @@ async function captionImageAsync(
   // NOTE: The ledger schema has no generic metadata column, so we embed the
   // image context directly in the summary string for LLM-readable references.
   const storage = await getStorage();
-  await storage.saveLedger({
+  const savedLedger = await storage.saveLedger({
     project,
     conversation_id: "vlm-captioner",
     user_id: PRISM_USER_ID,
@@ -200,6 +204,8 @@ async function captionImageAsync(
       `VLM Caption: ${caption}`,
     keywords: [`image:${imageId}`, "visual_memory", "image_caption"],
   });
+  const savedEntry = Array.isArray(savedLedger) ? savedLedger[0] : savedLedger;
+  const entryId = (savedEntry as { id?: string } | null)?.id;
 
   // ── Step 6: Backfill embeddings (makes caption findable via vector search)
   // ── Step 6: Embed the caption inline ────────────────────────────────
@@ -211,24 +217,25 @@ async function captionImageAsync(
       `[Visual Memory: ${imageId}] Description: ${userContext}. Caption: ${caption}`;
     const embedding = await llm.generateEmbedding(embedText);
 
-    // Find the ledger entry we just saved and patch its embedding
-    const allEntries = await storage.getLedgerEntries({
-      project,
-      conversation_id: "vlm-captioner",
-    }) as Array<{ id?: string; created_at?: string }>;
-
-    // Sort descending and take the most recent (the one we just inserted)
-    const latest = allEntries.sort((a, b) =>
-      new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
-    )[0];
-
-    if (latest?.id) {
-      await storage.patchLedger(latest.id, { embedding: JSON.stringify(embedding) });
-      debugLog(`[ImageCaptioner] Caption embedded for ledger entry [${latest.id}].`);
+    if (entryId) {
+      const attemptedAt = new Date().toISOString();
+      await storage.patchLedger(entryId, {
+        embedding: JSON.stringify(embedding),
+        ...createReadyEmbeddingState(attemptedAt),
+      });
+      debugLog(`[ImageCaptioner] Caption embedded for ledger entry [${entryId}].`);
     }
   } catch (embedErr) {
     // Non-fatal: caption still persists in the ledger as plain text and
     // will be picked up by the next project-wide backfill sweep.
+    if (entryId) {
+      const attemptedAt = new Date().toISOString();
+      try {
+        await storage.patchLedger(entryId, createFailedEmbeddingState(embedErr, 1, attemptedAt));
+      } catch (patchErr: unknown) {
+        debugLog(`[ImageCaptioner] Failed to persist retry state for [${entryId}]: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
+      }
+    }
     debugLog(`[ImageCaptioner] Embedding failed (will surface in next backfill): ${embedErr}`);
   }
 

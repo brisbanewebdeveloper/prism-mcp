@@ -513,10 +513,13 @@ return false;}
 
           let repairedCount = 0;
           let failedCount = 0;
+          let skippedNoTextCount = 0;
+          const failureDetails: string[] = [];
           let cleanupMessages: string[] = [];
 
           // 1. Backfill embeddings if missing
           const embeddingIssue = report.issues.find(i => i.check === "missing_embeddings");
+          const unrepairableIssue = report.issues.find(i => i.check === "unrepairable_embeddings");
           if (embeddingIssue && embeddingIssue.count > 0) {
             try {
               const { backfillEmbeddingsHandler } = await import("../tools/hygieneHandlers.js");
@@ -532,19 +535,42 @@ return false;}
                 if (bStats) {
                   repairedCount += bStats.repaired;
                   failedCount += bStats.failed;
+                  skippedNoTextCount += bStats.skippedNoText || 0;
+                  if (Array.isArray(bStats.failureDetails)) {
+                    for (const detail of bStats.failureDetails) {
+                      if (failureDetails.length >= 3) break;
+                      failureDetails.push(String(detail));
+                    }
+                  }
                   if (bStats.last_id) cursorId = bStats.last_id;
                   else hasMore = false;
-                  if ((bStats.repaired + bStats.failed) < 50) hasMore = false;
+                  if ((bStats.scanned ?? (bStats.repaired + bStats.failed + bStats.skippedNoText)) < 50) hasMore = false;
                 } else {
                   hasMore = false;
                 }
               }
               cleanupMessages.push(`Repaired ${repairedCount} embeddings`);
-              if (failedCount > 0) cleanupMessages.push(`Failed to repair ${failedCount} embeddings`);
+              if (failedCount > 0) {
+                cleanupMessages.push(
+                  failureDetails.length > 0
+                    ? `Failed to repair ${failedCount} embeddings (${failureDetails.join("; ")})`
+                    : `Failed to repair ${failedCount} embeddings`
+                );
+              }
             } catch (err) {
               console.error("[Dashboard] Failed to backfill embeddings:", err);
               cleanupMessages.push("Embedding backfill failed");
             }
+          }
+
+          const noTextCount = Math.max(
+            skippedNoTextCount,
+            unrepairableIssue?.count || 0,
+          );
+          if (noTextCount > 0) {
+            cleanupMessages.push(
+              `${noTextCount} ledger entr${noTextCount === 1 ? "y still lacks" : "ies still lack"} embeddable text and ${noTextCount === 1 ? "was" : "were"} skipped`
+            );
           }
 
           // 2. Collect orphaned handoff projects from the health issues
@@ -571,6 +597,9 @@ return false;}
             ok: true,
             cleaned,
             repairedCount,
+            failedCount,
+            skippedCount: noTextCount,
+            failureDetails,
             count: cleaned.length + repairedCount,
             message,
           }));

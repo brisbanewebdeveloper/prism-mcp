@@ -120,6 +120,7 @@ console.log("\n── Health Check Runner ──\n");
 // Healthy brain — no issues
 const healthyReport = runHealthCheck({
   missingEmbeddings: 0,
+  unrepairableEmbeddings: 0,
   activeLedgerSummaries: [
     { id: "1", project: "proj-a", summary: "did some work on the project" },
     { id: "2", project: "proj-a", summary: "completely different task about deployment" },
@@ -137,6 +138,7 @@ assert(healthyReport.counts.errors === 0, "healthy brain → 0 errors");
 // Degraded brain — warnings but no errors
 const degradedReport = runHealthCheck({
   missingEmbeddings: 3,  // warning (≤10)
+  unrepairableEmbeddings: 0,
   activeLedgerSummaries: [],
   orphanedHandoffs: [{ project: "orphan-1" }],  // warning
   staleRollups: 0,
@@ -151,6 +153,7 @@ assert(degradedReport.counts.warnings === 2, "degraded brain → 2 warnings");
 // Unhealthy brain — errors present
 const unhealthyReport = runHealthCheck({
   missingEmbeddings: 15,  // error (>10)
+  unrepairableEmbeddings: 0,
   activeLedgerSummaries: [],
   orphanedHandoffs: [],
   staleRollups: 2,  // info
@@ -165,6 +168,7 @@ assert(unhealthyReport.counts.infos === 1, "unhealthy brain → 1 info");
 // Test with duplicates
 const dupeReport = runHealthCheck({
   missingEmbeddings: 0,
+  unrepairableEmbeddings: 0,
   activeLedgerSummaries: [
     { id: "1", project: "proj-a", summary: "fixed critical bug in the payment processing handler module for production deployment" },
     { id: "2", project: "proj-a", summary: "fixed critical bug in the payment processing handler module for staging deployment" },

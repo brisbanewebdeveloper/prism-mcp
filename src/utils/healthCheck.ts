@@ -309,14 +309,24 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
 
   // ── Check 1: Missing Embeddings ────────────────────────────
   // Entries without embeddings can't be found via semantic search.
-  // This absorbs the old session_backfill_embeddings tool's logic.
+  // Only rows with text content can be repaired automatically.
   if (stats.missingEmbeddings > 0) {     // any entries missing vectors?
     issues.push({
       check: "missing_embeddings",       // check identifier
       severity: stats.missingEmbeddings > 10 ? "error" : "warning",  // >10 = critical
-      message: `${stats.missingEmbeddings} ledger entries have no embedding vector`,
+      message: `${stats.missingEmbeddings} ledger entries have no embedding vector and can be repaired automatically`,
       count: stats.missingEmbeddings,    // how many are affected
       suggestion: "Run session_health_check(auto_fix: true) to generate missing embeddings automatically",
+    });
+  }
+
+  if (stats.unrepairableEmbeddings > 0) {
+    issues.push({
+      check: "unrepairable_embeddings",
+      severity: "warning",
+      message: `${stats.unrepairableEmbeddings} ledger entries have no embeddable text, so embedding repair will skip them`,
+      count: stats.unrepairableEmbeddings,
+      suggestion: "Add a non-empty summary or decision to those entries, or delete the invalid rows if they should not exist.",
     });
   }
 

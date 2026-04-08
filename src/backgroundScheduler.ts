@@ -115,6 +115,8 @@ export interface SchedulerConfig {
   enableCompaction: boolean;
   /** Purge float32 embeddings for old entries with compressed blobs (default: true) */
   enableDeepPurge: boolean;
+  /** Retry repairable missing embeddings in the background (default: true) */
+  enableEmbeddingRetry: boolean;
   /** Auto-flush SDM matrices to disk (default: true) */
   enableSdmFlush: boolean;
   /** Auto-synthesize graph edges in background (default: true) */
@@ -127,6 +129,12 @@ export interface SchedulerConfig {
   compactionKeepRecent: number;
   /** Days before importance decay applies to behavioral entries (default: 30) */
   decayDays: number;
+  /** Max retry attempts before missing embeddings stop auto-retrying (default: 3) */
+  embeddingRetryMaxRetries: number;
+  /** Minimum delay before retrying a failed embedding attempt (default: 30 minutes) */
+  embeddingRetryBackoffMs: number;
+  /** Batch size for each per-project embedding retry pass (default: 50) */
+  embeddingRetryBatchSize: number;
   /** Per-project synthesis cooldown in milliseconds (default: 10 minutes) */
   edgeSynthesisCooldownMs: number;
   /** Max wall-clock budget for synthesis task per sweep (default: 60 seconds) */
@@ -157,12 +165,16 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   enableDecay: true,
   enableCompaction: true,
   enableDeepPurge: true,
+  enableEmbeddingRetry: true,
   enableSdmFlush: true,
   enableEdgeSynthesis: true,
   purgeOlderThanDays: 30,
   compactionThreshold: 50,
   compactionKeepRecent: 10,
   decayDays: 30,
+  embeddingRetryMaxRetries: 3,
+  embeddingRetryBackoffMs: 30 * 60_000,
+  embeddingRetryBatchSize: 50,
   edgeSynthesisCooldownMs: 10 * 60_000,
   edgeSynthesisBudgetMs: 60_000,
   edgeSynthesisMaxRetries: 1,
@@ -211,6 +223,7 @@ export interface SchedulerSweepResult {
     importanceDecay: { ran: boolean; projectsDecayed: number; error?: string };
     compaction: { ran: boolean; projectsCompacted: number; error?: string };
     deepPurge: { ran: boolean; purged: number; reclaimedBytes: number; error?: string };
+    embeddingRetry: { ran: boolean; projectsAttempted: number; projectsRetried: number; repaired: number; failed: number; error?: string };
     sdmFlush: { ran: boolean; projectsFlushed: number; error?: string };
     linkDecay: { ran: boolean; linksDecayed: number; error?: string };
     edgeSynthesis: {
@@ -278,6 +291,7 @@ export function startScheduler(config?: Partial<SchedulerConfig>): () => void {
     cfg.enableDecay && "Decay",
     cfg.enableCompaction && "Compaction",
     cfg.enableDeepPurge && "DeepPurge",
+    cfg.enableEmbeddingRetry && "EmbeddingRetry",
     cfg.enableSdmFlush && "SdmFlush",
     cfg.enableEdgeSynthesis && "EdgeSynthesis",
     cfg.enableGraphPruning && "GraphPruning",
@@ -384,6 +398,7 @@ export async function runSchedulerSweep(
       importanceDecay: { ran: false, projectsDecayed: 0 },
       compaction: { ran: false, projectsCompacted: 0 },
       deepPurge: { ran: false, purged: 0, reclaimedBytes: 0 },
+      embeddingRetry: { ran: false, projectsAttempted: 0, projectsRetried: 0, repaired: 0, failed: 0 },
       sdmFlush: { ran: false, projectsFlushed: 0 },
       linkDecay: { ran: false, linksDecayed: 0 },
       edgeSynthesis: {
@@ -584,7 +599,74 @@ export async function runSchedulerSweep(
     }
   }
 
-  // ── Task 5: SDM Flush ──────────────────────────────────────
+  // ── Task 5: Embedding Retry ───────────────────────────────
+  if (cfg.enableEmbeddingRetry) {
+    try {
+      result.tasks.embeddingRetry.ran = true;
+      const retryBefore = new Date(Date.now() - cfg.embeddingRetryBackoffMs).toISOString();
+      const projects = await storage.listProjectsWithMissingEmbeddings(
+        PRISM_USER_ID,
+        cfg.embeddingRetryMaxRetries,
+        retryBefore,
+      );
+
+      if (projects.length > 0) {
+        const { getLLMProvider } = await import("./utils/llm/factory.js");
+        getLLMProvider();
+
+        const { backfillEmbeddingsHandler } = await import("./tools/hygieneHandlers.js");
+
+        for (const project of projects) {
+          result.tasks.embeddingRetry.projectsAttempted++;
+          let cursorId: string | undefined;
+          let hasMore = true;
+          let projectRetried = false;
+
+          while (hasMore) {
+            const backfillResult: any = await backfillEmbeddingsHandler({
+              project,
+              dry_run: false,
+              limit: cfg.embeddingRetryBatchSize,
+              _cursor_id: cursorId,
+              _max_retry_count: cfg.embeddingRetryMaxRetries,
+              _retry_before: retryBefore,
+            });
+
+            const stats = backfillResult?._stats;
+            if (!stats) {
+              hasMore = false;
+              continue;
+            }
+
+            if (stats.repaired > 0 || stats.failed > 0) {
+              projectRetried = true;
+            }
+            result.tasks.embeddingRetry.repaired += stats.repaired || 0;
+            result.tasks.embeddingRetry.failed += stats.failed || 0;
+
+            if (stats.last_id) {
+              cursorId = stats.last_id;
+            } else {
+              hasMore = false;
+            }
+
+            if ((stats.scanned ?? (stats.repaired + stats.failed + stats.skippedNoText)) < cfg.embeddingRetryBatchSize) {
+              hasMore = false;
+            }
+          }
+
+          if (projectRetried) {
+            result.tasks.embeddingRetry.projectsRetried++;
+          }
+        }
+      }
+    } catch (err) {
+      result.tasks.embeddingRetry.error = err instanceof Error ? err.message : String(err);
+      console.error(`[Scheduler] Embedding retry error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Task 6: SDM Flush ──────────────────────────────────────
   if (cfg.enableSdmFlush) {
     try {
       result.tasks.sdmFlush.ran = true;
@@ -612,7 +694,7 @@ export async function runSchedulerSweep(
     }
   }
 
-  // ── Task 6: Link Decay (v6.0 Phase 3) ──────────────────────
+  // ── Task 7: Link Decay (v6.0 Phase 3) ──────────────────────
   // Reduce strength of stale graph edges by -0.1 per sweep.
   // Uses PRISM_LINK_DECAY_DAYS from config (default: 30).
   try {
@@ -630,7 +712,7 @@ export async function runSchedulerSweep(
     debugLog(`[Scheduler] Link decay error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // ── Task 7: Edge Synthesis ──────────────────────────────────
+  // ── Task 8: Edge Synthesis ──────────────────────────────────
   if (cfg.enableEdgeSynthesis) {
     const synthTaskStart = Date.now();
     try {
@@ -740,7 +822,7 @@ export async function runSchedulerSweep(
 
   }
 
-  // ── Task 8: Graph Soft-Prune Summary (WS3) ─────────────────
+  // ── Task 9: Graph Soft-Prune Summary (WS3) ─────────────────
   if (cfg.enableGraphPruning) {
     const pruneTaskStart = Date.now();
     try {

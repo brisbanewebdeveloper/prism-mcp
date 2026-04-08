@@ -92,6 +92,11 @@ type ResourceUpdateNotifier = (project: string) => void;
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
 import { computeEffectiveImportance, recordMemoryAccess } from "../utils/cognitiveMemory.js";
+import {
+  buildLedgerEmbeddingText,
+  createFailedEmbeddingState,
+  createReadyEmbeddingState,
+} from "../utils/ledgerEmbedding.js";
 
 function getEmbeddingProviderOrNull(context: string) {
   try {
@@ -111,6 +116,11 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   }
 
   const { project, conversation_id, summary, todos, files_changed, decisions, role } = args;
+  const embeddingText = buildLedgerEmbeddingText(summary, decisions);
+  if (!embeddingText) {
+    throw new Error("session_save_ledger requires a non-empty summary or decision.");
+  }
+
   const storage = await getStorage();
 
   // ─── Repo path mismatch validation (v4.2) ───
@@ -133,7 +143,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   debugLog(`[session_save_ledger] Saving ledger entry for project="${project}"`);
 
   // Auto-extract keywords from summary + decisions for knowledge accumulation
-  const combinedText = [summary, ...(decisions || [])].join(" ");
+  const combinedText = buildLedgerEmbeddingText(summary, decisions, " ");
   const keywords = toKeywordArray(combinedText);
   debugLog(`[session_save_ledger] Extracted ${keywords.length} keywords: ${keywords.slice(0, 5).join(", ")}...`);
 
@@ -154,16 +164,17 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   // ─── Fire-and-forget embedding generation ───
   const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_ledger") : null;
   if (embeddingProvider && result) {
-    const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
       embeddingProvider.generateEmbedding(embeddingText)
         .then(async (embedding) => {
+          const attemptedAt = new Date().toISOString();
           // Build atomic patch — float32 + TurboQuant in ONE DB update
           const patchData: Record<string, unknown> = {
             embedding: JSON.stringify(embedding),
+            ...createReadyEmbeddingState(attemptedAt),
           };
 
           // TurboQuant: compress alongside float32 (non-fatal)
@@ -185,8 +196,14 @@ export async function sessionSaveLedgerHandler(args: unknown) {
           await storage.patchLedger(entryId, patchData);
           debugLog(`[session_save_ledger] Embedding saved for entry ${entryId}`);
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          const attemptedAt = new Date().toISOString();
           console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err.message}`);
+          try {
+            await storage.patchLedger(entryId, createFailedEmbeddingState(err, 1, attemptedAt));
+          } catch (patchErr: unknown) {
+            debugLog(`[session_save_ledger] Failed to persist retry state for ${entryId}: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
+          }
         });
     }
   }
@@ -1346,13 +1363,21 @@ export async function sessionSaveExperienceHandler(args: unknown) {
     if (entryId) {
       embeddingProvider.generateEmbedding(embeddingText)
         .then(async (embedding) => {
+          const attemptedAt = new Date().toISOString();
           await storage.patchLedger(entryId, {
             embedding: JSON.stringify(embedding),
+            ...createReadyEmbeddingState(attemptedAt),
           });
           debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
         })
-        .catch((err) => {
+        .catch(async (err) => {
           console.error(`[session_save_experience] Embedding failed (non-fatal): ${err.message}`);
+          const attemptedAt = new Date().toISOString();
+          try {
+            await storage.patchLedger(entryId, createFailedEmbeddingState(err, 1, attemptedAt));
+          } catch (patchErr: unknown) {
+            debugLog(`[session_save_experience] Failed to persist retry state for ${entryId}: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
+          }
         });
     }
   }

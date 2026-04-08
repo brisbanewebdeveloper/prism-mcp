@@ -22,6 +22,7 @@
 // ─── Type Definitions ─────────────────────────────────────────
 
 import { VerificationHarness, ValidationResult } from "../verification/schema.js";
+import type { LedgerEmbeddingStatus } from "../utils/ledgerEmbedding.js";
 
 /**
  * A single immutable session log entry.
@@ -49,6 +50,10 @@ export interface LedgerEntry {
 
   // Embedding (generated async after save via Gemini text-embedding-004)
   embedding?: string; // JSON-stringified number[] — 768-dim float32 vector
+  embedding_status?: LedgerEmbeddingStatus;
+  embedding_last_error?: string | null;
+  embedding_retry_count?: number;
+  embedding_last_attempt_at?: string | null;
 
   // ─── v5.0: TurboQuant Compressed Embedding ──────────────────
   //
@@ -251,8 +256,13 @@ export interface HistorySnapshot {
  * lives in healthCheck.ts to keep the DB layer agnostic.
  */
 export interface HealthStats {
-  // Count of active ledger entries with no embedding vector
+  // Count of active ledger entries with no embedding vector that have
+  // enough text content to be repaired automatically.
   missingEmbeddings: number;
+
+  // Count of active ledger entries with no embedding vector and no
+  // embeddable summary/decision text.
+  unrepairableEmbeddings: number;
 
   // All active ledger entries (id + project + summary) — used
   // for in-memory duplicate detection via JS Jaccard similarity
@@ -448,6 +458,16 @@ export interface StorageBackend {
    * Used by the Mind Palace Dashboard for project discovery.
    */
   listProjects(): Promise<string[]>;
+
+  /**
+   * List projects that still contain repairable missing embeddings.
+   * Scheduler uses this because listProjects() only reflects handoffs.
+   */
+  listProjectsWithMissingEmbeddings(
+    userId: string,
+    maxRetryCount?: number,
+    retryBefore?: string,
+  ): Promise<string[]>;
 
   // ─── v2.2.0 Health Check (fsck) ─────────────────────────────
 
@@ -853,10 +873,10 @@ export interface StorageBackend {
 
   /** Save or update a pipeline state */
   savePipeline(state: PipelineState): Promise<void>;
-  
+
   /** Retrieve a pipeline by ID */
   getPipeline(id: string, userId: string): Promise<PipelineState | null>;
-  
+
   /** List pipelines, optionally filtered by project and status */
   listPipelines(project: string | undefined, status: PipelineStatus | undefined, userId: string): Promise<PipelineState[]>;
 

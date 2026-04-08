@@ -22,6 +22,12 @@ import * as path from "path";
 import * as os from "os";
 import { randomUUID } from "crypto";
 import { AccessLogBuffer } from "../utils/accessLogBuffer.js";
+import {
+  assertEmbeddableLedgerContent,
+  createPendingEmbeddingState,
+  hasEmbeddableLedgerContent,
+  isEmbeddingRetryEligible,
+} from "../utils/ledgerEmbedding.js";
 import { PRISM_ACTR_BUFFER_FLUSH_MS } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 
@@ -138,6 +144,10 @@ export class SqliteStorage implements StorageBackend {
         decisions TEXT DEFAULT '[]',
         keywords TEXT DEFAULT '[]',
         embedding F32_BLOB(768),  -- libSQL native 768-dim vector (Gemini text-embedding-004)
+        embedding_status TEXT DEFAULT NULL,
+        embedding_last_error TEXT DEFAULT NULL,
+        embedding_retry_count INTEGER DEFAULT 0,
+        embedding_last_attempt_at TEXT DEFAULT NULL,
         is_rollup INTEGER DEFAULT 0,
         rollup_count INTEGER DEFAULT 0,
         archived_at TEXT DEFAULT NULL,
@@ -330,7 +340,7 @@ export class SqliteStorage implements StorageBackend {
         // Step 3: Drop old and rename
         await tx.execute(`DROP TABLE session_handoffs`);
         await tx.execute(`ALTER TABLE session_handoffs_v2 RENAME TO session_handoffs`);
-        
+
         await tx.commit();
         debugLog("[SqliteStorage] v3.0 migration: session_handoffs rebuilt with UNIQUE(project, user_id, role)");
       } catch (txError) {
@@ -485,6 +495,47 @@ export class SqliteStorage implements StorageBackend {
       if (!e.message?.includes("duplicate column name")) throw e;
     }
 
+    try {
+      await this.db.execute(
+        `ALTER TABLE session_ledger ADD COLUMN embedding_status TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v7.8.4 migration: added embedding_status column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE session_ledger ADD COLUMN embedding_last_error TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v7.8.4 migration: added embedding_last_error column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE session_ledger ADD COLUMN embedding_retry_count INTEGER DEFAULT 0`
+      );
+      debugLog("[SqliteStorage] v7.8.4 migration: added embedding_retry_count column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    try {
+      await this.db.execute(
+        `ALTER TABLE session_ledger ADD COLUMN embedding_last_attempt_at TEXT DEFAULT NULL`
+      );
+      debugLog("[SqliteStorage] v7.8.4 migration: added embedding_last_attempt_at column");
+    } catch (e: any) {
+      if (!e.message?.includes("duplicate column name")) throw e;
+    }
+
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_ledger_embedding_retry
+        ON session_ledger(user_id, embedding_status, embedding_last_attempt_at)`
+    );
+
     // ── v5.3: Hivemind Watchdog columns on agent_registry ────────
     // These enable the server-side health monitor to detect frozen agents,
     // task overruns, and infinite loops. Safe no-op if columns already exist.
@@ -602,7 +653,7 @@ export class SqliteStorage implements StorageBackend {
 
     // ─── Phase 4 Migration: Semantic Knowledge Table ──────────────
     //
-    // REVIEWER NOTE: Created to separate timeless semantic facts from 
+    // REVIEWER NOTE: Created to separate timeless semantic facts from
     // chronological episodic ledger events, per Phase 4 consolidation.
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS semantic_knowledge (
@@ -632,7 +683,7 @@ export class SqliteStorage implements StorageBackend {
     try {
       await this.db.execute(`ALTER TABLE semantic_knowledge ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))`);
     } catch { /* column already exists */ }
-    
+
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_semantic_project ON semantic_knowledge(project)`
     );
@@ -722,7 +773,7 @@ export class SqliteStorage implements StorageBackend {
     } catch (e: any) {
       if (!e.message?.includes("duplicate column name")) throw e;
     }
-    
+
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_pipelines_status ON dark_factory_pipelines(user_id, project, status)`
     );
@@ -850,12 +901,13 @@ export class SqliteStorage implements StorageBackend {
           'files_changed', 'todos', 'decisions', 'metrics', 'keywords',
           'session_date', 'schema_version', 'created_at', 'updated_at',
           'deleted_at', 'archived_at', 'is_rollup', 'rollup_type',
-          'last_accessed_at', 'importance'
+          'last_accessed_at', 'importance', 'role', 'embedding_status',
+          'embedding_last_error', 'embedding_retry_count', 'embedding_last_attempt_at'
         ];
-        
+
         const requestedColumns = value.split(',').map(c => c.trim());
         const isSafe = requestedColumns.every(c => VALID_COLUMNS.includes(c) || c === '*');
-        
+
         if (!isSafe) {
           throw new Error('Invalid select column format: contains prohibited columns.');
         }
@@ -982,6 +1034,8 @@ export class SqliteStorage implements StorageBackend {
   async saveLedger(entry: LedgerEntry): Promise<unknown> {
     const id = entry.id || randomUUID();
     const now = new Date().toISOString();
+    assertEmbeddableLedgerContent(entry.summary, entry.decisions, "saveLedger");
+    const pendingEmbeddingState = createPendingEmbeddingState();
 
     await this.db.execute({
       sql: `INSERT INTO session_ledger
@@ -989,8 +1043,9 @@ export class SqliteStorage implements StorageBackend {
          decisions, keywords, is_rollup, rollup_count, title, agent_name,
          event_type, confidence_score, importance,
          embedding_compressed, embedding_format, embedding_turbo_radius,
+         embedding_status, embedding_last_error, embedding_retry_count, embedding_last_attempt_at,
          created_at, session_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         entry.project,
@@ -1012,6 +1067,10 @@ export class SqliteStorage implements StorageBackend {
         entry.embedding_compressed || null,        // v5.0: TurboQuant
         entry.embedding_format || null,            // v5.0: turbo3/turbo4/float32
         entry.embedding_turbo_radius ?? null,      // v5.0: original vector magnitude
+        entry.embedding_status ?? pendingEmbeddingState.embedding_status,
+        entry.embedding_last_error ?? pendingEmbeddingState.embedding_last_error,
+        entry.embedding_retry_count ?? pendingEmbeddingState.embedding_retry_count,
+        entry.embedding_last_attempt_at ?? pendingEmbeddingState.embedding_last_attempt_at,
         now,
         now,
       ],
@@ -1044,7 +1103,8 @@ export class SqliteStorage implements StorageBackend {
       'embedding', 'embedding_compressed', 'embedding_format', 'embedding_turbo_radius',
       'archived_at', 'deleted_at', 'deleted_reason', 'is_rollup', 'rollup_count',
       'importance', 'last_accessed_at', 'keywords', 'todos', 'files_changed', 'decisions',
-      'summary', 'confidence_score', 'event_type', 'role',
+      'summary', 'confidence_score', 'event_type', 'role', 'embedding_status',
+      'embedding_last_error', 'embedding_retry_count', 'embedding_last_attempt_at',
     ]);
 
     const sets: string[] = [];
@@ -1548,7 +1608,7 @@ export class SqliteStorage implements StorageBackend {
           decisions: r.decisions as string[] | undefined,
           files_changed: r.files_changed as string[] | undefined,
         }));
-        
+
         const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
         const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId);
         return { count: activated.length, results: activated };
@@ -1638,7 +1698,7 @@ export class SqliteStorage implements StorageBackend {
         decisions: r.decisions as string[] | undefined,
         files_changed: r.files_changed as string[] | undefined,
       }));
-      
+
       const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
       const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId);
       return { count: activated.length, results: activated };
@@ -1808,7 +1868,7 @@ export class SqliteStorage implements StorageBackend {
 
         // Sort by similarity descending and limit
         scored.sort((a, b) => b.similarity - a.similarity);
-        
+
         const baseResults = scored.slice(0, params.limit);
         debugLog(
           `[SqliteStorage] Tier-2 TurboQuant fallback: scored ${fallbackResult.rows.length} entries, ` +
@@ -1948,6 +2008,44 @@ export class SqliteStorage implements StorageBackend {
     return result.rows.map(row => row.project as string);
   }
 
+  async listProjectsWithMissingEmbeddings(
+    userId: string,
+    maxRetryCount?: number,
+    retryBefore?: string,
+  ): Promise<string[]> {
+    const result = await this.db.execute({
+      sql: `
+        SELECT project, summary, decisions, embedding_status, embedding_retry_count, embedding_last_attempt_at
+        FROM session_ledger
+        WHERE user_id = ?
+          AND archived_at IS NULL
+          AND embedding IS NULL
+      `,
+      args: [userId],
+    });
+
+    const projects = new Set<string>();
+    for (const row of result.rows) {
+      const project = String(row.project ?? "").trim();
+      if (!project) continue;
+
+      const decisions = this.parseJsonColumn(row.decisions) as string[] | undefined;
+      if (!isEmbeddingRetryEligible({
+        summary: String(row.summary ?? ""),
+        decisions,
+        embedding_status: row.embedding_status,
+        embedding_retry_count: row.embedding_retry_count,
+        embedding_last_attempt_at: row.embedding_last_attempt_at,
+      }, { maxRetryCount, retryBefore })) {
+        continue;
+      }
+
+      projects.add(project);
+    }
+
+    return [...projects].sort((left, right) => left.localeCompare(right));
+  }
+
   // ─── v2.2.0 Health Check (fsck) ─────────────────────────────
 
   /**
@@ -1960,12 +2058,12 @@ export class SqliteStorage implements StorageBackend {
    */
   async getHealthStats(userId: string): Promise<HealthStats> {
 
-    // ── Check 1: Count entries with no embedding vector ──────────
-    // When Gemini API is down during save, the fire-and-forget
-    // embedding call fails silently. These rows need backfill.
+    // ── Check 1: Classify entries with no embedding vector ───────
+    // Only rows with summary/decision text can be repaired automatically.
+    // Blank rows need content repair or deletion, not an embedding retry.
     const missingResult = await this.db.execute({
       sql: `
-        SELECT COUNT(*) as cnt
+        SELECT summary, decisions
         FROM session_ledger
         WHERE user_id = ?
           AND archived_at IS NULL
@@ -1973,9 +2071,17 @@ export class SqliteStorage implements StorageBackend {
       `,
       args: [userId],  // bind user_id to the ? placeholder
     });
-    const missingEmbeddings = Number(  // extract count, default 0
-      missingResult.rows[0]?.cnt ?? 0
-    );
+    let missingEmbeddings = 0;
+    let unrepairableEmbeddings = 0;
+
+    for (const row of missingResult.rows) {
+      const decisions = this.parseJsonColumn(row.decisions) as string[] | undefined;
+      if (hasEmbeddableLedgerContent(String(row.summary ?? ""), decisions)) {
+        missingEmbeddings++;
+      } else {
+        unrepairableEmbeddings++;
+      }
+    }
 
     // ── Check 2: Fetch active summaries for JS duplicate detection ─
     // We pull id + project + summary into memory so healthCheck.ts
@@ -2077,6 +2183,7 @@ export class SqliteStorage implements StorageBackend {
     // healthCheck.ts engine will analyze this + produce HealthReport
     return {
       missingEmbeddings,     // entries needing embedding repair
+      unrepairableEmbeddings,
       activeLedgerSummaries, // raw summaries for JS dupe detection
       orphanedHandoffs,      // projects with handoff but no ledger
       staleRollups,          // rollups with no archived originals
@@ -2756,18 +2863,18 @@ export class SqliteStorage implements StorageBackend {
     // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
     const buffer = new Uint8Array(state.buffer, state.byteOffset, state.byteLength);
     const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
-    
+
     // We do an UPSERT (INSERT ... ON CONFLICT REPLACE).
     await this.db.execute({
-      sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at) 
+      sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at)
             VALUES (?, ?, ?, datetime('now'))
-            ON CONFLICT(project) DO UPDATE SET 
+            ON CONFLICT(project) DO UPDATE SET
               counters = excluded.counters,
               address_version = excluded.address_version,
               updated_at = excluded.updated_at`,
       args: [project, buffer, SDM_ADDRESS_VERSION],
     });
-    
+
     debugLog(`[SqliteStorage] Persisted SDM state v${SDM_ADDRESS_VERSION} to disk for project: ${project}`);
   }
 
@@ -2816,16 +2923,16 @@ export class SqliteStorage implements StorageBackend {
     // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
     const buffer = new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
     const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
-    
+
     await this.db.execute({
-      sql: `INSERT INTO hdc_dictionary (concept_name, vector, prng_version) 
+      sql: `INSERT INTO hdc_dictionary (concept_name, vector, prng_version)
             VALUES (?, ?, ?)
-            ON CONFLICT(concept_name) DO UPDATE SET 
+            ON CONFLICT(concept_name) DO UPDATE SET
               vector = excluded.vector,
               prng_version = excluded.prng_version`,
       args: [concept, buffer, SDM_ADDRESS_VERSION],
     });
-    
+
     debugLog(`[SqliteStorage] Persisted HDC orthogonal concept v${SDM_ADDRESS_VERSION} to dictionary: ${concept}`);
   }
 
@@ -3536,7 +3643,7 @@ export class SqliteStorage implements StorageBackend {
   async listPipelines(project: string | undefined, status: PipelineStatus | undefined, userId: string): Promise<PipelineState[]> {
     const conditions: string[] = ['user_id = ?'];
     const args: any[] = [userId];
-    
+
     if (project) {
       conditions.push('project = ?');
       args.push(project);
@@ -3545,10 +3652,10 @@ export class SqliteStorage implements StorageBackend {
       conditions.push('status = ?');
       args.push(status);
     }
-    
+
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const sql = `SELECT * FROM dark_factory_pipelines ${where} ORDER BY updated_at DESC`;
-    
+
     const result = await this.db.execute({ sql, args });
     return result.rows.map((row: any) => ({
       ...row,
@@ -3598,7 +3705,7 @@ export class SqliteStorage implements StorageBackend {
     await this.db.execute({
       sql: `
         INSERT INTO verification_runs (
-          id, rubric_hash, project, conversation_id, run_at, 
+          id, rubric_hash, project, conversation_id, run_at,
           passed, pass_rate, critical_failures, coverage_score, result_json, gate_action, gate_override, override_reason, user_id
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3654,7 +3761,7 @@ export class SqliteStorage implements StorageBackend {
   }
 
   // ─── v7.5: Semantic Consolidation ────────────────────────────────
-  
+
   async upsertSemanticKnowledge(data: {
     project: string;
     concept: string;
@@ -3670,7 +3777,7 @@ export class SqliteStorage implements StorageBackend {
     if (existing.rows.length > 0) {
       const row = existing.rows[0] as any;
       const newConfidence = Math.min(1.0, row.confidence + 0.1);
-      
+
       await this.db.execute({
         sql: `UPDATE semantic_knowledge SET instances = instances + 1, confidence = ?, updated_at = ? WHERE id = ?`,
         args: [newConfidence, new Date().toISOString(), row.id]

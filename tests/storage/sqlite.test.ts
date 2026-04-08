@@ -140,6 +140,18 @@ describe("Ledger Entries (Role-Scoped)", () => {
     ).resolves.not.toThrow();
   });
 
+  it("should reject blank ledger entries at the storage boundary", async () => {
+    await expect(
+      storage.saveLedger({
+        project: TEST_PROJECT,
+        conversation_id: "test-conv-blank",
+        user_id: TEST_USER_ID,
+        summary: "   ",
+        decisions: [" ", "\n"],
+      })
+    ).rejects.toThrow("saveLedger requires a non-empty summary or decision.");
+  });
+
   /**
    * Tests saving a ledger entry WITH a role.
    * This is the core v3.0 feature — each agent role gets its own

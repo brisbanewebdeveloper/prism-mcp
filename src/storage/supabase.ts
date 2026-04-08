@@ -43,6 +43,12 @@ import {
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
+import {
+  assertEmbeddableLedgerContent,
+  createPendingEmbeddingState,
+  hasEmbeddableLedgerContent,
+  isEmbeddingRetryEligible,
+} from "../utils/ledgerEmbedding.js";
 import { PRISM_USER_ID } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 import { runAutoMigrations } from "./supabaseMigrations.js";
@@ -72,6 +78,8 @@ export class SupabaseStorage implements StorageBackend {
   // ─── Ledger Operations ─────────────────────────────────────
 
   async saveLedger(entry: LedgerEntry): Promise<unknown> {
+    assertEmbeddableLedgerContent(entry.summary, entry.decisions, "saveLedger");
+    const pendingEmbeddingState = createPendingEmbeddingState();
     const record = {
       project: entry.project,
       conversation_id: entry.conversation_id,
@@ -92,6 +100,10 @@ export class SupabaseStorage implements StorageBackend {
       event_type: entry.event_type || "session",
       ...(entry.confidence_score !== undefined && { confidence_score: entry.confidence_score }),
       importance: entry.importance || 0,
+      embedding_status: entry.embedding_status ?? pendingEmbeddingState.embedding_status,
+      embedding_last_error: entry.embedding_last_error ?? pendingEmbeddingState.embedding_last_error,
+      embedding_retry_count: entry.embedding_retry_count ?? pendingEmbeddingState.embedding_retry_count,
+      embedding_last_attempt_at: entry.embedding_last_attempt_at ?? pendingEmbeddingState.embedding_last_attempt_at,
       // v5.0: TurboQuant Compressed Embedding fields
       ...(entry.embedding_compressed !== undefined && { embedding_compressed: entry.embedding_compressed }),
       ...(entry.embedding_format !== undefined && { embedding_format: entry.embedding_format }),
@@ -107,7 +119,7 @@ export class SupabaseStorage implements StorageBackend {
 
   async getLedgerEntries(params: Record<string, any>): Promise<unknown[]> {
     const { ids, ...restParams } = params;
-    
+
     // Construct PostgREST 'in.' payload for array of ids if present
     if (ids && Array.isArray(ids) && ids.length > 0) {
       restParams.id = `in.(${ids.join(",")})`;
@@ -147,7 +159,7 @@ export class SupabaseStorage implements StorageBackend {
     if (!ids || ids.length === 0) return;
     const CHUNK_SIZE = 100;
     const now = new Date().toISOString();
-    
+
     try {
       const promises = [];
       for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
@@ -492,16 +504,58 @@ export class SupabaseStorage implements StorageBackend {
     return [...new Set(rows.map((r: any) => r.project as string))];
   }
 
+  async listProjectsWithMissingEmbeddings(
+    userId: string,
+    maxRetryCount?: number,
+    retryBefore?: string,
+  ): Promise<string[]> {
+    const data = await supabaseGet("session_ledger", {
+      select: "project,summary,decisions,embedding_status,embedding_retry_count,embedding_last_attempt_at",
+      user_id: `eq.${userId}`,
+      archived_at: "is.null",
+      embedding: "is.null",
+      order: "project.asc",
+    });
+    const rows = Array.isArray(data) ? data : [];
+    const projects = new Set<string>();
+
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const project = typeof row.project === "string" ? row.project.trim() : "";
+      if (!project) continue;
+
+      if (!isEmbeddingRetryEligible({
+        summary: typeof row.summary === "string" ? row.summary : "",
+        decisions: Array.isArray(row.decisions) ? row.decisions as string[] : [],
+        embedding_status: row.embedding_status,
+        embedding_retry_count: row.embedding_retry_count,
+        embedding_last_attempt_at: row.embedding_last_attempt_at,
+      }, { maxRetryCount, retryBefore })) {
+        continue;
+      }
+
+      projects.add(project);
+    }
+
+    return [...projects].sort((left, right) => left.localeCompare(right));
+  }
+
   // ─── v2.2.0 Health Check (fsck) ─────────────────────────────
 
   async getHealthStats(userId: string): Promise<HealthStats> {
     const missingData = await supabaseGet("session_ledger", {
-      select: "id",
+      select: "summary,decisions",
       user_id: `eq.${userId}`,
       archived_at: "is.null",
       embedding: "is.null",
     });
-    const missingEmbeddings = Array.isArray(missingData) ? missingData.length : 0;
+    const missingRows = Array.isArray(missingData) ? missingData : [];
+    const missingEmbeddings = missingRows.filter((row: any) =>
+      hasEmbeddableLedgerContent(
+        typeof row.summary === "string" ? row.summary : "",
+        Array.isArray(row.decisions) ? row.decisions as string[] : [],
+      )
+    ).length;
+    const unrepairableEmbeddings = missingRows.length - missingEmbeddings;
 
     const summData = await supabaseGet("session_ledger", {
       select: "id,project,summary",
@@ -573,6 +627,7 @@ export class SupabaseStorage implements StorageBackend {
 
     return {
       missingEmbeddings,
+      unrepairableEmbeddings,
       activeLedgerSummaries,
       orphanedHandoffs,
       staleRollups,
@@ -1249,7 +1304,7 @@ export class SupabaseStorage implements StorageBackend {
       if (linkType) {
         Object.assign(query, { link_type: `eq.${linkType}` });
       }
-      const result = await supabaseGet("memory_links", { 
+      const result = await supabaseGet("memory_links", {
         ...query,
         select: "source_id"
       });
@@ -1407,10 +1462,10 @@ export class SupabaseStorage implements StorageBackend {
         p_project: project
       });
       const parsed = Array.isArray(result) ? result[0] : result;
-      return { 
-        temporal: Number(parsed?.temporal || 0), 
-        keyword: Number(parsed?.keyword || 0), 
-        provenance: Number(parsed?.provenance || 0) 
+      return {
+        temporal: Number(parsed?.temporal || 0),
+        keyword: Number(parsed?.keyword || 0),
+        provenance: Number(parsed?.provenance || 0)
       };
     } catch (e: any) {
       debugLog("[SupabaseStorage] backfillLinks failed: " + e.message);
@@ -1583,7 +1638,7 @@ export class SupabaseStorage implements StorageBackend {
       };
       if (project) query.project = `eq.${project}`;
       if (status) query.status = `eq.${status}`;
-      
+
       const result = await supabaseGet("dark_factory_pipelines", query);
       const rows = (Array.isArray(result) ? result : []) as any[];
       // ─── v7.4: Deserialize contract_payload from JSON TEXT ───

@@ -23,6 +23,16 @@ import { getLLMProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, getAllSettings } from "../storage/configStorage.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
+import {
+  buildLedgerEmbeddingText,
+  createFailedEmbeddingState,
+  createReadyEmbeddingState,
+  createSkippedEmbeddingState,
+  getEmbeddingRetryCount,
+  hasEmbeddableLedgerContent,
+  isEmbeddingRetryEligible,
+  normalizeEmbeddingError,
+} from "../utils/ledgerEmbedding.js";
 
 // ─── Phase 1: Explainability & Memory Lineage ────────────────
 // These utilities provide structured tracing metadata for search operations.
@@ -107,6 +117,13 @@ export async function backfillEmbeddingsHandler(args: unknown) {
 
   const { project, limit = 20, dry_run = false } = args;
   const safeLimit = Math.min(limit, 50);
+  const maxRetryCount = typeof (args as any)._max_retry_count === "number"
+    ? (args as any)._max_retry_count
+    : undefined;
+  const retryBefore = typeof (args as any)._retry_before === "string"
+    ? (args as any)._retry_before
+    : undefined;
+  const useRetryEligibilityFilter = maxRetryCount !== undefined || retryBefore !== undefined;
 
   debugLog(
     `[backfill_embeddings] ${dry_run ? "DRY RUN: " : ""}` +
@@ -122,7 +139,7 @@ export async function backfillEmbeddingsHandler(args: unknown) {
     user_id: `eq.${PRISM_USER_ID}`,
     order: "id.asc",
     limit: String(safeLimit),
-    select: "id,summary,decisions,project",
+    select: "id,summary,decisions,project,embedding_status,embedding_retry_count,embedding_last_attempt_at",
   };
   if ((args as any)._cursor_id) {
     params.id = `gt.${(args as any)._cursor_id}`;
@@ -132,6 +149,15 @@ export async function backfillEmbeddingsHandler(args: unknown) {
   }
 
   const entries = await storage.getLedgerEntries(params);
+  const eligibleEntries = useRetryEligibilityFilter
+    ? entries.filter((entry: any) => isEmbeddingRetryEligible({
+      summary: String(entry.summary ?? ""),
+      decisions: Array.isArray(entry.decisions) ? entry.decisions : [],
+      embedding_status: entry.embedding_status,
+      embedding_retry_count: entry.embedding_retry_count,
+      embedding_last_attempt_at: entry.embedding_last_attempt_at,
+    }, { maxRetryCount, retryBefore }))
+    : entries;
 
   if (entries.length === 0) {
     return {
@@ -145,11 +171,17 @@ export async function backfillEmbeddingsHandler(args: unknown) {
 
   // Dry run: just report count
   if (dry_run) {
-    const projects = [...new Set(entries.map((e: any) => e.project))];
+    const repairableCount = eligibleEntries.filter((entry: any) =>
+      hasEmbeddableLedgerContent(String(entry.summary ?? ""), Array.isArray(entry.decisions) ? entry.decisions : [])
+    ).length;
+    const unrepairableCount = eligibleEntries.length - repairableCount;
+    const projects = [...new Set(eligibleEntries.map((e: any) => e.project))];
     return {
       content: [{
         type: "text",
-        text: `🔍 Found ${entries.length} entries with missing embeddings:\n` +
+        text: `🔍 Found ${eligibleEntries.length} entries with missing embeddings:\n` +
+          `Repairable now: ${repairableCount}\n` +
+          `Need content first: ${unrepairableCount}\n` +
           `Projects: ${projects.join(", ")}\n\n` +
           `Run without dry_run to generate embeddings.`,
       }],
@@ -160,18 +192,51 @@ export async function backfillEmbeddingsHandler(args: unknown) {
   // Generate embeddings for each entry
   let repaired = 0;
   let failed = 0;
+  let skippedNoText = 0;
+  const failureDetails: string[] = [];
 
-  for (const entry of entries) {
+  if (eligibleEntries.length === 0) {
+    return {
+      content: [{
+        type: "text",
+        text: "✅ No eligible entries need embedding repair in this batch.",
+      }],
+      isError: false,
+      _stats: {
+        repaired,
+        failed,
+        skippedNoText,
+        failureDetails,
+        last_id: (entries[entries.length - 1] as any)?.id,
+        scanned: entries.length,
+      },
+    } as any;
+  }
+
+  for (const entry of eligibleEntries) {
+    const e = entry as any;
+    const attemptedAt = new Date().toISOString();
+    const retryCount = getEmbeddingRetryCount(e.embedding_retry_count);
     try {
-      const e = entry as any;
-      const textToEmbed = [
-        e.summary || "",
-        ...(e.decisions || []),
-      ].filter(Boolean).join(" | ");
+      const textToEmbed = buildLedgerEmbeddingText(
+        String(e.summary ?? ""),
+        Array.isArray(e.decisions) ? e.decisions : [],
+      );
 
-      if (!textToEmbed.trim()) {
+      if (!textToEmbed) {
         debugLog(`[backfill] Skipping entry ${e.id}: no text content`);
-        failed++;
+        try {
+          await storage.patchLedger(
+            e.id,
+            createSkippedEmbeddingState(
+              "No embeddable summary or decision text available.",
+              attemptedAt,
+            ),
+          );
+        } catch (patchErr: unknown) {
+          debugLog(`[backfill] Failed to mark ${e.id} as skipped: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
+        }
+        skippedNoText++;
         continue;
       }
 
@@ -180,6 +245,7 @@ export async function backfillEmbeddingsHandler(args: unknown) {
       // Build atomic patch — float32 + TurboQuant in ONE DB update
       const patchData: Record<string, unknown> = {
         embedding: JSON.stringify(embedding),
+        ...createReadyEmbeddingState(attemptedAt),
       };
 
       // TurboQuant: compress alongside repair (non-fatal)
@@ -202,9 +268,25 @@ export async function backfillEmbeddingsHandler(args: unknown) {
       debugLog(`[backfill] ✅ Repaired ${e.id} (${e.project})`);
     } catch (err) {
       failed++;
-      console.error(`[backfill] ❌ Failed ${(entry as any).id}: ${err instanceof Error ? err.message : err}`);
+      const reason = normalizeEmbeddingError(err);
+      try {
+        await storage.patchLedger(
+          e.id,
+          createFailedEmbeddingState(reason, retryCount + 1, attemptedAt),
+        );
+      } catch (patchErr: unknown) {
+        debugLog(`[backfill] Failed to persist retry state for ${e.id}: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
+      }
+      if (failureDetails.length < 3) {
+        failureDetails.push(`${e.id}: ${reason}`);
+      }
+      console.error(`[backfill] ❌ Failed ${e.id}: ${reason}`);
     }
   }
+
+  const detailSuffix = failureDetails.length > 0
+    ? ` First failures: ${failureDetails.join("; ")}`
+    : "";
 
   return {
     content: [{
@@ -212,13 +294,23 @@ export async function backfillEmbeddingsHandler(args: unknown) {
       text: `🔧 Embedding backfill complete:\n\n` +
         `• Repaired: ${repaired}\n` +
         `• Failed: ${failed}\n` +
+        `• Skipped (no text): ${skippedNoText}\n` +
         `• Total scanned: ${entries.length}\n\n` +
         (failed > 0
-          ? `⚠️ ${failed} entries could not be repaired. Check server logs for details.`
-          : `All entries now have embeddings for semantic search.`),
+          ? `⚠️ ${failed} entries could not be repaired.${detailSuffix}`
+          : skippedNoText > 0
+            ? `⚠️ ${skippedNoText} entries were skipped because they have no summary or decision text.`
+            : `All entries now have embeddings for semantic search.`),
     }],
     isError: false,
-    _stats: { repaired, failed, last_id: (entries[entries.length - 1] as any)?.id },
+    _stats: {
+      repaired,
+      failed,
+      skippedNoText,
+      failureDetails,
+      last_id: (entries[entries.length - 1] as any)?.id,
+      scanned: entries.length,
+    },
   } as any;
 }
 
@@ -295,11 +387,11 @@ export async function sessionHealthCheckHandler(args: unknown) {
         try {
           let hasMore = true;
           let cursorId: string | undefined = undefined;
-          
+
           while (hasMore) {
             const result: any = await backfillEmbeddingsHandler({ dry_run: false, limit: 50, _cursor_id: cursorId });
             const stats = result._stats;
-            
+
             if (stats) {
               fixedCount += stats.repaired;
               if (stats.last_id) {
@@ -308,7 +400,7 @@ export async function sessionHealthCheckHandler(args: unknown) {
                 hasMore = false;
               }
               // If we repaired + failed less than 50, we're done
-              if ((stats.repaired + stats.failed) < 50) {
+              if ((stats.scanned ?? (stats.repaired + stats.failed + stats.skippedNoText)) < 50) {
                 hasMore = false;
               }
             } else {
