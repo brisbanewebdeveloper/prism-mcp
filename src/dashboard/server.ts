@@ -40,7 +40,9 @@ import {
   generateToken,
   isAuthenticated,
   createRateLimiter,
+  initJWKS,
   type AuthConfig,
+  type PrismAuthenticatedRequest,
 } from "./authUtils.js";
 
 
@@ -141,7 +143,15 @@ export async function startDashboardServer(): Promise<void> {
    */
   const AUTH_USER = process.env.PRISM_DASHBOARD_USER || "";
   const AUTH_PASS = process.env.PRISM_DASHBOARD_PASS || "";
-  const AUTH_ENABLED = AUTH_USER.length > 0 && AUTH_PASS.length > 0;
+  const AUTH_JWKS_URI = process.env.PRISM_JWKS_URI || process.env.AUTH_JWKS_URI || "";
+  
+  // Auth is enabled if basic auth is configured OR if JWKS is configured
+  const AUTH_ENABLED = (AUTH_USER.length > 0 && AUTH_PASS.length > 0) || AUTH_JWKS_URI.length > 0;
+  
+  if (AUTH_JWKS_URI) {
+    initJWKS(AUTH_JWKS_URI);
+  }
+
   const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
   const activeSessions = new Map<string, number>(); // token → expiry timestamp
 
@@ -151,6 +161,8 @@ export async function startDashboardServer(): Promise<void> {
     authUser: AUTH_USER,
     authPass: AUTH_PASS,
     activeSessions,
+    jwtAudience: process.env.PRISM_JWT_AUDIENCE || undefined,
+    jwtIssuer: process.env.PRISM_JWT_ISSUER || undefined,
   };
 
   // v6.5.1: Rate limiter for login endpoint — 5 attempts per 60 seconds per IP
@@ -206,7 +218,17 @@ return false;}
   }
 
   if (AUTH_ENABLED) {
-    console.error(`[Dashboard] 🔒 Auth enabled for user "${AUTH_USER}"`);
+    if (AUTH_USER) {
+      console.error(`[Dashboard] 🔒 Basic auth enabled for user "${AUTH_USER}"`);
+    }
+    if (AUTH_JWKS_URI) {
+      console.error(`[Dashboard] 🔑 JWKS auth enabled: ${AUTH_JWKS_URI}`);
+      if (process.env.PRISM_JWT_AUDIENCE) {
+        console.error(`[Dashboard]    Audience: ${process.env.PRISM_JWT_AUDIENCE}`);
+      } else {
+        console.error(`[Dashboard] ⚠️  No PRISM_JWT_AUDIENCE set — any valid JWT from this JWKS will be accepted.`);
+      }
+    }
     // Security advisory: HTTP Basic Auth transmits credentials in cleartext.
     // When auth is enabled for remote access, HTTPS (reverse proxy) is strongly recommended.
     console.error(
@@ -301,7 +323,7 @@ return false;}
             version: SERVER_CONFIG.version,
           },
           authentication: {
-            required: false
+            required: AUTH_ENABLED
           },
           configSchema: {
             type: "object",
@@ -379,16 +401,27 @@ return false;}
       }
     }
 
-    // ─── v5.1: Auth gate — block unauthenticated requests ───
-    if (AUTH_ENABLED && !isAuthenticated(req, authConfig)) {
-      // For API calls, return 401 JSON
-      if (reqUrl.pathname.startsWith("/api/") || reqUrl.pathname === "/sse" || reqUrl.pathname === "/messages") {
+    // ─── AUTHENTICATION GATE ───
+    // Basic Auth & Session & JWKS
+    if (AUTH_ENABLED && !(await isAuthenticated(req, authConfig))) {
+      // If it's an API request, return 401 JSON
+      if (reqUrl.pathname.startsWith('/api/') || reqUrl.pathname === "/sse" || reqUrl.pathname === "/messages") {
         res.writeHead(401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "Authentication required" }));
       }
       // For page requests, show login page
       res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
       return res.end(renderLoginPage());
+    }
+
+    // ─── AUDIT LOGGING (JWKS / AgentLair) ───
+    const authReq = req as PrismAuthenticatedRequest;
+    // Log successful agent access (identified via JWKS JWT)
+    if (authReq.agent_id && reqUrl.pathname !== "/api/scheduler") {
+      let auditLog = `[Dashboard] 🚦 Access: ${req.method} ${reqUrl.pathname} by agent ${authReq.agent_id}`;
+      if (authReq.al_name) auditLog += ` (${authReq.al_name})`;
+      if (authReq.al_audit_url) auditLog += ` - Audit: ${authReq.al_audit_url}`;
+      console.error(auditLog);
     }
 
     try {

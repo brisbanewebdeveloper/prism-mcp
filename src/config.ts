@@ -339,8 +339,8 @@ if (GOOGLE_SEARCH_CREDENTIALS.length === 0) {
 // Used by brave_local_search and brave_local_search_code_mode only.
 
 export const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
-if (!BRAVE_API_KEY) {
-  console.error("Warning: BRAVE_API_KEY environment variable is missing. Brave local search tools will be unavailable.");
+if (!BRAVE_API_KEY && process.env.PRISM_DEBUG_LOGGING === "true") {
+  console.error("Warning: BRAVE_API_KEY environment variable is missing. Search tools will return errors when called.");
 }
 
 // ─── Optional: Google Gemini API Key ──────────────────────────
@@ -348,7 +348,7 @@ if (!BRAVE_API_KEY) {
 // Without this, the tool will still appear but will error when called.
 
 export const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-if (!GOOGLE_API_KEY) {
+if (!GOOGLE_API_KEY && process.env.PRISM_DEBUG_LOGGING === "true") {
   console.error("Warning: GOOGLE_API_KEY environment variable is missing. Gemini research features will be unavailable.");
 }
 
@@ -359,10 +359,8 @@ if (!GOOGLE_API_KEY) {
 export const BRAVE_ANSWERS_API_KEY =
   normalizeEnvValue(process.env.BRAVE_ANSWERS_API_KEY) ??
   normalizeEnvValue(process.env.PRISM_BRAVE_ANSWERS_API_KEY);
-if (!BRAVE_ANSWERS_API_KEY) {
-  console.error(
-    "Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Set BRAVE_ANSWERS_API_KEY or PRISM_BRAVE_ANSWERS_API_KEY to enable Brave Answers."
-  );
+if (!BRAVE_ANSWERS_API_KEY && process.env.PRISM_DEBUG_LOGGING === "true") {
+  console.error("Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Brave Answers tool will be unavailable.");
 }
 
 // ─── Optional: Voyage AI API Key ──────────────────────────────

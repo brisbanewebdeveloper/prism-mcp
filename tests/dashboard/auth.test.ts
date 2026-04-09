@@ -26,14 +26,17 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, afterEach } from "vitest";
 import * as http from "http";
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import {
   safeCompare,
   generateToken,
   isAuthenticated,
   createRateLimiter,
+  _resetJWKS,
   type AuthConfig,
+  type PrismAuthenticatedRequest,
 } from "../../src/dashboard/authUtils.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -124,121 +127,121 @@ describe("generateToken", () => {
 });
 
 describe("isAuthenticated", () => {
-  it("returns true when auth is disabled (pass-through)", () => {
+  it("returns true when auth is disabled (pass-through)", async () => {
     const config = makeConfig({ authEnabled: false });
     const req = mockRequest({});
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
   });
 
-  it("returns false when auth is enabled and no credentials provided", () => {
+  it("returns false when auth is enabled and no credentials provided", async () => {
     const config = makeConfig();
     const req = mockRequest({});
-    expect(isAuthenticated(req, config)).toBe(false);
+    expect(await isAuthenticated(req, config)).toBe(false);
   });
 
   // ─── Cookie-based auth ───
 
-  it("authenticates with a valid session cookie", () => {
+  it("authenticates with a valid session cookie", async () => {
     const config = makeConfig();
     const token = "a".repeat(64);
     config.activeSessions.set(token, Date.now() + 86400_000);
     const req = mockRequest({ cookie: `prism_session=${token}` });
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
   });
 
-  it("rejects an expired session cookie and cleans it up (lazy cleanup)", () => {
+  it("rejects an expired session cookie and cleans it up (lazy cleanup)", async () => {
     const config = makeConfig();
     const token = "b".repeat(64);
     config.activeSessions.set(token, Date.now() - 1000); // Expired 1s ago
     const req = mockRequest({ cookie: `prism_session=${token}` });
-    expect(isAuthenticated(req, config)).toBe(false);
+    expect(await isAuthenticated(req, config)).toBe(false);
     // Verify lazy cleanup removed the expired token
     expect(config.activeSessions.has(token)).toBe(false);
   });
 
-  it("rejects an unknown session cookie", () => {
+  it("rejects an unknown session cookie", async () => {
     const config = makeConfig();
     const token = "c".repeat(64);
     const req = mockRequest({ cookie: `prism_session=${token}` });
-    expect(isAuthenticated(req, config)).toBe(false);
+    expect(await isAuthenticated(req, config)).toBe(false);
   });
 
-  it("handles malformed cookie strings gracefully", () => {
+  it("handles malformed cookie strings gracefully", async () => {
     const config = makeConfig();
     // Weird cookie formats that should not crash
-    expect(isAuthenticated(mockRequest({ cookie: "" }), config)).toBe(false);
-    expect(isAuthenticated(mockRequest({ cookie: ";;=;" }), config)).toBe(false);
-    expect(isAuthenticated(mockRequest({ cookie: "prism_session=" }), config)).toBe(false);
-    expect(isAuthenticated(mockRequest({ cookie: "prism_session=tooshort" }), config)).toBe(false);
-    expect(isAuthenticated(mockRequest({ cookie: "prism_session=ZZZZ" + "0".repeat(60) }), config)).toBe(false); // uppercase Z not in [a-f0-9]
-    expect(isAuthenticated(mockRequest({ cookie: "other_cookie=value; prism_session=short" }), config)).toBe(false);
+    expect(await isAuthenticated(mockRequest({ cookie: "" }), config)).toBe(false);
+    expect(await isAuthenticated(mockRequest({ cookie: ";;=;" }), config)).toBe(false);
+    expect(await isAuthenticated(mockRequest({ cookie: "prism_session=" }), config)).toBe(false);
+    expect(await isAuthenticated(mockRequest({ cookie: "prism_session=tooshort" }), config)).toBe(false);
+    expect(await isAuthenticated(mockRequest({ cookie: "prism_session=ZZZZ" + "0".repeat(60) }), config)).toBe(false); // uppercase Z not in [a-f0-9]
+    expect(await isAuthenticated(mockRequest({ cookie: "other_cookie=value; prism_session=short" }), config)).toBe(false);
   });
 
-  it("extracts cookie correctly when mixed with other cookies", () => {
+  it("extracts cookie correctly when mixed with other cookies", async () => {
     const config = makeConfig();
     const token = "d".repeat(64);
     config.activeSessions.set(token, Date.now() + 86400_000);
     const req = mockRequest({
       cookie: `other=abc; prism_session=${token}; another=xyz`,
     });
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
   });
 
   // ─── Basic Auth ───
 
-  it("authenticates with valid Basic Auth credentials", () => {
+  it("authenticates with valid Basic Auth credentials", async () => {
     const config = makeConfig();
     const req = mockRequest({ authorization: basicAuth("admin", "s3cret") });
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
   });
 
-  it("rejects invalid Basic Auth credentials", () => {
+  it("rejects invalid Basic Auth credentials", async () => {
     const config = makeConfig();
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: basicAuth("admin", "wrong") }),
       config,
     )).toBe(false);
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: basicAuth("wrong", "s3cret") }),
       config,
     )).toBe(false);
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: basicAuth("", "") }),
       config,
     )).toBe(false);
   });
 
-  it("handles passwords containing colons", () => {
+  it("handles passwords containing colons", async () => {
     const config = makeConfig({ authPass: "pass:with:colons" });
     const req = mockRequest({ authorization: basicAuth("admin", "pass:with:colons") });
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
   });
 
-  it("rejects malformed Basic Auth headers", () => {
+  it("rejects malformed Basic Auth headers", async () => {
     const config = makeConfig();
     // No "Basic " prefix
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: "Bearer token123" }),
       config,
     )).toBe(false);
     // Invalid base64
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: "Basic !!invalid!!" }),
       config,
     )).toBe(false);
     // Empty auth header
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: "" }),
       config,
     )).toBe(false);
     // Base64 with no colon separator
-    expect(isAuthenticated(
+    expect(await isAuthenticated(
       mockRequest({ authorization: "Basic " + Buffer.from("nocolon").toString("base64") }),
       config,
     )).toBe(false);
   });
 
-  it("prefers cookie over Basic Auth when both present", () => {
+  it("prefers cookie over Basic Auth when both present", async () => {
     const config = makeConfig();
     const token = "e".repeat(64);
     config.activeSessions.set(token, Date.now() + 86400_000);
@@ -247,7 +250,149 @@ describe("isAuthenticated", () => {
       cookie: `prism_session=${token}`,
       authorization: basicAuth("wrong", "wrong"),
     });
-    expect(isAuthenticated(req, config)).toBe(true);
+    expect(await isAuthenticated(req, config)).toBe(true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// PART 1B: UNIT TESTS — Bearer JWT / JWKS Authentication
+// ═════════════════════════════════════════════════════════════════
+
+describe("Bearer JWT / JWKS authentication", () => {
+  let keyPair: Awaited<ReturnType<typeof generateKeyPair>>;
+  let mockJWKS: ReturnType<typeof createMockJWKS>;
+
+  /**
+   * Creates a local JWKS verifier from a key pair — mirrors
+   * the signature of `createRemoteJWKSet` so it can be injected
+   * into the module-level jwksCache via `_resetJWKS()`.
+   */
+  function createMockJWKS(publicKey: CryptoKey) {
+    // jose’s jwtVerify accepts any KeyLike | GetKeyFunction.
+    // For unit tests we return the raw public key directly.
+    return (() => publicKey) as unknown as ReturnType<typeof import("jose").createRemoteJWKSet>;
+  }
+
+  /** Helper: sign a JWT with the test key pair */
+  async function signTestJWT(claims: Record<string, unknown> = {}, opts: {
+    expiresIn?: string;
+    audience?: string;
+    issuer?: string;
+    subject?: string;
+  } = {}) {
+    let builder = new SignJWT(claims)
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuedAt();
+    if (opts.expiresIn) builder = builder.setExpirationTime(opts.expiresIn);
+    if (opts.audience) builder = builder.setAudience(opts.audience);
+    if (opts.issuer) builder = builder.setIssuer(opts.issuer);
+    if (opts.subject) builder = builder.setSubject(opts.subject);
+    return builder.sign(keyPair.privateKey);
+  }
+
+  beforeEach(async () => {
+    keyPair = await generateKeyPair("RS256");
+    mockJWKS = createMockJWKS(keyPair.publicKey);
+    _resetJWKS(mockJWKS);
+  });
+
+  afterEach(() => {
+    _resetJWKS(null);
+  });
+
+  it("accepts a valid Bearer JWT", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", subject: "agent-42" });
+    const config = makeConfig();
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(true);
+  });
+
+  it("extracts agent_id from payload.sub", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", subject: "agent-007" });
+    const config = makeConfig();
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    await isAuthenticated(req, config);
+    expect((req as PrismAuthenticatedRequest).agent_id).toBe("agent-007");
+  });
+
+  it("extracts agent_id from payload.agent_id over sub", async () => {
+    const jwt = await signTestJWT(
+      { agent_id: "custom-agent" },
+      { expiresIn: "1h", subject: "fallback-sub" },
+    );
+    const config = makeConfig();
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    await isAuthenticated(req, config);
+    expect((req as PrismAuthenticatedRequest).agent_id).toBe("custom-agent");
+  });
+
+  it("rejects an expired JWT", async () => {
+    // Create a JWT that expired 1 hour ago
+    const jwt = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuedAt(Math.floor(Date.now() / 1000) - 7200)
+      .setExpirationTime(Math.floor(Date.now() / 1000) - 3600)
+      .sign(keyPair.privateKey);
+    const config = makeConfig();
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(false);
+  });
+
+  it("rejects JWT with wrong audience when audience is configured", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", audience: "other-service" });
+    const config = makeConfig({ jwtAudience: "prism-dashboard" });
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(false);
+  });
+
+  it("accepts JWT with correct audience when audience is configured", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", audience: "prism-dashboard" });
+    const config = makeConfig({ jwtAudience: "prism-dashboard" });
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(true);
+  });
+
+  it("rejects JWT with wrong issuer when issuer is configured", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", issuer: "evil-issuer" });
+    const config = makeConfig({ jwtIssuer: "https://auth.example.com" });
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(false);
+  });
+
+  it("accepts JWT with correct issuer when issuer is configured", async () => {
+    const jwt = await signTestJWT({}, { expiresIn: "1h", issuer: "https://auth.example.com" });
+    const config = makeConfig({ jwtIssuer: "https://auth.example.com" });
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    expect(await isAuthenticated(req, config)).toBe(true);
+  });
+
+  it("rejects Bearer token when JWKS cache is null (not configured)", async () => {
+    _resetJWKS(null); // No JWKS configured
+    const jwt = await signTestJWT({}, { expiresIn: "1h" });
+    const config = makeConfig();
+    const req = mockRequest({ authorization: `Bearer ${jwt}` });
+    // Should fall through to cookie/basic which also fail
+    expect(await isAuthenticated(req, config)).toBe(false);
+  });
+
+  it("falls through to cookie auth when JWKS is not configured", async () => {
+    _resetJWKS(null); // No JWKS configured
+    const jwt = await signTestJWT({}, { expiresIn: "1h" });
+    const config = makeConfig();
+    const token = "f".repeat(64);
+    config.activeSessions.set(token, Date.now() + 86400_000);
+    // Bearer token present but JWKS null → should fall through to cookie
+    const req = mockRequest({
+      authorization: `Bearer ${jwt}`,
+      cookie: `prism_session=${token}`,
+    });
+    expect(await isAuthenticated(req, config)).toBe(true);
+  });
+
+  it("rejects completely invalid Bearer token string", async () => {
+    const config = makeConfig();
+    const req = mockRequest({ authorization: "Bearer not.a.jwt" });
+    expect(await isAuthenticated(req, config)).toBe(false);
   });
 });
 
@@ -397,7 +542,7 @@ function createAuthTestServer(opts: {
     }
 
     // Auth gate
-    if (AUTH_ENABLED && !isAuthenticated(req, authConfig)) {
+    if (AUTH_ENABLED && !(await isAuthenticated(req, authConfig))) {
       if (reqUrl.pathname.startsWith("/api/")) {
         res.writeHead(401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "Authentication required" }));

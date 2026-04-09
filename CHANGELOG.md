@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [9.1.1] - 2026-04-08 — Dashboard-First Credential Resolution
+
+### Fixed
+- **Dashboard Credentials Take Precedence** — `storage/index.ts` now reads `SUPABASE_URL` and `SUPABASE_KEY` from the dashboard config DB (`prism-config.db`) when environment variables are absent. Previously, starting the server without explicit env vars caused a hard fallback to local SQLite even when valid credentials were stored in the dashboard.
+- **SyncBus Dashboard Fallback** — `sync/factory.ts` now checks dashboard config as a fallback for Supabase credentials, matching the storage layer behavior.
+- **Supabase API Call-Time Credentials** — `utils/supabaseApi.ts` now reads `SUPABASE_URL`/`SUPABASE_KEY` from `process.env` at each request instead of capturing frozen values at module-import time. Dashboard-injected credentials are now visible to all downstream consumers.
+- **Noisy Startup Warnings Silenced** — API key warnings (`BRAVE_API_KEY`, `GOOGLE_API_KEY`, `BRAVE_ANSWERS_API_KEY`) downgraded from `console.error` to debug-level logging. These fired on every server restart and were harmless (features degrade gracefully).
+
+### Engineering
+- TypeScript: clean, zero errors
+- 4 files changed: `src/config.ts`, `src/storage/index.ts`, `src/sync/factory.ts`, `src/utils/supabaseApi.ts`
+
+---
+
+## [9.1.0] - 2026-04-08 — Task Router v2 & Local Agent Hardening
+
+### Added
+- **File-Type Complexity Signal** — New `fileTypeSignal` heuristic in the task router analyzes file extensions to bias routing decisions. Config/docs files (`.md`, `.json`, `.yml`, `.yaml`, `.toml`, `.cfg`, `.txt`, `.csv`, `.env`, `.ini`) bias toward local delegation; systems-programming files (`.cpp`, `.cc`, `.cxx`, `.c`, `.h`, `.hpp`, `.rs`, `.go`, `.java`, `.swift`, `.zig`) bias toward host. Common scripting/web langs (`.ts`, `.js`, `.py`) are intentionally neutral.
+- **Claw Agent Streaming Buffer** — Local agent (`claw_agent_lite.py`) now uses a buffered stream parser to correctly handle `<think>` / `</think>` reasoning tags split across network chunks. Previously, partial tags would leak raw DeepSeek-R1 reasoning into stdout.
+- **Claw Agent System Prompts** — Coding mode (`--code`) now injects a concise-output system prompt to prevent verbose explanations from the local model.
+- **Claw Agent Memory Trimming** — REPL sessions now trim conversation history to the last 20 turns (preserving system prompt) to prevent unbounded memory growth during long sessions.
+- **`--timeout` CLI Flag** — Configurable timeout for the local agent (default: 300s, up from 180s) to accommodate complex reasoning tasks on `deepseek-r1:32b`.
+
+### Fixed
+- **Multi-Step False Positives** — Removed bare `"1."`, `"2."`, `"3."` from `MULTI_STEP_MARKERS` — these matched version numbers (v1.2.3), decimal values, and IP addresses, inflating the multi-step detection signal and biasing tasks away from local delegation.
+- **File-Type Double Counting** — Changed file classification from dual `if` to `if/else if`, preventing files from being counted as both simple and complex.
+- **Claw Agent Error Output** — All error messages now go to `stderr` instead of `stdout`, keeping programmatic output clean for downstream tool consumption.
+- **Claw Agent Unused Import** — Removed unused `import os`.
+
+### Changed
+- **Router Weight Distribution** — Updated from 5-signal to 6-signal routing: Keyword (0.35), File Count (0.15), File Type (0.10), Scope (0.20), Length (0.10), Multi-Step (0.10). Previous weights overallocated to file count (0.20) and scope (0.25).
+- **Header Documentation** — Updated router header from v7.1.0/Qwen3 to v9.1.0/deepseek-r1+qwen2.5-coder, reflecting actual model names and weight table.
+- **Claw Agent Ollama API** — Migrated from stateless `/api/generate` to stateful `/api/chat` for proper multi-turn conversation support.
+
+### Engineering
+- 1023 tests across 46 suites, all passing, zero regressions
+- TypeScript: clean, zero errors
+- 2 files changed: `src/tools/taskRouterHandler.ts`, `claw_agent_lite.py`
+
+---
+
+## [9.0.5] - 2026-04-07 — JWKS Auth Security Hardening
+
+### Security
+- **JWT Audience & Issuer Validation** — `jwtVerify()` now accepts `PRISM_JWT_AUDIENCE` and `PRISM_JWT_ISSUER` environment variables to validate `aud` and `iss` claims. Prevents cross-service token confusion attacks where a valid JWT from an unrelated service could authenticate against the dashboard.
+- **Clock Tolerance** — Added 30-second clock skew tolerance to JWT verification, preventing false rejections from minor time drift between servers.
+- **JWT Failure Logging** — Verification failures now emit structured error codes (`ERR_JWT_EXPIRED`, `ERR_JWT_CLAIM_VALIDATION_FAILED`, `ERR_JWS_INVALID`) to stderr. Previously silenced — essential for debugging in multi-agent deployments.
+- **Server Card Fix** — `authentication.required` in the Smithery manifest (`/.well-known/mcp/server-card.json`) now reflects actual auth state instead of hardcoded `false`.
+
+### Added
+- **`PrismAuthenticatedRequest` Interface** — Typed `req.agent_id` mutation replaces `(req as any)`. Downstream handlers can now safely read agent identity for audit logging.
+- **11 JWKS Unit Tests** — Full coverage for the Bearer JWT path using `jose`'s `generateKeyPair` + `SignJWT` (zero network, local key pairs):
+  - Valid JWT accepted
+  - Expired JWT rejected
+  - Wrong audience rejected / correct audience accepted
+  - Wrong issuer rejected / correct issuer accepted
+  - JWKS cache null → fallthrough to cookie/basic
+  - Invalid Bearer token string rejected
+  - `agent_id` extracted from `payload.agent_id` (priority) and `payload.sub` (fallback)
+- **JWKS Testing Hooks** — `_resetJWKS()` and `_getJWKSCache()` exports for test injection.
+- **`.env.example` Documentation** — Added `PRISM_JWKS_URI`, `PRISM_JWT_AUDIENCE`, `PRISM_JWT_ISSUER` with usage examples.
+
+### Changed
+- **Startup Logging** — Distinguishes JWKS vs Basic Auth modes separately. Warns when no `PRISM_JWT_AUDIENCE` is configured (any valid JWT from the JWKS endpoint will be accepted).
+- **JSDoc** — Updated `isAuthenticated` documentation to reflect the full 4-step auth priority chain: Auth disabled → Bearer JWT → Session cookie → Basic Auth.
+
 ## [7.8.2] - 2026-04-04
 
 ### Fixed

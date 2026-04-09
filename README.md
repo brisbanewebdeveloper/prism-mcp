@@ -20,6 +20,8 @@ npx -y prism-mcp-server
 
 Works with **Claude Desktop · Claude Code · Cursor · Windsurf · Cline · Gemini · Antigravity** — **any MCP client.**
 
+https://github.com/dcostenco/prism-mcp/raw/main/docs/prism_mcp_demo.mp4
+
 ## 📖 Table of Contents
 
 - [Why Prism?](#why-prism)
@@ -33,6 +35,7 @@ Works with **Claude Desktop · Claude Code · Cursor · Windsurf · Cline · Gem
 - [Use Cases](#use-cases)
 - [What's New](#whats-new)
 - [How Prism Compares](#how-prism-compares)
+- [CLI Reference](#-cli-reference)
 - [Tool Reference](#tool-reference)
 - [Environment Variables](#environment-variables)
 - [Architecture](#architecture)
@@ -258,12 +261,62 @@ When wrapping up, always call `mcp__prism-mcp__session_save_ledger` and `mcp__pr
 
 > **Format Note:** Claude automatically wraps MCP tools with double underscores (`mcp__prism-mcp__...`), while most other clients use single underscores (`mcp_prism-mcp_...`). Prism's backend natively handles both formats seamlessly.
 
+**CLI Alternative:** If MCP tools aren't available or you're scripting around Claude Code:
+
+```bash
+# Load context before a session
+prism load my-project --level deep
+
+# Machine-readable JSON for parsing in scripts
+prism load my-project --level deep --json
+```
+
 </details>
 
 <details id="antigravity-auto-load">
 <summary><strong>Gemini / Antigravity — Prompt Auto-Load</strong></summary>
 
 See the [Gemini Setup Guide](docs/SETUP_GEMINI.md) for the proven three-layer prompt architecture to ensure reliable session auto-loading.
+
+Antigravity doesn't expose MCP tools to the model. Use the `prism load` CLI as a fallback:
+
+```bash
+# From a shell or run_command tool
+prism load my-project --level standard --json
+
+# Or via the wrapper script
+bash ~/.gemini/antigravity/scratch/prism_session_loader.sh my-project
+```
+
+The CLI uses the same storage layer as the MCP tool (SQLite or Supabase).
+
+</details>
+
+<details>
+<summary><strong>Bash / CI/CD / Scripts</strong></summary>
+
+Use the `prism load` CLI to access session context from any shell environment:
+
+```bash
+# Quick check — human-readable
+prism load my-project
+
+# Parse JSON in scripts
+CONTEXT=$(prism load my-project --level quick --json)
+SUMMARY=$(echo "$CONTEXT" | jq -r '.handoff[0].last_summary')
+VERSION=$(echo "$CONTEXT" | jq -r '.handoff[0].version')
+echo "Project at v$VERSION: $SUMMARY"
+
+# Role-scoped loading
+prism load my-project --role qa --json
+
+# Use in CI/CD to verify context exists before deploying
+if ! prism load my-project --level quick --json | jq -e '.handoff[0].version' > /dev/null 2>&1; then
+  echo "No Prism context found — skipping context-aware deploy"
+fi
+```
+
+> 📦 **Install:** `npm install -g prism-mcp-server` makes the `prism` CLI available globally. For local builds: `node /path/to/prism/dist/cli.js load`.
 
 </details>
 
@@ -450,13 +503,13 @@ A gorgeous glassmorphism UI at `localhost:3000` that lets you see exactly what y
 
 
 ### 🧬 10× Memory Compression
-Powered by a pure TypeScript port of Google's TurboQuant (inspired by Google's ICLR research), Prism compresses 768-dim embeddings from **3,072 bytes → ~400 bytes** — enabling decades of session history on a standard laptop. No native modules. No vector database required.
+Powered by a pure TypeScript port of Google's TurboQuant (inspired by Google's ICLR research), Prism compresses 768-dim embeddings from **3,072 bytes → ~400 bytes** — enabling decades of session history on a standard laptop. No native modules. No vector database required. To mitigate quantization degradation (where repeated compress/decompress cycles could smear subtle corrections after 10k+ memories), Prism leverages autonomous **ledger compaction** and **Deep Storage cleanup** to guarantee high-fidelity memory integrity over time.
 
-### 🐝 Multi-Agent Hivemind
-Multiple agents (dev, QA, PM) can work on the same project with **role-isolated memory**. Agents discover each other automatically, share context in real-time via Telepathy sync, and see a team roster during context loading. → [Multi-agent setup example](examples/multi-agent-hivemind/)
+### 🐝 Multi-Agent Hivemind & Enterprise Sync
+While local SQLite is amazing for solo developers, enterprise teams cannot share a local SQLite file. Prism breaks the "local-only" ceiling via **Supabase Sync** and the **Multi-Agent Hivemind**—scaling effortlessly to teams of 50+ developers using agents. Multiple agents (dev, QA, PM) can work on the same project with **role-isolated memory**, discover each other automatically, and share context in real-time via Telepathy sync to a shared Postgres backend. → [Multi-agent setup example](examples/multi-agent-hivemind/)
 
 ### 🚦 Task Router
-Prism can score coding tasks and recommend whether to keep execution on the host model or delegate to a **local Claw agent** (a lightweight sub-agent powered by Ollama/vLLM for fast, local-safe edits). This enables faster handling of small edits while preserving host execution for complex work. In client startup/skill flows, use defensive delegation: route only coding tasks, call `session_task_route` only when available, delegate to `claw` only when executor tooling exists and task is non-destructive, and fallback to host when router/executor is unavailable. → [Task router real-life example](examples/router_real_life_test.ts)
+Prism scores coding tasks across **6 weighted heuristic signals** (keyword analysis, file count, file-type complexity, scope, length, multi-step detection) and recommends whether to keep execution on the host cloud model or delegate to a **local Claw agent** (powered by deepseek-r1 / qwen2.5-coder via Ollama). File-type awareness routes config/docs edits locally while reserving systems-programming tasks for the host. The local agent features buffered streaming (handles split `<think>` tags), stateful multi-turn conversations, and automatic memory trimming. In client startup/skill flows, use defensive delegation: route only coding tasks, call `session_task_route` only when available, delegate to `claw` only when executor tooling exists and task is non-destructive, and fallback to host when router/executor is unavailable. → [Task router real-life example](examples/router_real_life_test.ts)
 
 ### 🖼️ Visual Memory
 Save UI screenshots, architecture diagrams, and bug states to a searchable vault. Images are auto-captioned by a VLM (Claude Vision / GPT-4V / Gemini) and become semantically searchable across sessions.
@@ -469,6 +522,40 @@ Prism researches while you sleep. A background pipeline searches the web, scrape
 
 ### 🏭 Dark Factory — Adversarial Autonomous Pipelines
 When you trigger a Dark Factory pipeline, Prism doesn't just run your task — it fights itself to produce high-quality output. A `PLAN_CONTRACT` step locks a machine-parseable rubric before any code is written. After execution, an **Adversarial Evaluator** (in a fully isolated context) scores the output against the rubric. It cannot pass the Generator without providing exact file and line evidence for every failing criterion. Failed evaluations inject the critique directly into the Generator's retry prompt so it's never flying blind. The result: security issues, regressions, and lazy debug logs caught autonomously — before you ever see the PR. → [See it in action](examples/adversarial-eval-demo/README.md)
+
+---
+
+## 🤖 Autonomous Cognitive OS (v9.0)
+
+> *Memory isn't just about storing data; it's about economics and emotion. Prism v9.0 transforms passive memory into a living Cognitive Operating System that forces agents to learn compression and develop intuition.*
+
+Most AI agents have an infinite memory budget. They dump massive, repetitive logs into vector databases until they bankrupt your API budget and choke their own context windows. Prism v9.0 fixes this by introducing **Token-Economic Reinforcement Learning** and **Affect-Tagged Memory**.
+
+### 💰 Memory-as-an-Economy (The Surprisal Gate)
+Prism assigns every project a strict **Cognitive Budget** (e.g., 2,000 tokens) that persists across sessions. Every time the agent saves a memory, it costs tokens. 
+
+But not all memories are priced equally. Prism intercepts the save and runs a **Vector-Based Surprisal** calculation against recent memories:
+*   **High Surprisal (Novel thought):** Costs 0.5× tokens. The agent is rewarded for new insights.
+*   **Low Surprisal (Boilerplate):** Costs 2.0× tokens. The agent is penalized for repeating itself.
+*   **Universal Basic Income (UBI):** The budget recovers passively over time (+100 tokens/hour). 
+
+If an agent is too verbose, it goes into **Cognitive Debt**. You don't need to prompt the agent to "be concise." The physics of the system force the LLM to learn data compression to avoid bankruptcy.
+
+### 🎭 Affect-Tagged Memory (Giving AI a "Gut Feeling")
+Vector math measures *semantic similarity*, not *sentiment*. If an agent searches for "Authentication Architecture," standard RAG will return two past approaches—it doesn't know that Approach A caused a 3-day production outage, while Approach B worked perfectly.
+
+*   **Affective Salience:** Prism automatically tags experience events with a `valence` score (-1.0 for failure, +1.0 for success).
+*   **Emotional Retrieval:** At retrieval time, the absolute magnitude (`|valence|`) significantly boosts the memory's ranking score. Extreme failures and extreme successes surface to the top.
+*   **UX Warnings:** If an agent retrieves memories that are historically negative, Prism intercepts the prompt injection: `⚠️ Caution: This topic is strongly correlated with historical failures. Review past decisions before proceeding.` Your AI now has a "gut feeling" about bad code.
+
+### The Paradigm Shift
+
+| Feature | Standard RAG / Agents | Prism v9.0 |
+| :--- | :--- | :--- |
+| **Storage Limit** | Infinite (bloats context) | Bounded Token Economy |
+| **Data Quality** | Saves repetitive boilerplate | Surprisal Gate penalizes redundancy |
+| **Sentiment** | Treats all data as neutral facts | Affect-Tagged (Warns agent of past trauma) |
+| **Recovery** | Manual deletion | Universal Basic Income (UBI) over time |
 
 ---
 
@@ -704,13 +791,13 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 
 ## 🆕 What's New
 
-> **Current release: v7.8.2 — Cognitive Architecture**
+> **Current release: v9.1.0 — Task Router v2 & Local Agent Hardening**
 
-- 🧠 **v7.8.0 — Cognitive Architecture:** The biggest leap forward yet. Moved beyond flat vector search into a true cognitive architecture inspired by human brain mechanics. Episodic-to-Semantic memory consolidation (Hebbian learning), ACT-R Spreading Activation with multi-hop causal reasoning, Uncertainty-Aware Rejection Gate (your agent can say "I don't know"), and Dynamic Fast Weight Decay (semantic memories outlive episodic chatter by 2×). **Your agents don't just remember; they learn.** → [Cognitive Architecture](#-cognitive-architecture-v78)
-- 🌐 **v7.7.0 — Cloud-Native SSE Transport:** Full unauthenticated and authenticated Server-Sent Events MCP support for seamless network deployments.
-- 🩺 **v7.5.0 — Intent Health Dashboard + Security Hardening:** Real-time 0–100 project health scoring (staleness × TODO load × decisions). 10 XSS injection vectors patched. Algorithm hardened with NaN guards and score ceiling.
-- ⚔️ **v7.4.0 — Adversarial Evaluation:** Split-brain anti-sycophancy pipeline. Generator and evaluator in isolated roles with evidence-bound findings.
-- 🏭 **v7.3.x — Dark Factory + Stability:** Fail-closed 3-gate execution pipeline. Dashboard stability and verification diagnostics.
+- 🚦 **v9.1.0 — Task Router v2:** File-type complexity signal for intelligent code-vs-config routing, 6-signal weighted heuristic engine, multi-step false-positive fix, expanded file extension classification. Local agent hardened with buffered streaming, system prompts, memory trimming, and stateful `/api/chat` API.
+- 🔒 **v9.0.5 — JWKS Auth Security Hardening:** JWT audience/issuer claim validation (`PRISM_JWT_AUDIENCE`, `PRISM_JWT_ISSUER`), structured error logging for JWT failures, typed `PrismAuthenticatedRequest` interface, 11 new JWKS unit tests, Smithery server card fix. Vendor-neutral — tested with Auth0, AgentLair ([llms.txt](https://agentlair.com/llms.txt)), Keycloak, and custom JWKS endpoints.
+- 🧠 **v9.0.0 — Autonomous Cognitive OS:** Token-Economic Reinforcement Learning (Surprisal Gate + Cognitive Budget), Affect-Tagged Memory (valence-scored retrieval), and Episodic→Semantic Consolidation. Your agents learn compression and develop intuition. → [Cognitive OS](#-autonomous-cognitive-os-v90)
+- 🧠 **v7.8.0 — Cognitive Architecture:** Episodic-to-Semantic memory consolidation (Hebbian learning), ACT-R Spreading Activation with multi-hop causal reasoning, Uncertainty-Aware Rejection Gate, and Dynamic Fast Weight Decay. → [Cognitive Architecture](#-cognitive-architecture-v78)
+- 🌐 **v7.7.0 — Cloud-Native SSE Transport:** Full Server-Sent Events MCP support for seamless network deployments.
 
 👉 **[Full release history → CHANGELOG.md](CHANGELOG.md)** · **[ROADMAP →](ROADMAP.md)**
 
@@ -765,6 +852,29 @@ Every other AI coding pipeline has a fatal flaw: it asks the same model that wro
 > 💰 **Token Economics:** Progressive Context Loading (Quick ~50 tokens / Standard ~200 / Deep ~1000+) plus auto-compaction means you never blow your Claude/OpenAI token budget fetching 50 pages of raw chat history.
 >
 > 🔌 **BYOM (Bring Your Own Model):** While tools like Mem0 charge per API call, Prism's pluggable architecture lets you run `nomic-embed-text` locally via Ollama for **free vectors**, while using Claude or GPT for high-level reasoning. Zero vendor lock-in.
+
+---
+
+## 💻 CLI Reference
+
+Prism includes a CLI for environments where MCP tools aren't available (CI/CD pipelines, Bash scripts, non-MCP IDEs like Antigravity):
+
+```bash
+# Load session context (same output as session_load_context MCP tool)
+prism load my-project                          # Human-readable, standard depth
+prism load my-project --level deep             # Full context
+prism load my-project --level quick --json     # Machine-readable JSON
+prism load my-project --role dev --json        # Role-scoped loading
+
+# Verification harness
+prism verify status                            # Check verification state
+prism verify status --json                     # Machine-readable output
+prism verify generate                          # Bless current rubric as canonical
+```
+
+> 💡 **When to use the CLI vs MCP tools:** If your environment supports MCP (Claude Desktop, Cursor, Windsurf, Cline), always use the MCP tools — they integrate seamlessly with the agent's tool-calling flow. Use the CLI when you need session context in scripts, CI/CD, or non-MCP IDEs.
+
+> 📦 **Installation:** The CLI is available as `prism` when installed globally (`npm install -g prism-mcp-server`), or via `node dist/cli.js` for local dev builds.
 
 ---
 
@@ -963,6 +1073,9 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 | `PRISM_ACTR_WEIGHT_ACTIVATION` | No | Composite score ACT-R activation weight (default: `0.3`) |
 | `PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS` | No | Days before access logs are pruned by background scheduler (default: `90`) |
 | `PRISM_DARK_FACTORY_ENABLED` | No | `"true"` to enable Dark Factory autonomous pipeline tools (`session_start_pipeline`, `session_check_pipeline_status`, `session_abort_pipeline`) |
+| `PRISM_JWKS_URI` | No | JWKS endpoint URL for vendor-neutral JWT auth (e.g., `https://your-tenant.auth0.com/.well-known/jwks.json`) |
+| `PRISM_JWT_AUDIENCE` | No | Expected JWT `aud` claim — prevents cross-service token confusion |
+| `PRISM_JWT_ISSUER` | No | Expected JWT `iss` claim — validates token origin |
 
 Indexed credential pairs are also supported for direct runtime env injection: `GOOGLE_SEARCH_API_KEY_1` + `GOOGLE_SEARCH_CX_1`, `GOOGLE_SEARCH_API_KEY_2` + `GOOGLE_SEARCH_CX_2`, and so on.
 
@@ -1098,12 +1211,39 @@ Prism has evolved from smart session logging into a **cognitive memory architect
 
 ---
 
+## 💼 B2B Consulting & Enterprise Support
+
+Prism MCP is open-source and free for individual developers. For teams and enterprises building autonomous AI workflows or integrating MCP-native memory at scale, we offer professional consulting and setup packages.
+
+### 🥉 Team Pilot Package
+*Perfect for engineering teams adopting MCP tools and collaborative agents.*
+* **What's included:** Full team rollout, managed Supabase configuration (for multi-device sync), Universal Import of legacy chat history, and dedicated setup support.
+* **Model:** Fixed-price engagement.
+
+### 🥈 Cognitive Architecture Tuning
+*For teams building advanced AI agents or autonomous pipelines.*
+* **What's included:** "Dark Factory" pipeline implementation tailored to your workflows, adversarial evaluator tuning, custom HDC cognitive route configuration, and local open-weight model integration (BYOM).
+* **Model:** Retainer or project-based.
+
+### 🥇 Enterprise Integration
+*Full-scale deployment for high-compliance environments.*
+* **What's included:** Active Directory / custom JWKS auth integration, Air-gapped on-premise deployment, custom OTel Grafana dashboards for cognitive observability, and custom skills/tools development.
+* **Model:** Custom enterprise quote.
+
+**Interested in accelerating your team's autonomous workflows?**  
+[📧 Contact us for a consultation](mailto:inquiries@prism-mcp.com) — let's build your organization's cognitive memory engine.
+
+---
+
 ## 📦 Milestones & Roadmap
 
-> **Current: v7.8.2** — Cognitive Architecture ([CHANGELOG](CHANGELOG.md))
+> **Current: v9.1.0** — Task Router v2 & Local Agent Hardening ([CHANGELOG](CHANGELOG.md))
 
 | Release | Headline |
 |---------|----------|
+| **v9.1.0** | 🚦 Task Router v2 — file-type routing signal, 6-signal heuristics, local agent streaming buffer |
+| **v9.0.5** | 🔒 JWKS Auth Security Hardening — audience/issuer validation, JWT failure logging, typed agent identity |
+| **v9.0** | 🧠 Autonomous Cognitive OS — Surprisal Gate, Cognitive Budget, Affect-Tagged Memory |
 | **v7.8** | 🧠 Cognitive Architecture — Hebbian consolidation, multi-hop reasoning, rejection gate, dynamic decay |
 | **v7.7** | 🌐 Cloud-Native SSE Transport |
 | **v7.5** | 🩺 Intent Health Dashboard + Security Hardening |
@@ -1146,7 +1286,7 @@ A: Run `npm run build && npm test`, then open the Mind Palace dashboard (`localh
 - **MCP client race conditions.** Some MCP clients may not finish tool enumeration before the model generates its first response, causing transient `unknown_tool` errors. This is a client-side timing issue — Prism's server completes the MCP handshake in ~60ms. Workaround: the server-side auto-push fallback and the startup skill's retry logic.
 - **No real-time sync without Supabase.** Local SQLite mode is single-machine only. Multi-device or team sync requires a Supabase backend.
 - **Embedding quality varies by provider.** Gemini `text-embedding-004` and OpenAI `text-embedding-3-small` produce high-quality 768-dim vectors. Prism passes `dimensions: 768` via the Matryoshka API for OpenAI models (native output is 1536-dim; this truncation is lossless and outperforms ada-002 at full 1536 dims). Ollama embeddings (e.g., `nomic-embed-text`) are usable but may reduce retrieval accuracy.
-- **Dashboard is HTTP-only.** The Mind Palace dashboard at `localhost:3000` does not support HTTPS. For remote access, use a reverse proxy (nginx/Caddy) or SSH tunnel. Basic auth is available via `PRISM_DASHBOARD_USER` / `PRISM_DASHBOARD_PASS`.
+- **Dashboard is HTTP-only.** The Mind Palace dashboard at `localhost:3000` does not support HTTPS. For remote access, use a reverse proxy (nginx/Caddy) or SSH tunnel. Basic auth is available via `PRISM_DASHBOARD_USER` / `PRISM_DASHBOARD_PASS`. JWKS JWT auth is available via `PRISM_JWKS_URI` for agent-native authentication (works with Auth0, AgentLair ([llms.txt](https://agentlair.com/llms.txt)), Keycloak, Cognito, or any standard JWKS endpoint).
 - **Long-lived clients can accumulate zombie processes.** MCP clients that run for extended periods (e.g., Claude CLI) may leave orphaned Prism server processes. The lifecycle manager detects true orphans (PPID=1) but allows coexistence for active parent processes. Use `PRISM_INSTANCE` to isolate instances across clients.
 - **Migration is one-way.** Universal Import ingests sessions *into* Prism but does not export back to Claude/Gemini/OpenAI formats. Use `session_export_memory` for portable JSON/Markdown export, or the `vault` format for Obsidian/Logseq-compatible `.zip` archives.
 - **Export ceiling at 10,000 ledger entries.** The `session_export_memory` tool and the dashboard export button cap vault/JSON exports at 10,000 entries per project as an OOM guard. Projects exceeding this limit should use per-project exports and time-based filtering to stay within the ceiling. This limit does not affect search or context loading.

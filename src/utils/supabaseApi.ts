@@ -1,4 +1,7 @@
-import { SUPABASE_URL, SUPABASE_KEY, SUPABASE_API_PREFIX } from "../config.js";
+import { SUPABASE_API_PREFIX } from "../config.js";
+
+// SUPABASE_URL / SUPABASE_KEY are read at call-time from process.env
+// (not import-time) so dashboard-injected credentials are picked up.
 
 /**
  * Lightweight Supabase REST API client.
@@ -51,8 +54,8 @@ function applyApiPrefix(path: string): string {
   return `${normalizedPrefix}${suffix || ""}` || "/";
 }
 
-function buildSupabaseUrl(path: string): URL {
-  const normalizedBaseUrl = SUPABASE_URL!.endsWith("/") ? SUPABASE_URL! : `${SUPABASE_URL!}/`;
+function buildSupabaseUrl(baseUrl: string, path: string): URL {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   const normalizedPath = applyApiPrefix(path).replace(/^\//, "");
   return new URL(normalizedPath, normalizedBaseUrl);
 }
@@ -62,25 +65,28 @@ function buildSupabaseUrl(path: string): URL {
  * All public functions below delegate to this.
  */
 async function supabaseRequest(opts: SupabaseRequestOptions): Promise<unknown> {
-  // Guard: ensure Supabase is configured before making any request
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  // Read credentials at call time (not import time) so that dashboard-injected
+  // values in process.env are picked up after storage/index.ts resolves them.
+  const baseUrl = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  if (!baseUrl || !key) {
     throw new Error("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing)");
   }
 
   // Build the full URL with any query parameters
-  const url = buildSupabaseUrl(opts.path);
+  const reqUrl = buildSupabaseUrl(baseUrl, opts.path);
   if (opts.params) {
     for (const [k, v] of Object.entries(opts.params)) {
-      url.searchParams.set(k, v);
+      reqUrl.searchParams.set(k, v);
     }
   }
 
   // Make the HTTP request with authentication headers
-  const response = await fetch(url.toString(), {
+  const response = await fetch(reqUrl.toString(), {
     method: opts.method,
     headers: {
-      "apikey": SUPABASE_KEY,                    // Supabase API key (required for all requests)
-      "Authorization": `Bearer ${SUPABASE_KEY}`, // Also passed as Bearer token
+      "apikey": key,                    // Supabase API key (required for all requests)
+      "Authorization": `Bearer ${key}`, // Also passed as Bearer token
       "Content-Type": "application/json",
       // "Prefer" header controls response behavior:
       //   - "return=representation" means return the inserted/updated row in the response
