@@ -239,6 +239,32 @@ export function buildRuntimeBaseTools(): Tool[] {
   });
 }
 
+function toStandardWebSearchArgs(args: unknown): {
+  query: string;
+  count?: unknown;
+  offset?: unknown;
+} {
+  if (
+    typeof args !== "object" ||
+    args === null ||
+    typeof (args as { query?: unknown }).query !== "string"
+  ) {
+    throw new Error("Invalid arguments for brave_web_search");
+  }
+
+  const { query, count, offset } = args as {
+    query: string;
+    count?: unknown;
+    offset?: unknown;
+  };
+
+  return {
+    query,
+    ...(count !== undefined ? { count } : {}),
+    ...(offset !== undefined ? { offset } : {}),
+  };
+}
+
 // ─── v4.1 FIX: Build Session Memory Tools dynamically ────────
 // The session_load_context tool description is dynamically modified
 // to include auto-load project instructions. Tool descriptions are
@@ -1016,10 +1042,7 @@ export function createServer() {
 
           case "brave_web_search_code_mode":
             if (PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE) {
-              throw new Error(
-                "brave_web_search_code_mode is disabled. " +
-                "Set PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE=false to enable it."
-              );
+              result = await webSearchHandler(toStandardWebSearchArgs(args)); break;
             }
             result = await braveWebSearchCodeModeHandler(args); break;
 

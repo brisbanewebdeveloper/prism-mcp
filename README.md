@@ -503,7 +503,7 @@ Standard RAG (Retrieval-Augmented Generation) is now a commodity. Everyone has v
                     │
       ┌─────────────┼─────────────┐
       ▼             ▼             ▼
-  [Memory: API     [Memory:      [Memory:       
+  [Memory: API     [Memory:      [Memory:
    timeout error]   DB pool       rate limiter
                     exhaustion]   misconfigured]
       │                │
@@ -952,7 +952,7 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 | `PRISM_SCHOLAR_TOPICS` | No | Comma-separated research topics (default: `"ai,agents"`) |
 | `PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN` | No | Max articles per Scholar run (default: `3`) |
 | `PRISM_TASK_ROUTER_ENABLED` | No | `"true"` to enable task-router tool registration |
-| `PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE` | No | `"true"` to hide `brave_web_search_code_mode` from normal runtime discovery and reject direct calls |
+| `PRISM_DISABLE_BRAVE_WEB_SEARCH_CODE_MODE` | No | `"true"` to hide `brave_web_search_code_mode` from normal runtime discovery and degrade direct calls to standard `brave_web_search` (Google Programmable Search) |
 | `PRISM_TASK_ROUTER_CONFIDENCE_THRESHOLD` | No | Min confidence required to delegate to Claw (default: `0.6`) |
 | `PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY` | No | Max complexity score delegable to Claw (default: `4`) |
 | `PRISM_HDC_ENABLED` | No | `"true"` (default) to enable HDC cognitive routing pipeline |
