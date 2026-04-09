@@ -24,7 +24,7 @@ import { buildVaultDirectory } from "../utils/vaultExporter.js";
  */
 
 import { debugLog } from "../utils/logger.js";
-import { getStorage } from "../storage/index.js";
+import { getStorage, activeStorageBackend } from "../storage/index.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
@@ -685,6 +685,67 @@ export async function sessionLoadContextHandler(args: unknown) {
     ? `\n\n🔑 Session version: ${version}. Pass expected_version: ${version} when saving handoff.`
     : "";
 
+  // ─── v9.2.2: Split-Brain Drift Detection ───────────────────
+  // When using one storage backend (e.g. SQLite), check if an
+  // alternate backend (e.g. Supabase) exists with a different
+  // version. This prevents agents from unknowingly acting on
+  // stale state from a diverged backend.
+  //
+  // PERF NOTE: We do NOT construct a full StorageBackend for the
+  // alternate check — that would trigger full migrations/schema
+  // validation on every load (~200-1000ms). Instead we use
+  // lightweight direct queries: REST GET for Supabase, raw SQL
+  // for SQLite. This keeps the check under ~100ms.
+  let splitBrainWarning = "";
+  try {
+    const { SUPABASE_CONFIGURED, SUPABASE_URL, SUPABASE_KEY } = await import("../config.js");
+    if (activeStorageBackend === "local" && SUPABASE_CONFIGURED && SUPABASE_URL && SUPABASE_KEY) {
+      // Lightweight Supabase version check via REST (no full init/migrations)
+      const { supabaseGet } = await import("../utils/supabaseApi.js");
+      const rows = await supabaseGet("session_handoffs", {
+        project: `eq.${project}`,
+        select: "version",
+        limit: "1",
+      });
+      const altVersion = Array.isArray(rows) && rows[0] ? (rows[0] as any).version : null;
+      if (altVersion && altVersion !== version) {
+        splitBrainWarning = `\n\n⚠️ **SPLIT-BRAIN DETECTED** (v${version} local vs v${altVersion} cloud)\n` +
+          `Your local SQLite state (v${version}) differs from the Supabase cloud state (v${altVersion}). ` +
+          `This means another client (e.g. Claude Desktop) has saved state that this environment cannot see. ` +
+          `TODOs, summaries, and decisions may be stale. Please reconcile by running:\n` +
+          `  \`prism load ${project} --storage supabase\` to see the cloud state.`;
+        debugLog(`[session_load_context] SPLIT-BRAIN: local v${version} vs supabase v${altVersion}`);
+      }
+    } else if (activeStorageBackend === "supabase") {
+      // Lightweight SQLite version check via direct file query (no full init/migrations)
+      const dbPath = nodePath.join(os.homedir(), ".prism-mcp", "data.db");
+      if (fs.existsSync(dbPath)) {
+        let altClient: any = null;
+        try {
+          const { createClient } = await import("@libsql/client");
+          altClient = createClient({ url: `file:${dbPath}` });
+          const result = await altClient.execute(
+            `SELECT version FROM session_handoffs WHERE project = ? LIMIT 1`,
+            [project]
+          );
+          const altVersion = result.rows?.[0]?.version as number | undefined;
+          if (altVersion && altVersion !== version) {
+            splitBrainWarning = `\n\n⚠️ **SPLIT-BRAIN DETECTED** (v${version} cloud vs v${altVersion} local)\n` +
+              `Your Supabase cloud state (v${version}) differs from the local SQLite state (v${altVersion}). ` +
+              `This means another client has saved state that this environment cannot see. ` +
+              `TODOs, summaries, and decisions may be stale. Please reconcile by running:\n` +
+              `  \`prism load ${project} --storage local\` to see the local state.`;
+            debugLog(`[session_load_context] SPLIT-BRAIN: supabase v${version} vs local v${altVersion}`);
+          }
+        } finally {
+          if (altClient) altClient.close();
+        }
+      }
+    }
+  } catch (err) {
+    debugLog(`[session_load_context] Split-brain check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // ─── Reality Drift Detection (v2.0 Step 5) ───
   // Check if the developer changed code since the last handoff save.
   let driftReport = "";
@@ -903,7 +964,7 @@ export async function sessionLoadContextHandler(args: unknown) {
   }
 
   // Build the response object before v4.0 augmentations
-  let responseText = `📋 Session context for "${project}" (${level}):\n\n${formattedContext.trim()}${driftReport}${briefingBlock}${sdmRecallBlock}${greetingBlock}${visualMemoryBlock}${skillBlock}${versionNote}`;
+  let responseText = `📋 Session context for "${project}" (${level}):\n\n${formattedContext.trim()}${splitBrainWarning}${driftReport}${briefingBlock}${sdmRecallBlock}${greetingBlock}${visualMemoryBlock}${skillBlock}${versionNote}`;
 
   // ─── v4.0: Behavioral Warnings Injection ───────────────────
   // If loadContext returned behavioral_warnings, add them to the

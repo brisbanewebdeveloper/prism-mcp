@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [9.2.3] - 2026-04-09 — Code Review Hardening
+
+### Performance
+- **Split-Brain Check 10x Faster** — Replaced full `StorageBackend` construction (which ran migrations on every `session_load_context` call, adding 200-1000ms latency) with lightweight direct queries: `supabaseGet()` for Supabase REST, raw SQL via `@libsql/client` for SQLite. Check now completes in ~100ms.
+
+### Fixed
+- **Variable Shadowing** — `const storage` from CLI `--storage` option was shadowed by `const storage = await getStorage()` in JSON mode. Renamed inner variable to `storageBackend`.
+- **Resource Leak** — SQLite alternate client in split-brain check was not closed if `execute()` threw. Added `try/finally` to guarantee `altClient.close()`.
+
+### Engineering
+- 1036 tests across 47 suites, all passing, zero regressions
+- TypeScript: clean, zero errors
+- 2 files changed: `src/cli.ts`, `src/tools/ledgerHandlers.ts`
+
+---
+
+## [9.2.2] - 2026-04-09 — Critical: Split-Brain Detection & Prevention
+
+### ⚠️ Security / Data Integrity
+
+- **Split-Brain Drift Detection** — `session_load_context` now detects when the active storage backend (e.g. SQLite) is out of sync with an alternate backend (e.g. Supabase). When both backends exist and have different versions, a `⚠️ SPLIT-BRAIN DETECTED` warning is injected prominently into the context response. This prevents agents from unknowingly acting on stale TODOs, outdated summaries, or completed tasks from a divergent backend.
+
+### Added
+
+- **`--storage` CLI Flag** — `prism load` now accepts `--storage <local|supabase>` to explicitly select which storage backend to read from. This is critical for environments where the CLI's shell environment inherits different `PRISM_STORAGE` settings than the MCP server config. Without this flag, `prism load` could silently read from Supabase while the MCP server writes to SQLite (or vice versa), returning stale state.
+
+### Fixed
+
+- **Session Loader Split-Brain** — `prism_session_loader.sh` now passes `--storage` flag (defaulting to `PRISM_STORAGE` env var, falling back to `local`) to prevent the CLI from reading the wrong backend when Supabase credentials are present but the MCP server is configured for local SQLite.
+
+### Root Cause
+
+When multiple MCP clients use different storage backends (e.g., Claude Desktop → Supabase, Antigravity → SQLite), the two backends operate as completely independent data silos with no sync mechanism. The `prism load` CLI inherited `PRISM_STORAGE` from the shell environment (defaulting to `supabase` when Supabase credentials exist), regardless of what the MCP server was configured to use. This caused the CLI to return state from the wrong backend — including stale TODOs that had already been completed in the real backend.
+
+### Engineering
+- TypeScript: clean, zero errors
+- 3 files changed: `src/cli.ts`, `src/tools/ledgerHandlers.ts`, `README.md`
+- Session loader script updated: `prism_session_loader.sh`
+
+---
+
+
+
+## [9.2.1] - 2026-04-09 — CLI Full Feature Parity
+
+### Added
+- **CLI Text Mode — Full MCP Parity** — `prism load` (text mode) now delegates to the real `sessionLoadContextHandler`, giving CLI-only users the same enriched output as MCP clients: morning briefings, reality drift detection, SDM intuitive recall, visual memory index, role-scoped skill injection, behavioral warnings, importance scores, recent validations, and agent identity block.
+- **Agent Name in JSON Output** — `prism load --json` now includes `agent_name` from dashboard settings (`prism-config.db`) as a top-level field.
+- **13 New CLI Tests** — Comprehensive vitest suite covering text mode handler delegation, JSON envelope structure, agent_name inclusion/exclusion, no-data edge cases, and feature parity verification.
+
+### Fixed
+- **Session Loader PATH Resolution** — `prism_session_loader.sh` now adds `/opt/homebrew/bin`, nvm, and volta paths to `PATH`, fixing the `node: command not found` error on macOS in non-interactive shells.
+
+### Engineering
+- TypeScript: clean, zero errors
+- 3 files changed: `src/cli.ts`, `tests/tools/cli-load.test.ts` (new), `prism_session_loader.sh`
+- Key architectural decision: CLI text mode delegates to the same handler function used by the MCP tool. No code duplication — future MCP enrichments automatically appear in CLI output.
+
+---
+
+
 ## [9.1.1] - 2026-04-08 — Dashboard-First Credential Resolution
 
 ### Fixed

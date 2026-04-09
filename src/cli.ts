@@ -8,6 +8,7 @@ import { getStorage, closeStorage } from './storage/index.js';
 import { getSetting } from './storage/configStorage.js';
 import { PRISM_USER_ID, SERVER_CONFIG } from './config.js';
 import { getCurrentGitState } from './utils/git.js';
+import { sessionLoadContextHandler } from './tools/ledgerHandlers.js';
 
 const program = new Command();
 
@@ -21,16 +22,46 @@ program
 // session_load_context tool. Works with both SQLite and Supabase.
 // Designed for environments that cannot use MCP tools directly
 // (Antigravity, Bash scripts, CI/CD pipelines).
+//
+// CRITICAL: --storage flag (v9.2.2)
+// When multiple MCP clients use different storage backends (e.g.
+// Claude Desktop → Supabase, Antigravity → SQLite), the CLI must
+// be told which backend to read from. Without this, the CLI
+// inherits PRISM_STORAGE from the shell env (defaulting to
+// supabase), which may differ from the MCP server's config.
+// This causes a "split-brain" where the CLI returns stale state
+// from the wrong backend.
+//
+// TEXT MODE: Delegates to the real sessionLoadContextHandler for
+// full feature parity — morning briefing, reality drift detection,
+// SDM recall, visual memory, skill injection, behavioral warnings,
+// importance scores, recent validations. Any future MCP enrichments
+// automatically appear in CLI too.
+//
+// JSON MODE: Structured envelope for programmatic consumption
+// (session loader scripts, CI/CD pipelines, etc.).
 
 program
   .command('load <project>')
   .description('Load session context for a project (same output as session_load_context MCP tool)')
   .option('-l, --level <level>', 'Context depth: quick, standard, deep', 'standard')
   .option('-r, --role <role>', 'Role scope for context loading')
+  .option('-s, --storage <backend>', 'Storage backend: local (SQLite) or supabase. Overrides PRISM_STORAGE env var.')
   .option('--json', 'Emit machine-readable JSON instead of formatted text')
-  .action(async (project: string, options: { level: string; role?: string; json?: boolean }) => {
+  .action(async (project: string, options: { level: string; role?: string; storage?: string; json?: boolean }) => {
     try {
-      const { level, role, json: jsonOutput } = options;
+      const { level, role, storage, json: jsonOutput } = options;
+
+      // v9.2.2: --storage flag overrides PRISM_STORAGE env var to prevent
+      // split-brain when CLI environment differs from MCP server config.
+      if (storage) {
+        const validStorages = ['local', 'supabase'];
+        if (!validStorages.includes(storage)) {
+          console.error(`Error: Invalid storage "${storage}". Must be one of: ${validStorages.join(', ')}`);
+          process.exit(1);
+        }
+        process.env.PRISM_STORAGE = storage;
+      }
 
       const validLevels = ['quick', 'standard', 'deep'];
       if (!validLevels.includes(level)) {
@@ -38,30 +69,24 @@ program
         process.exit(1);
       }
 
-      // Use the shared storage singleton (respects PRISM_STORAGE, dashboard config, etc.)
-      const storage = await getStorage();
-      const effectiveRole = role || await getSetting('default_role', '') || undefined;
-      const data = await storage.loadContext(project, level, PRISM_USER_ID, effectiveRole);
-
-      if (!data) {
-        if (jsonOutput) {
-          console.log(JSON.stringify({ error: `No session context found for project "${project}"` }));
-        } else {
-          console.log(`No session context found for project "${project}" at level ${level}.`);
-          console.log('This project has no previous session history. Starting fresh.');
-        }
-        await closeStorage();
-        process.exit(0);
-      }
-
-      const d = data as Record<string, any>;
-
-      // Gather git state for enrichment
-      const gitState = getCurrentGitState();
-
       if (jsonOutput) {
-        // Machine-readable JSON envelope — matches what prism_session_loader.sh produced
+        // ── JSON mode: structured output for programmatic consumption ──
+        const storageBackend = await getStorage();
+        const effectiveRole = role || await getSetting('default_role', '') || undefined;
+        const agentName = await getSetting('agent_name', '') || undefined;
+        const data = await storageBackend.loadContext(project, level, PRISM_USER_ID, effectiveRole);
+
+        if (!data) {
+          console.log(JSON.stringify({ error: `No session context found for project "${project}"` }));
+          await closeStorage();
+          process.exit(0);
+        }
+
+        const d = data as Record<string, any>;
+        const gitState = getCurrentGitState();
+
         const output = {
+          agent_name: agentName || null,
           handoff: [{
             project,
             role: effectiveRole || d.role || 'global',
@@ -86,31 +111,26 @@ program
         };
         console.log(JSON.stringify(output, null, 2));
       } else {
-        // Human-readable formatted output (same format as MCP tool)
-        let output = `📋 Session context for "${project}" (${level}):\n\n`;
-        if (d.last_summary) output += `📝 Last Summary: ${d.last_summary}\n`;
-        if (d.active_branch) output += `🌿 Active Branch: ${d.active_branch}\n`;
-        if (d.key_context) output += `💡 Key Context: ${d.key_context}\n`;
+        // ── Text mode: full parity with MCP session_load_context ──
+        // Delegates to the real handler so all enrichments (morning briefing,
+        // reality drift, SDM recall, visual memory, skill injection,
+        // behavioral warnings, etc.) are included automatically.
+        const result = await sessionLoadContextHandler({ project, level, role });
 
-        if (d.pending_todo?.length) {
-          output += `\n✅ Open TODOs:\n` + d.pending_todo.map((t: string) => `  - ${t}`).join('\n') + '\n';
-        }
-        if (d.active_decisions?.length) {
-          output += `\n⚖️ Active Decisions:\n` + d.active_decisions.map((dec: string) => `  - ${dec}`).join('\n') + '\n';
-        }
-        if (d.keywords?.length) {
-          output += `\n🔑 Keywords: ${d.keywords.join(', ')}\n`;
-        }
-        if (d.recent_sessions?.length) {
-          output += `\n⏳ Recent Sessions:\n` + d.recent_sessions.map((s: any) =>
-            `  [${s.session_date?.split('T')[0]}] ${s.summary}`
-          ).join('\n') + '\n';
+        // Surface handler-level errors (e.g. invalid args, storage failures)
+        if (result.isError) {
+          console.error((result.content[0] as any)?.text || 'Unknown error loading context');
+          await closeStorage();
+          process.exit(1);
         }
 
-        if (d.version != null) {
-          output += `\n🔑 Session version: ${d.version}. Pass expected_version: ${d.version} when saving handoff.`;
+        let output = '';
+        if (result.content?.[0]) {
+          output = (result.content[0] as any).text;
         }
 
+        // Append git state (not included in the MCP handler output)
+        const gitState = getCurrentGitState();
         if (gitState.isRepo) {
           output += `\n\n🔧 Git: ${gitState.branch} @ ${gitState.commitSha?.substring(0, 7)} (Prism v${SERVER_CONFIG.version})`;
         }
