@@ -516,6 +516,43 @@ A gorgeous glassmorphism UI at `localhost:3000` that lets you see exactly what y
 ### 🧬 10× Memory Compression
 Powered by a pure TypeScript port of Google's TurboQuant (inspired by Google's ICLR research), Prism compresses 768-dim embeddings from **3,072 bytes → ~400 bytes** — enabling decades of session history on a standard laptop. No native modules. No vector database required. To mitigate quantization degradation (where repeated compress/decompress cycles could smear subtle corrections after 10k+ memories), Prism leverages autonomous **ledger compaction** and **Deep Storage cleanup** to guarantee high-fidelity memory integrity over time.
 
+<details>
+<summary><strong>📊 1M-Vector Benchmark (d=768, 4-bit)</strong></summary>
+
+Validated on 1,000,000 synthetic unit vectors at production dimension (d=768), run on Apple M4 Max (36GB):
+
+| Metric | Value |
+|--------|-------|
+| **Compression ratio** | 7.7× (3,072 → 400 bytes) |
+| **Throughput** | 833 vectors/sec |
+| **Peak heap** | 329 MB |
+| **Total time** | 57.6 minutes |
+
+**Residual norm distribution** — the quantization error after Householder rotation + Lloyd-Max scalar quantization:
+
+| Statistic | Value |
+|-----------|-------|
+| Mean | 0.1855 |
+| CV (coefficient of variation) | **0.038** |
+| P99/P50 ratio | **1.11** |
+| P99.9/P50 ratio | 1.16 |
+| Max/Min ratio | 1.46 |
+| IQR | 0.009 |
+
+A CV of 0.038 means the residual norm barely varies across 1M vectors — **there is effectively no long tail**. The QJL correction term (which scales linearly with residualNorm) remains stable even for P99.9 outliers.
+
+**R@k retrieval accuracy** (global corpus, 30 trials):
+
+| Corpus Size | R@1 | R@5 |
+|-------------|-----|-----|
+| N=1,000 | 20.0% | 60.0% |
+| N=10,000 | 36.7% | 76.7% |
+| N=50,000 | 53.3% | **90.0%** |
+
+> **Note:** R@k on random high-dimensional vectors is inherently harder than on real embeddings (all vectors are near-equidistant in d=768). Real-world retrieval with clustered embeddings produces higher accuracy. See [tests/residual-distribution.test.ts](tests/residual-distribution.test.ts) and [tests/benchmarks/residual-1m.ts](tests/benchmarks/residual-1m.ts) for full methodology.
+
+</details>
+
 ### 🐝 Multi-Agent Hivemind & Enterprise Sync
 While local SQLite is amazing for solo developers, enterprise teams cannot share a local SQLite file. Prism breaks the "local-only" ceiling via **Supabase Sync** and the **Multi-Agent Hivemind**—scaling effortlessly to teams of 50+ developers using agents. Multiple agents (dev, QA, PM) can work on the same project with **role-isolated memory**, discover each other automatically, and share context in real-time via Telepathy sync to a shared Postgres backend. → [Multi-agent setup example](examples/multi-agent-hivemind/)
 
@@ -802,8 +839,12 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 
 ## 🆕 What's New
 
-> **Current release: v9.2.3 — Code Review Hardening**
+> **Current release: v9.2.7 — Security Hardening**
 
+- 🔒 **v9.2.7 — Security Hardening:** Typed `PrototypePollutionError` class (replaces generic `Error` in `sanitizeForMerge()` — enables catch-site discrimination and forensic logging with `offendingKey`), explicit null-byte path injection guard in `SafetyController.validateActionsInScope()` (C-string truncation attack vector), and corrected CRDT merge semantics documentation (Remove-Wins-from-Either, not Add-Wins). 1055 tests, 0 regressions.
+- 🪟 **v9.2.6 — Windows CI Timeout Fix:** CLI integration tests timed out on Windows + Node 22.x GitHub Actions runners. Added `{ timeout: 30_000 }` to the describe block. 6 new residual distribution tests validating TurboQuant's QJL correction stability (zero R@5 delta between P50 and P95 residual vectors at d=128, 2K corpus).
+- 🔧 **v9.2.5 — Reconciliation Credential Probe Fix:** `supabaseReady` guard only resolved credentials when `requestedBackend === "supabase"`, causing reconciliation to silently skip. Added second credential probe for local + reconciliation path. Fixed Supabase schema mismatch on `key_context` column.
+- 🔄 **v9.2.4 — Cross-Backend Reconciliation:** Automatic two-layer sync from Supabase → SQLite on startup. When Claude Desktop writes handoffs and ledger entries to Supabase, Antigravity (local SQLite) now automatically detects stale data and pulls newer handoffs + the 20 most recent ledger entries. 5-second timeout prevents startup freeze. Targeted ID lookups (not full table scans) keep it safe for large databases. 13 tests including malformed JSON resilience, multi-role dedup, and timeout handling.
 - 🔧 **v9.2.3 — Code Review Hardening:** 10x faster split-brain detection (lightweight direct queries replace full `StorageBackend` construction), variable shadowing fix in CLI, resource leak fix in SQLite alternate client.
 - 🚨 **v9.2.2 — Critical: Split-Brain Detection & Prevention:** When multiple MCP clients use different storage backends (e.g., Claude Desktop → Supabase, Antigravity → SQLite), session state could silently diverge, causing agents to act on stale TODOs and outdated context. **New: `--storage` flag** on `prism load` CLI lets callers explicitly select which backend to read from. **New: Split-Brain Drift Detection** in `session_load_context` — compares active and alternate backend versions at load time and warns prominently when they diverge. Session loader script updated to respect `PRISM_STORAGE` environment variable.
 - 💻 **v9.2.1 — CLI Full Feature Parity:** `prism load` text mode now delegates to the real `session_load_context` handler, giving CLI-only users the same enriched output as MCP clients: morning briefings, reality drift detection, SDM intuitive recall, visual memory index, role-scoped skill injection, behavioral warnings, importance scores, and agent identity. JSON mode now includes `agent_name` from dashboard settings. Session loader script PATH fix for Homebrew/nvm/volta environments.
@@ -829,7 +870,7 @@ Standard memory servers (like Mem0, Zep, or the baseline Anthropic MCP) act as p
 | **Storage Engine** | **BYO SQLite or Supabase** | Managed Cloud / VectorDBs | Managed Cloud / Postgres | Local SQLite only |
 | **Context Assembly** | **Progressive (Quick/Std/Deep)** | Top-K Semantic Search | Top-K + Temporal Summaries | Basic Entity Search |
 | **Memory Mechanics** | **ACT-R Activation, Spreading Activation, Hebbian Consolidation, Rejection Gate** | Basic Vector + Entity | Fading Temporal Graph | None (Infinite growth) |
-| **Multi-Agent Sync** | **CRDT (Add-Wins / LWW)** | Cloud locks | Postgres locks | ❌ None (Data races) |
+| **Multi-Agent Sync** | **CRDT (Remove-Wins / LWW)** | Cloud locks | Postgres locks | ❌ None (Data races) |
 | **Data Compression** | **TurboQuant (7x smaller vectors)** | ❌ Standard F32 Vectors | ❌ Standard Vectors | ❌ No Vectors |
 | **Observability** | **OTel Traces + Built-in PWA UI** | Cloud Dashboard | Cloud Dashboard | ❌ None |
 | **Maintenance** | **Autonomous Background Scheduler** | Manual/API driven | Automated (Cloud) | ❌ Manual |
@@ -1222,8 +1263,15 @@ Prism has evolved from smart session logging into a **cognitive memory architect
 | **v7.8** | Multi-Hop Causal Reasoning — spreading activation traverses `caused_by`/`led_to` edges with damped fan effect (`1/ln(fan+e)`) and lateral inhibition | ACT-R spreading activation (Anderson), Collins & Loftus (1975) | ✅ Shipped |
 | **v7.8** | Uncertainty-Aware Rejection Gate — dual-signal (similarity floor + gap distance) safety layer prevents hallucination from low-confidence retrievals | Metacognition research, uncertainty quantification | ✅ Shipped |
 | **v7.8** | Dynamic Fast Weight Decay — `is_rollup` semantic nodes decay 50% slower (`ageModifier = 0.5`) than episodic entries, creating Long-Term Context anchors | ACT-R base-level activation with differential decay rates | ✅ Shipped |
-| **v7.x** | Affect-Tagged Memory — sentiment shapes what gets recalled | Affect-modulated retrieval (neuroscience) | 🔭 Horizon |
-| **v8+** | Zero-Search Retrieval — no index, no ANN, just ask the vector | Holographic Reduced Representations | 🔭 Horizon |
+| **v9.0** | Affect-Tagged Memory — valence-scored retrieval where `\|valence\|` boosts ranking; UX warnings surface historically negative topics | Affect-modulated retrieval (neuroscience), somatic marker hypothesis | ✅ Shipped |
+| **v9.0** | Surprisal Gate — vector-based novelty pricing: high-surprisal saves cost 0.5× tokens, low-surprisal 2.0×; forces LLM data compression | Information-theoretic surprisal (Shannon), predictive coding | ✅ Shipped |
+| **v9.0** | Cognitive Budget — per-project token economy with passive UBI recovery (+100 tokens/hr); agents that over-save enter Cognitive Debt | Resource-bounded rationality (Simon, 1955) | ✅ Shipped |
+| **v9.1** | Task Router v2 — 6-signal weighted heuristic engine routing tasks between cloud host and local LLM based on file-type complexity, scope, and multi-step detection | Heuristic classification, cognitive load theory | ✅ Shipped |
+| **v9.2** | Cross-Backend Reconciliation — automatic Supabase → SQLite sync with idempotent dedup and 5s timeout | Eventual consistency, crdt-style reconciliation | ✅ Shipped |
+| **v9.2** | Split-Brain Drift Detection — dual-backend version comparison with prominent divergence warnings at load time | Byzantine fault detection, split-brain resolution | ✅ Shipped |
+| **v9.2** | TurboQuant QJL Validation — zero R@5 delta between P50 and P95 residual vectors (d=128, N=2K); CV=0.038 at d=768 proves no long tail | QJL estimator (ICLR 2026), Householder orthogonal rotation | ✅ Shipped |
+| **v9.2** | Typed Security Errors — `PrototypePollutionError` with `offendingKey` for forensic logging; null-byte path injection guard in SafetyController | Defense-in-depth (NIST), C-string truncation attack mitigation | ✅ Shipped |
+| **v10+** | Zero-Search Retrieval — no index, no ANN, just ask the vector | Holographic Reduced Representations | 🔭 Horizon |
 
 > Informed by Anderson's ACT-R (Adaptive Control of Thought—Rational), Collins & Loftus spreading activation networks (1975), Kanerva's SDM (1988), Hebb's learning rule, and LeCun's "Why AI Systems Don't Learn" (Dupoux, LeCun, Malik).
 
@@ -1255,10 +1303,14 @@ Prism MCP is open-source and free for individual developers. For teams and enter
 
 ## 📦 Milestones & Roadmap
 
-> **Current: v9.1.0** — Task Router v2 & Local Agent Hardening ([CHANGELOG](CHANGELOG.md))
+> **Current: v9.2.7** — Security Hardening ([CHANGELOG](CHANGELOG.md))
 
 | Release | Headline |
 |---------|----------|
+| **v9.2.4** | 🔄 Cross-Backend Reconciliation — automatic Supabase → SQLite sync on startup, two-layer (handoff + ledger), 5s timeout, 13 tests |
+| **v9.2.3** | 🔧 Code Review Hardening — 10x faster split-brain detection, variable shadowing fix, resource leak fix |
+| **v9.2.2** | 🚨 Split-Brain Detection & Prevention — `--storage` flag, drift detection, session loader hardening |
+| **v9.2.1** | 💻 CLI Full Feature Parity — text mode enrichments, agent identity, PATH fix |
 | **v9.1.0** | 🚦 Task Router v2 — file-type routing signal, 6-signal heuristics, local agent streaming buffer |
 | **v9.0.5** | 🔒 JWKS Auth Security Hardening — audience/issuer validation, JWT failure logging, typed agent identity |
 | **v9.0** | 🧠 Autonomous Cognitive OS — Surprisal Gate, Cognitive Budget, Affect-Tagged Memory |
