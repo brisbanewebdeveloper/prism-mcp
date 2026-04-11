@@ -1861,7 +1861,10 @@ export class SqliteStorage implements StorageBackend {
         const fallbackResult = await this.db.execute({ sql: fallbackSql, args: fallbackArgs });
 
         // Score each entry using asymmetric cosine similarity
-        const scored: SemanticSearchResult[] = [];
+        // Track residualNorm for optional tiebreaker (v9.3)
+        const { PRISM_TURBOQUANT_TIEBREAKER_EPSILON } = await import("../config.js");
+        const eps = PRISM_TURBOQUANT_TIEBREAKER_EPSILON;
+        const scored: (SemanticSearchResult & { _residualNorm?: number })[] = [];
         for (const row of fallbackResult.rows) {
           try {
             const compressedBase64 = row.embedding_compressed as string;
@@ -1881,6 +1884,7 @@ export class SqliteStorage implements StorageBackend {
                 is_rollup: Boolean(row.is_rollup),
                 importance: (row.importance as number) ?? 0,
                 last_accessed_at: (row.last_accessed_at as string) || null,
+                _residualNorm: eps > 0 ? compressed.residualNorm : undefined,
               });
             }
           } catch {
@@ -1888,10 +1892,20 @@ export class SqliteStorage implements StorageBackend {
           }
         }
 
-        // Sort by similarity descending and limit
-        scored.sort((a, b) => b.similarity - a.similarity);
+        // Sort by similarity descending, with optional residualNorm tiebreaker
+        // When ε > 0: candidates within ε of each other are ranked by lower
+        // residualNorm (its compressed representation is more trustworthy).
+        scored.sort((a, b) => {
+          const diff = b.similarity - a.similarity;
+          if (eps > 0 && Math.abs(diff) < eps && a._residualNorm != null && b._residualNorm != null) {
+            return a._residualNorm - b._residualNorm;
+          }
+          return diff;
+        });
 
         const baseResults = scored.slice(0, params.limit);
+        // Strip internal tiebreaker field before returning
+        for (const r of baseResults) delete (r as any)._residualNorm;
         debugLog(
           `[SqliteStorage] Tier-2 TurboQuant fallback: scored ${fallbackResult.rows.length} entries, ` +
           `${scored.length} above threshold`
