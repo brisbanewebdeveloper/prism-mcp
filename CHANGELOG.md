@@ -2,7 +2,124 @@
 
 All notable changes to this project will be documented in this file.
 
-## [9.3.0] - 2026-04-11 — TurboQuant ResidualNorm Tiebreaker
+## [9.4.6] - 2026-04-14 — Stealth Browser Automation Tool (`browse.py`)
+
+### Added
+- **`browse.py` — HIPAA-Hardened Stealth Browser CLI** — Local Playwright-based browser automation tool that replaces the unreliable cloud-based browser subagent. Runs entirely on localhost with zero cloud dependencies. Designed for healthcare-adjacent workflows with full HIPAA Security Rule compliance.
+
+#### 6-Layer Anti-Detection Architecture
+- **Layer 1: `playwright-stealth` v2.0.3** — JS evasion scripts (navigator.webdriver, plugins, permissions, languages)
+- **Layer 2: Deep JS Init Script** — 12 custom fingerprint overrides injected before page scripts: WebGL vendor/renderer (Apple M3 Max Metal), `chrome.runtime/csi/loadTimes`, plugins, mimeTypes, `navigator.connection`, `outerHeight/Width`, `toString()` spoofing for overridden functions
+- **Layer 3: Behavioral Stealth** — Human-like typing (30-120ms variable delays), scroll jitter, mouse movement with slight curves, occasional "thinking" pauses
+- **Layer 4: Chromium Launch Args** — 20+ anti-automation flags, `--disable-blink-features=AutomationControlled`, `ignore_default_args=['--enable-automation']` to remove CDP detection vectors
+- **Layer 5: Network Header Fixing** — Route handler fixes `sec-ch-ua`, `sec-ch-ua-platform`, `sec-fetch-*` headers on every HTTP request
+- **Layer 6: Persistent Profiles** — Cookie jars survive restarts, consistent User-Agent per profile via hash-based selection (looks like a returning user)
+- **100% pass rate on bot.sannysoft.com** — All 50+ detection tests passed (navigator.webdriver=null, plugins=5, WebGL=Apple Metal, Canvas consistent, all PHANTOM/HEADCHR/SELENIUM checks passed)
+
+#### HIPAA Security Features
+- **FileVault Enforcement** — Refuses to run if macOS Full Disk Encryption is disabled
+- **Audit Log (`chmod 600`)** — `~/.browser_data/audit.log` tracks URLs + actions with strict file permissions, never logs PHI content
+- **`--sanitize`** — Regex masks SSN, MRN, phone, email patterns before output reaches the LLM
+- **`--cleanup` + Ephemeral Screenshots** — When active, screenshots are written to `/tmp` (avoids APFS Copy-on-Write residue on SSDs) then securely deleted after processing
+- **UA ↔ WebGL Consistency Validation** — Startup validates User-Agent platform matches WebGL renderer to prevent enterprise WAF (Cloudflare Turnstile) mismatch detection
+
+#### 3 Operating Modes
+- **Single Command** — `browse.py open <url>`, `browse.py screenshot`, `browse.py read-dom`
+- **Interactive REPL** — `browse.py repl` keeps browser open between commands with 10-minute idle timeout (prevents zombie Chromium), structured JSON output for agent parsing, and error resilience (exceptions caught, browser stays alive)
+- **Pipe/Batch** — `echo "open https://..." | browse.py pipe` for scripted workflows
+
+#### Google Docs Automation
+- `gdoc-read` — Keyboard-shortcut extraction (Ctrl+A/C) bypasses Google Docs' canvas-based DOM
+- `gdoc-type` — Human-like typing at cursor position
+- `gdoc-find` — Ctrl+F navigation to specific text locations
+
+### Engineering
+- Dependencies: `playwright` + `playwright-stealth` (Python), Chromium browser binary
+- 1 new file: `browse.py` (680 lines)
+- Registered as `local-browser` Antigravity skill for future agent auto-routing
+- Compatible with Prism MCP integration (Phase 3 planned)
+
+---
+
+## [9.4.5] - 2026-04-13 — Security: Command Injection Fix & Dependency Reduction
+
+### Security
+- **[HIGH] Command Injection in `isOrphanProcess`** — `lifecycle.ts:79` interpolated a PID from a file directly into an `execSync` template string (`ps -o ppid= -p ${pid}`). A local attacker could write a malicious PID file (e.g., `1; rm -rf /`) to execute arbitrary commands. Fixed by replacing `execSync` (shell) with `execFileSync` (no shell, args as array) and casting PID to `String(pid)`. Added 5-second timeout guard.
+- **Dependency Reduction (25 → 23)** — Removed 2 unused runtime dependencies:
+  - `@google-cloud/discoveryengine` — zero imports across `src/`
+  - `dotenv` — zero runtime imports; moved to `devDependencies` (test-only)
+
+### Engineering
+- 3 files changed: `src/lifecycle.ts`, `package.json`, `package-lock.json`
+- TypeScript: clean, zero errors
+- CI: all 6 matrix jobs passing (ubuntu/macos/windows × Node 20/22)
+- Closes [#53](https://github.com/dcostenco/prism-mcp/issues/53)
+
+---
+
+## [9.4.3] - 2026-04-13 — ESM Bundling Fix (async_hooks)
+
+### Fixed
+- **Dynamic require of "async_hooks" crash** — Previous dist was built by a bundler that inlined OpenTelemetry's CJS `require("async_hooks")` into ESM chunks, causing runtime failure (`Error: Dynamic require of "async_hooks" is not supported`). Rebuilt with `tsc` which emits proper ESM imports. Affects CLI (`prism`), session save/load, and MCP server startup.
+
+### Engineering
+- Build command remains `tsc` (not esbuild/tsup/bun). Bundler use for dist is now explicitly prohibited.
+- Created `esm-bundling-fix` diagnostic skill for future prevention.
+- TypeScript: clean, zero errors
+
+---
+
+## [9.4.2] - 2026-04-13 — Shell Injection Fix (Git Drift Detection)
+
+### Security
+- **Shell Injection in `getGitDrift`** — `oldSha` was interpolated directly into a template string passed to `execSync`, enabling arbitrary command execution via a corrupted database entry (e.g., `"; rm -rf /"`). Fixed by: (1) validating SHA format against `/^[0-9a-f]{4,40}$/i`, and (2) replacing `execSync` (shell) with `execFileSync` (no shell, args as array). Defense-in-depth: even if validation is bypassed, `execFileSync` prevents shell metacharacter injection.
+
+### Engineering
+- 1 file changed: `src/utils/git.ts`
+- TypeScript: clean, zero errors
+
+---
+
+## [9.4.1] - 2026-04-12 — Adversarial Security Hardening & Bidirectional Sync
+
+### Security — Adversarial Audit (18 Issues Found, 17 Fixed)
+
+Two-pass adversarial code review treating the reviewer as an attacker. Final tally: 4 Critical, 5 High, 9 Medium — 17 resolved, 1 cosmetic deferred.
+
+#### Critical Fixes
+- **Fail-Closed Rate Limiter** — `atomicCheckAndIncrement` now returns `{ allowed: false }` on DB RPC failure instead of fail-open (previously granted unlimited free API access on any database outage)
+- **Path Traversal Guard** — Import endpoints restricted to `$HOME` and `/tmp` directories. Paths validated against `isAbsolute()` + `existsSync()` before subprocess execution
+- **Error Response Sanitization** — Chat route no longer leaks LLM provider names, error bodies, or stack traces to the client. All error paths return generic user-facing messages
+- **Import Path Restriction** — Dashboard import API validates paths against an allowlist to prevent directory traversal attacks
+
+#### High Fixes
+- **Plan Name Alignment** — Tier keys renamed from `starter/pro` → `standard/advanced` to match DB `CHECK` constraint. Previously caused paying users to fall through to free-tier models (revenue-impacting)
+- **CORS Allowlist** — Dashboard server replaces origin reflection with a strict allowlist (`localhost:PORT`, `127.0.0.1:PORT`, configurable via `PRISM_DASHBOARD_CORS_ORIGIN`)
+- **Settings Key Allowlist** — Dashboard Settings API now rejects unknown keys. Only 15 explicit keys + `skill:`/`ttl:`/`autoload:` prefixes allowed. Prevents credential overwrite via arbitrary key injection
+- **Config Default Regression** — `PRISM_STORAGE` default restored to `"local"` (had regressed to `"supabase"`)
+- **Webhook Response Minimized** — Stripe webhook returns `{received: true}` instead of subscription lifecycle details
+
+#### Medium Fixes
+- **M1: Concurrency Counter Leak** — Refactored from 4 scattered `activeSessions` decrements to a single outer `try/finally`. Guarantees decrement on ALL exit paths (success, error, throw, stream abort)
+- **M3: NextAuth JWT Enrichment** — Added `jwt` callback that enriches token with `dbUserId` and `plan` on initial sign-in. Extended `next-auth.d.ts` type declarations for both `Session` and `JWT` interfaces. Eliminates N+1 `getUserByEmail` queries on every API request
+- **Token Name Sanitization** — 100-char limit + HTML tag stripping prevents XSS and storage abuse
+- **Clickjacking Prevention** — `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'` headers on all dashboard responses
+- **SignIn Fail-Closed** — NextAuth `signIn` callback returns `false` on Stripe customer creation failure (previously swallowed error and allowed login without billing ID)
+- **Request Body Size Limit** — `readBody()` in both `server.ts` and `graphRouter.ts` now enforces 10MB limit with early `req.destroy()` on oversize (prevents memory exhaustion DoS)
+
+### Added
+- **M4: Bidirectional Reconciliation** — New `pushReconciliation()` function (208 lines) in `reconcile.ts`. Reads local SQLite handoffs + ledger entries, compares timestamps with Supabase, upserts newer local data. Closes the architectural gap where locally-saved sessions were invisible to remote clients
+- **`prism sync push` CLI Command** — Exposes bidirectional push to the CLI. Forces `PRISM_STORAGE=local`, resolves Supabase credentials, and reports push counts
+- **`PushReconcileResult` Interface** — Typed return value: `{ handoffsPushed, ledgerEntriesPushed, projects }`
+
+### Engineering
+- 7 files changed
+- TypeScript strict mode: zero errors
+- Build verified clean: `npm run build`
+- All original fixes verified holding in second review pass
+
+---
+
 
 ### Added
 - **ResidualNorm Tiebreaker for Tier-2 Search** — New configurable ranking optimization for TurboQuant asymmetric search. When two compressed cosine scores are within ε of each other, the candidate with lower `residualNorm` is preferred — its compressed representation captured more signal energy, making its score more trustworthy. Inspired by [@m13v's suggestion](https://github.com/xiaowu0162/LongMemEval/issues/31) in the LongMemEval benchmark discussion.

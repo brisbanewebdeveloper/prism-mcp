@@ -7,6 +7,43 @@
 
 Prism has evolved from a simple SQLite session logger into a **Quantized, Multimodal, Multi-Agent, Self-Learning, Observable AI Operating System**.
 
+### ✅ v9.4.5 — Command Injection Fix & Dep Reduction (Issue #53) 🔒
+
+> **Problem:** `isOrphanProcess()` in `lifecycle.ts` interpolated a file-sourced PID directly into `execSync`. A tampered PID file could inject arbitrary shell commands.  
+> **Solution:** `execSync` → `execFileSync` (no shell). Removed 2 dead runtime deps (25 → 23).
+
+| Feature | Detail |
+|---------|--------|
+| 🔒 **Command Injection Fix** | `execSync` template literal → `execFileSync` array args with `String(pid)` |
+| 📦 **Dep Reduction** | Removed `@google-cloud/discoveryengine` (unused) and `dotenv` (moved to devDeps) |
+
+---
+
+### ✅ v9.4.2 — Shell Injection Fix (Git Drift Detection) 🔒
+
+> **Problem:** `getGitDrift()` interpolated `oldSha` directly into a `execSync` template string. A corrupted database entry could inject arbitrary shell commands.
+> **Solution:** SHA format validation (`/^[0-9a-f]{4,40}$/i`) + migration from `execSync` to `execFileSync` (no shell). Defense-in-depth: even if validation is bypassed, `execFileSync` prevents shell metacharacter injection.
+
+| Feature | Detail |
+|---------|--------|
+| 🔒 **Shell Injection Fix** | `execSync` template literal → `execFileSync` array args. SHA validated before git invocation. |
+| 🛡️ **Defense-in-Depth** | Two layers: regex validation + shell-free execution. Either alone prevents the attack. |
+
+---
+### ✅ v9.4.0 — Adversarial Security Hardening & Bidirectional Sync 🔒
+
+> **Problem:** Two-pass adversarial security audit discovered 18 vulnerabilities, including a fail-open rate limiter, plan tier mismatch causing revenue loss, CORS reflection, and a one-way-only reconciliation gap.
+> **Solution:** Comprehensive hardening: fail-closed defaults, path traversal guards, CORS/settings allowlists, concurrency counter refactor, NextAuth JWT enrichment, bidirectional SQLite↔Supabase push reconciliation, and request body DoS protection.
+
+| Feature | Detail |
+|---------|--------|
+| 🔒 **18-Issue Adversarial Audit** | 4 Critical + 5 High + 9 Medium found across 2 repos. 17 fixed, 1 cosmetic deferred. Rate limiter, path traversal, error leakage, plan mismatch, CORS, settings injection, clickjacking, concurrency leak, JWT enrichment, body size limits. |
+| 🔄 **Bidirectional Reconciliation** | New `pushReconciliation()` (208 lines) pushes local SQLite handoffs + ledger entries to Supabase. `prism sync push` CLI command. Closes the split-brain gap where Antigravity saves were invisible to Claude Desktop. |
+| 🧠 **NextAuth JWT Enrichment** | `jwt` callback enriches token with `dbUserId` and `plan` on initial sign-in. Eliminates N+1 `getUserByEmail` queries. Extended type declarations for `Session` and `JWT` interfaces. |
+| ⚡ **Concurrency Guarantee** | Chat route refactored from 4 scattered decrements to single `try/finally`. Counter is always decremented, even on synchronous throws or mid-stream crashes. |
+| 🛡️ **Request Body Limits** | `readBody()` in dashboard `server.ts` and `graphRouter.ts` enforces 10MB limit with early `req.destroy()`. Prevents memory exhaustion DoS. |
+
+---
 ### ✅ v9.3.0 — TurboQuant ResidualNorm Tiebreaker 🎯
 
 > **Problem:** Compressed cosine search (Tier-2 TurboQuant fallback) treats all candidates equally, even when some compressed representations lost more signal energy during quantization than others.
@@ -314,9 +351,9 @@ Prism has evolved from a simple SQLite session logger into a **Quantized, Multim
 
 </details>
 
-## 📊 The State of Prism (v9.3.0)
+## 📊 The State of Prism (v9.4.2)
 
-With v9.3.0 shipped, Prism is a **production-hardened, fail-closed, adversarially-evaluated autonomous AI Operating System** — the first MCP server that runs your agents *without letting them touch the filesystem unsupervised*, *without letting them grade their own homework*, and *with real-time visibility into project health*:
+With v9.4.2 shipped, Prism is a **production-hardened, fail-closed, adversarially-evaluated autonomous AI Operating System** — the first MCP server that runs your agents *without letting them touch the filesystem unsupervised*, *without letting them grade their own homework*, and *with real-time visibility into project health*:
 
 - **Token Economics** — Surprisal Gate + Cognitive Budget force agents to learn data compression. High-novelty saves are cheap; boilerplate is expensive. Overspenders enter Cognitive Debt.
 - **Affect-Tagged Memory** — Valence-scored retrieval where emotional extremes (failures and successes) surface first. UX warnings fire on historically negative topics.

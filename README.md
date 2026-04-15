@@ -1,9 +1,9 @@
 # 🧠 Prism MCP — The Mind Palace for AI Agents
 
 [![npm version](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
-[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTUtMTAtNXpNMiAxN2wxMCA1IDEwLTV2LTJMMTI0djJMMiA5djh6Ii8+PC9zdmc+)](https://registry.modelcontextprotocol.io)
-[![Glama](https://img.shields.io/badge/Glama-listed-FF5601)](https://glama.ai/mcp/servers/dcostenco/prism-mcp)
-[![Smithery](https://img.shields.io/badge/Smithery-listed-6B4FBB)](https://smithery.ai)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTUtMTAtNXpNMiAxN2wxMCA1IDEwLTV2LTJMMTI0djJMMiA5djh6Ii8+PC9zdmc+)](https://github.com/modelcontextprotocol/servers)
+[![Glama](https://img.shields.io/badge/Glama-listed-FF5601)](https://glama.ai/mcp/servers?query=prism-mcp)
+[![Smithery](https://img.shields.io/badge/Smithery-listed-6B4FBB)](https://smithery.ai/server/@dcostenco/prism-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -25,23 +25,23 @@ https://github.com/dcostenco/prism-mcp/raw/main/docs/prism_mcp_demo.mp4
 ## 📖 Table of Contents
 
 - [Why Prism?](#why-prism)
-- [Quick Start](#quick-start)
-- [The Magic Moment](#the-magic-moment)
-- [Setup Guides](#setup-guides)
-- [Universal Import: Bring Your History](#universal-import-bring-your-history)
-- [What Makes Prism Different](#what-makes-prism-different)
+- [Quick Start](#-quick-start)
+- [The Magic Moment](#-the-magic-moment)
+- [Setup Guides](#-setup-guides)
+- [Universal Import: Bring Your History](#-universal-import-bring-your-history)
+- [What Makes Prism Different](#-what-makes-prism-different)
 - [Cognitive Architecture (v7.8)](#-cognitive-architecture-v78)
-- [Data Privacy & Egress](#data-privacy--egress)
-- [Use Cases](#use-cases)
-- [What's New](#whats-new)
-- [How Prism Compares](#how-prism-compares)
+- [Data Privacy & Egress](#-data-privacy-egress)
+- [Use Cases](#-use-cases)
+- [What's New](#-whats-new)
+- [How Prism Compares](#-how-prism-compares)
 - [CLI Reference](#-cli-reference)
-- [Tool Reference](#tool-reference)
+- [Tool Reference](#-tool-reference)
 - [Environment Variables](#environment-variables)
 - [Architecture](#architecture)
-- [Scientific Foundation](#scientific-foundation)
-- [Milestones & Roadmap](#milestones--roadmap)
-- [Troubleshooting FAQ](#troubleshooting-faq)
+- [Scientific Foundation](#-scientific-foundation)
+- [Milestones & Roadmap](#-milestones-roadmap)
+- [Troubleshooting FAQ](#-troubleshooting-faq)
 
 ---
 
@@ -59,7 +59,7 @@ Prism has three pillars:
 
 2. **🔗 Multi-Hop Reasoning** — When your agent searches for "Error X", Prism doesn't just find logs mentioning "Error X". Spreading activation traverses the causal graph and brings back "Workaround Y", which is connected to "Architecture Decision Z" — a literal train of thought. *(See [Cognitive Architecture](#-cognitive-architecture-v78).)*
 
-3. **🏭 Autonomous Execution (Dark Factory)** — When you're ready, Prism can run coding tasks end-to-end with a fail-closed pipeline where an adversarial evaluator catches bugs the generator missed — before you ever see the PR. *(See [Dark Factory](#-dark-factory--adversarial-autonomous-pipelines).)*
+3. **🏭 Autonomous Execution (Dark Factory)** — When you're ready, Prism can run coding tasks end-to-end with a fail-closed pipeline where an adversarial evaluator catches bugs the generator missed — before you ever see the PR. *(See [Dark Factory](#-dark-factory-adversarial-autonomous-pipelines).)*
 
 ---
 
@@ -451,7 +451,7 @@ Prism can be deployed natively to cloud platforms like [Render](https://render.c
 > ```
 > At the start of every conversation, call session_load_context with project "my-project" before doing any work.
 > ```
-> Claude Code users can use the `.clauderules` auto-load hook shown in the [Setup Guides](#setup-guides). Prism also has a **server-side fallback** (v5.2.1+) that auto-pushes context after 10 seconds if no load is detected.
+> Claude Code users can use the `.clauderules` auto-load hook shown in the [Setup Guides](#-setup-guides). Prism also has a **server-side fallback** (v5.2.1+) that auto-pushes context after 10 seconds if no load is detected.
 
 ---
 
@@ -839,8 +839,13 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 
 ## 🆕 What's New
 
-> **Current release: v9.3.0 — TurboQuant ResidualNorm Tiebreaker**
+> **Current release: v9.4.6 — Stealth Browser Automation Tool (`browse.py`)**
 
+- 🕵️ **v9.4.6 — Stealth Browser Automation:** New `browse.py` HIPAA-hardened CLI for local Playwright-based browser automation with 6-layer anti-detection (playwright-stealth v2.0.3, deep JS fingerprint evasion, behavioral mimicry, Chromium anti-automation flags, network header fixing, persistent profiles). **100% pass rate on bot.sannysoft.com** (50+ tests). Features: FileVault enforcement, `chmod 600` audit log, PHI sanitization, ephemeral `/tmp` screenshots (APFS CoW workaround), UA↔WebGL consistency validation, 10-min REPL idle timeout, structured JSON output, Google Docs keyboard automation (`gdoc-read`/`gdoc-type`/`gdoc-find`). → [Changelog](CHANGELOG.md#946---2026-04-14--stealth-browser-automation-tool-browsepy)
+- 🔒 **v9.4.5 — Command Injection Fix & Dep Reduction:** `isOrphanProcess()` in `lifecycle.ts` interpolated a file-sourced PID into `execSync`. Fixed with `execFileSync` (no shell). Removed 2 unused runtime deps (25 → 23). Closes [#53](https://github.com/dcostenco/prism-mcp/issues/53).
+- 🔧 **v9.4.3 — ESM Bundling Fix:** Bundled dist had inlined OpenTelemetry CJS `require("async_hooks")` into ESM chunks, causing `Dynamic require of "async_hooks" is not supported` at runtime. Rebuilt with `tsc`. Affects CLI, session save/load, and MCP server startup.
+- 🔒 **v9.4.2 — Shell Injection Fix:** Deep code review found shell injection in `getGitDrift()` — `oldSha` was interpolated into `execSync` template string. Fixed with SHA format validation + `execFileSync` (no shell). Defense-in-depth.
+- 🔒 **v9.4.1 — Security Hardening & Bidirectional Sync:** Two-pass adversarial audit found 18 vulnerabilities (4C/5H/9M) — 17 fixed. Critical: fail-closed rate limiter, path traversal guards, error sanitization. High: plan name alignment (revenue fix), CORS allowlist, settings injection prevention. New: bidirectional `prism sync push` CLI command pushes local SQLite → Supabase, JWT enrichment eliminates N+1 DB queries, concurrency counter guaranteed via `try/finally`, 10MB request body limits.
 - 🎯 **v9.3.0 — TurboQuant ResidualNorm Tiebreaker:** Configurable ranking optimization for Tier-2 search. When compressed cosine scores are within ε of each other, prefers the candidate with lower `residualNorm` (more trustworthy compressed representation). `PRISM_TURBOQUANT_TIEBREAKER_EPSILON=0.005` gives +2pp R@1, +1pp R@5. Empirically validated at N=5K with A/B test. 1066 tests, 0 regressions. Inspired by [@m13v's suggestion](https://github.com/xiaowu0162/LongMemEval/issues/31).
 - 🔒 **v9.2.7 — Security Hardening:** Typed `PrototypePollutionError` class (replaces generic `Error` in `sanitizeForMerge()` — enables catch-site discrimination and forensic logging with `offendingKey`), explicit null-byte path injection guard in `SafetyController.validateActionsInScope()` (C-string truncation attack vector), and corrected CRDT merge semantics documentation (Remove-Wins-from-Either, not Add-Wins). 1055 tests, 0 regressions.
 - 🪟 **v9.2.6 — Windows CI Timeout Fix:** CLI integration tests timed out on Windows + Node 22.x GitHub Actions runners. Added `{ timeout: 30_000 }` to the describe block. 6 new residual distribution tests validating TurboQuant's QJL correction stability (zero R@5 delta between P50 and P95 residual vectors at d=128, 2K corpus).
@@ -925,6 +930,10 @@ prism load my-project                          # Human-readable, standard depth
 prism load my-project --level deep             # Full context with all enrichments
 prism load my-project --level quick --json     # Machine-readable JSON
 prism load my-project --role dev --json        # Role-scoped loading
+
+# Bidirectional sync (v9.4.1)
+prism sync push                                # Push local SQLite → Supabase
+prism sync push --json                         # Machine-readable output
 
 # Verification harness
 prism verify status                            # Check verification state
@@ -1268,6 +1277,8 @@ Prism has evolved from smart session logging into a **cognitive memory architect
 | **v9.0** | Surprisal Gate — vector-based novelty pricing: high-surprisal saves cost 0.5× tokens, low-surprisal 2.0×; forces LLM data compression | Information-theoretic surprisal (Shannon), predictive coding | ✅ Shipped |
 | **v9.0** | Cognitive Budget — per-project token economy with passive UBI recovery (+100 tokens/hr); agents that over-save enter Cognitive Debt | Resource-bounded rationality (Simon, 1955) | ✅ Shipped |
 | **v9.1** | Task Router v2 — 6-signal weighted heuristic engine routing tasks between cloud host and local LLM based on file-type complexity, scope, and multi-step detection | Heuristic classification, cognitive load theory | ✅ Shipped |
+| **v9.4** | Shell Injection Fix — `execSync` → `execFileSync` + SHA format validation in git drift detection | Defense-in-depth, secure subprocess execution | ✅ Shipped |
+| **v9.4** | Command Injection Fix (lifecycle) — PID file injection via `execSync` template literal; remediated with `execFileSync` array args | Defense-in-depth, attack surface reduction | ✅ Shipped |
 | **v9.2** | Cross-Backend Reconciliation — automatic Supabase → SQLite sync with idempotent dedup and 5s timeout | Eventual consistency, crdt-style reconciliation | ✅ Shipped |
 | **v9.2** | Split-Brain Drift Detection — dual-backend version comparison with prominent divergence warnings at load time | Byzantine fault detection, split-brain resolution | ✅ Shipped |
 | **v9.2** | TurboQuant QJL Validation — zero R@5 delta between P50 and P95 residual vectors (d=128, N=2K); CV=0.038 at d=768 proves no long tail | QJL estimator (ICLR 2026), Householder orthogonal rotation | ✅ Shipped |
@@ -1305,7 +1316,7 @@ Prism MCP is open-source and free for individual developers. For teams and enter
 
 ## 📦 Milestones & Roadmap
 
-> **Current: v9.3.0** — TurboQuant ResidualNorm Tiebreaker ([CHANGELOG](CHANGELOG.md))
+> **Current: v9.4.1** — Adversarial Security Hardening & Bidirectional Sync ([CHANGELOG](CHANGELOG.md))
 
 | Release | Headline |
 |---------|----------|
@@ -1354,7 +1365,7 @@ A: Run `npm run build && npm test`, then open the Mind Palace dashboard (`localh
 ### 💡 Known Limitations & Quirks
 
 - **LLM-dependent features require an API key.** Semantic search, Morning Briefings, auto-compaction, and VLM captioning need a `GOOGLE_API_KEY` (your Gemini API key) or equivalent provider key. Without one, Prism falls back to keyword-only search (FTS5).
-- **Auto-load is model- and client-dependent.** Session auto-loading relies on both the LLM following system prompt instructions *and* the MCP client completing tool registration before the model's first turn. Prism provides platform-specific [Setup Guides](#setup-guides) and a server-side fallback (v5.2.1) that auto-pushes context after 10 seconds.
+- **Auto-load is model- and client-dependent.** Session auto-loading relies on both the LLM following system prompt instructions *and* the MCP client completing tool registration before the model's first turn. Prism provides platform-specific [Setup Guides](#-setup-guides) and a server-side fallback (v5.2.1) that auto-pushes context after 10 seconds.
 - **MCP client race conditions.** Some MCP clients may not finish tool enumeration before the model generates its first response, causing transient `unknown_tool` errors. This is a client-side timing issue — Prism's server completes the MCP handshake in ~60ms. Workaround: the server-side auto-push fallback and the startup skill's retry logic.
 - **No real-time sync without Supabase.** Local SQLite mode is single-machine only. Multi-device or team sync requires a Supabase backend.
 - **Embedding quality varies by provider.** Gemini `text-embedding-004` and OpenAI `text-embedding-3-small` produce high-quality 768-dim vectors. Prism passes `dimensions: 768` via the Matryoshka API for OpenAI models (native output is 1536-dim; this truncation is lossless and outperforms ada-002 at full 1536 dims). Ollama embeddings (e.g., `nomic-embed-text`) are usable but may reduce retrieval accuracy.
