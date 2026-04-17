@@ -391,7 +391,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
   // Phase 1: Start total latency timer BEFORE any work (embedding + storage)
   const totalStart = performance.now();
 
-  let llmProvider;
+  let llmProvider: ReturnType<typeof getLLMProvider>;
   try {
     llmProvider = getLLMProvider();
   } catch (err) {

@@ -154,10 +154,10 @@ export async function startDashboardServer(): Promise<void> {
   const AUTH_USER = process.env.PRISM_DASHBOARD_USER || "";
   const AUTH_PASS = process.env.PRISM_DASHBOARD_PASS || "";
   const AUTH_JWKS_URI = process.env.PRISM_JWKS_URI || process.env.AUTH_JWKS_URI || "";
-  
+
   // Auth is enabled if basic auth is configured OR if JWKS is configured
   const AUTH_ENABLED = (AUTH_USER.length > 0 && AUTH_PASS.length > 0) || AUTH_JWKS_URI.length > 0;
-  
+
   if (AUTH_JWKS_URI) {
     initJWKS(AUTH_JWKS_URI);
   }
