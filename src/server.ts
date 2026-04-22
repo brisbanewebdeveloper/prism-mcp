@@ -40,6 +40,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { buildVSCodePrompt } from "./aba-protocol.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -100,6 +101,7 @@ import { acquireLock, registerShutdownHandlers } from "./lifecycle.js";
 // correct backend (Supabase or SQLite) with proper error handling.
 import { getStorage } from "./storage/index.js";
 import { getSettingSync, initConfigStorage } from "./storage/configStorage.js";
+import { sanitizeMcpOutput } from "./utils/sanitizer.js";
 import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
 
@@ -738,33 +740,52 @@ export function createServer() {
 
   if (SESSION_MEMORY_ENABLED) {
     server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-      prompts: [{
-        name: "resume_session",
-        description:
-          "Load previous session context for a project. " +
-          "Automatically fetches handoff state and injects it before " +
-          "the LLM starts thinking — no tool call needed. " +
-          "Includes version tracking for concurrency control.",
-        arguments: [
-          {
-            name: "project",
-            description: "Project identifier to resume (e.g., 'prism-mcp')",
-            required: true,
-          },
-          {
-            name: "level",
-            description:
-              "Context depth: 'quick' (~50 tokens), " +
-              "'standard' (~200 tokens, recommended), " +
-              "'deep' (full history, ~1000+ tokens)",
-            required: false,
-          },
-        ],
-      }],
+      prompts: [
+        {
+          name: "resume_session",
+          description:
+            "Load previous session context for a project. " +
+            "Automatically fetches handoff state and injects it before " +
+            "the LLM starts thinking — no tool call needed. " +
+            "Includes version tracking for concurrency control.",
+          arguments: [
+            {
+              name: "project",
+              description: "Project identifier to resume (e.g., 'prism-mcp')",
+              required: true,
+            },
+            {
+              name: "level",
+              description:
+                "Context depth: 'quick' (~50 tokens), " +
+                "'standard' (~200 tokens, recommended), " +
+                "'deep' (full history, ~1000+ tokens)",
+              required: false,
+            },
+          ],
+        },
+        {
+          name: "aba_protocol",
+          description: "Fetch the ABA precision safety and behavioral protocol for standard alignment.",
+          arguments: []
+        }
+      ],
     }));
 
     server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: promptArgs } = request.params;
+
+      if (name === "aba_protocol") {
+        return {
+          messages: [{
+            role: "user",
+            content: {
+              type: "text",
+              text: buildVSCodePrompt("You are an MCP-powered assistant with Prism behavioral alignment.")
+            }
+          }]
+        };
+      }
 
       if (name !== "resume_session") {
         throw new Error(`Unknown prompt: ${name}`);
@@ -806,19 +827,19 @@ export function createServer() {
           content: {
             type: "text",
             // SECURITY: Boundary tags prevent the LLM from treating loaded memory as instructions
-            text: data && data.status !== "no_previous_session"
+            text: sanitizeMcpOutput(data && data.status !== "no_previous_session"
               ? `${MEMORY_BOUNDARY_PREFIX}You are resuming work on project "${project}". ` +
-                `Here is your previous session context (loaded at ${level} level):\n\n` +
-                `${JSON.stringify(data, null, 2)}\n\n` +
-                (version
-                  ? `**Current Session Version: ${version}**\n` +
-                    `When saving handoff state at the end of this session, ` +
-                    `you MUST pass expected_version: ${version} to prevent state collisions.\n\n`
-                  : "") +
-                `Continue from where you left off. Check the pending ` +
-                `TODOs and active decisions before starting new work.${MEMORY_BOUNDARY_SUFFIX}`
+              `Here is your previous session context (loaded at ${level} level):\n\n` +
+              `${JSON.stringify(data, null, 2)}\n\n` +
+              (version
+                ? `**Current Session Version: ${version}**\n` +
+                `When saving handoff state at the end of this session, ` +
+                `you MUST pass expected_version: ${version} to prevent state collisions.\n\n`
+                : "") +
+              `Continue from where you left off. Check the pending ` +
+              `TODOs and active decisions before starting new work.${MEMORY_BOUNDARY_SUFFIX}`
               : `No previous context found for project "${project}". ` +
-                `This is a fresh session — no previous version to track.`,
+              `This is a fresh session — no previous version to track.`),
           },
         }],
       };
@@ -949,7 +970,7 @@ export function createServer() {
         const version = d.version;
         const versionNote = version
           ? `\n\n🔑 Session version: ${version}. Pass expected_version: ${version} when saving handoff.\n` +
-            `_occ_instruction: When saving handoff state, you MUST pass expected_version: ${version} to prevent state collisions with other sessions.`
+          `_occ_instruction: When saving handoff state, you MUST pass expected_version: ${version} to prevent state collisions with other sessions.`
           : "";
 
         // ─── Agent Identity Block (mirrors session_load_context output) ───
@@ -972,7 +993,7 @@ export function createServer() {
             uri,
             mimeType: "text/plain",
             // SECURITY: Boundary tags prevent context confusion attacks
-            text: `${MEMORY_BOUNDARY_PREFIX}📋 Session context for "${project}" (standard):\n\n${formattedContext.trim()}${identityBlock}${versionNote}${MEMORY_BOUNDARY_SUFFIX}`,
+            text: sanitizeMcpOutput(`${MEMORY_BOUNDARY_PREFIX}📋 Session context for "${project}" (standard):\n\n${formattedContext.trim()}${identityBlock}${versionNote}${MEMORY_BOUNDARY_SUFFIX}`),
           }],
         };
       } catch (error) {
@@ -1285,6 +1306,15 @@ export function createServer() {
               } catch { /* sendLoggingMessage is best-effort */ }
             }
           }
+        }
+
+        // Sanitize all text content returning from MCP tools to prevent prompt injection
+        if (result && Array.isArray(result.content)) {
+          result.content.forEach((c: any) => {
+            if (c.type === "text" && typeof c.text === "string") {
+              c.text = sanitizeMcpOutput(c.text);
+            }
+          });
         }
 
         return result;

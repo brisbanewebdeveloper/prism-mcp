@@ -49,6 +49,7 @@ import type {
   VerificationHarness,     // v7.2.0
   ValidationResult,        // v7.2.0
   SpreadingActivationOptions, // v8.0: Spreading Activation
+  ResearchTask,            // v11.0: Research Task Bridge
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -62,7 +63,7 @@ export class SqliteStorage implements StorageBackend {
 
   // ─── Lifecycle ─────────────────────────────────────────────
 
-  async initialize(dbPath?: string): Promise<void> {
+  async initialize(_isLocal?: boolean, dbPath?: string): Promise<void> {
     // ─── DB Path Resolution ────────────────────────────────────────────
     // Priority:
     //   1. Explicit dbPath argument — used by tests to inject a per-instance
@@ -3838,6 +3839,16 @@ export class SqliteStorage implements StorageBackend {
       });
       return id;
     }
+  }
+
+  // ─── v11.0: Research Task Bridge ──────────────────────────────
+
+  async listPendingResearchTasks(): Promise<ResearchTask[]> {
+    return []; // Only supported via Supabase bridge
+  }
+
+  async updateResearchTask(_id: string, _data: any): Promise<void> {
+    // No-op
   }
 }
 

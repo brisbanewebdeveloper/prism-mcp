@@ -329,6 +329,12 @@ for (const warning of googleSearchCredentialResult.warnings) {
 export const GOOGLE_SEARCH_CREDENTIALS = googleSearchCredentialResult.credentials;
 export const GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY =
   googleSearchCredentialResult.selectionStrategy;
+export const GOOGLE_SEARCH_API_KEY =
+  normalizeEnvValue(process.env.GOOGLE_SEARCH_API_KEY) ??
+  normalizeEnvValue(process.env.PRISM_GOOGLE_SEARCH_API_KEY);
+export const GOOGLE_SEARCH_CX =
+  normalizeEnvValue(process.env.GOOGLE_SEARCH_CX) ??
+  normalizeEnvValue(process.env.PRISM_GOOGLE_SEARCH_CX);
 if (GOOGLE_SEARCH_CREDENTIALS.length === 0) {
   console.error(
     "Warning: Google Search credentials are missing. Configure GOOGLE_SEARCH_CREDENTIALS, PRISM_GOOGLE_SEARCH_CREDENTIALS, or GOOGLE_SEARCH_API_KEY/PRISM_GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX/PRISM_GOOGLE_SEARCH_CX for web search tools."
@@ -359,6 +365,7 @@ if (!GOOGLE_API_KEY && process.env.PRISM_DEBUG_LOGGING === "true") {
 export const BRAVE_ANSWERS_API_KEY =
   normalizeEnvValue(process.env.BRAVE_ANSWERS_API_KEY) ??
   normalizeEnvValue(process.env.PRISM_BRAVE_ANSWERS_API_KEY);
+export const SEMANTIC_SCHOLAR_API_KEY = process.env.SEMANTIC_SCHOLAR_API_KEY;
 if (!BRAVE_ANSWERS_API_KEY && process.env.PRISM_DEBUG_LOGGING === "true") {
   console.error("Warning: BRAVE_ANSWERS_API_KEY environment variable is missing. Brave Answers tool will be unavailable.");
 }
@@ -730,3 +737,100 @@ export const PRISM_TURBOQUANT_TIEBREAKER_EPSILON =
   Number.isFinite(rawTiebreakerEpsilon) && rawTiebreakerEpsilon >= 0
     ? rawTiebreakerEpsilon
     : 0;
+
+// ─── v9.x: Local LLM (prism-coder:7b) Integration ─────────────────────────
+// Enables background tasks (compaction, task-router fallback, pipeline ops)
+// to use a local Ollama model instead of the cloud LLM provider.
+//
+// Default model is prism-coder:7b — fine-tuned on Prism tool schemas.
+// Disabled by default so existing deployments are unaffected.
+//
+// Set PRISM_LOCAL_LLM_ENABLED=true to activate.
+// Set PRISM_LOCAL_LLM_MODEL to override the model tag.
+// Set PRISM_LOCAL_LLM_URL to override the Ollama endpoint (default: localhost:11434).
+// Set PRISM_LOCAL_LLM_TIMEOUT_MS to override per-call timeout (default: 60000, max: 300000).
+// Set PRISM_STRICT_LOCAL_MODE=true to block cloud fallback when local LLM is enabled (HIPAA).
+
+/** Master switch — enables the local prism-coder:7b LLM for background tasks. */
+export const PRISM_LOCAL_LLM_ENABLED =
+  process.env.PRISM_LOCAL_LLM_ENABLED === "true"; // Opt-in, default false
+
+/** Ollama model tag to use for local LLM calls. */
+export const PRISM_LOCAL_LLM_MODEL =
+  (process.env.PRISM_LOCAL_LLM_MODEL || "prism-coder:7b").trim();
+
+/** Ollama base URL. Override for remote Ollama instances. */
+export const PRISM_LOCAL_LLM_URL =
+  (process.env.PRISM_LOCAL_LLM_URL || "http://localhost:11434").trim();
+
+/** Per-call timeout in ms. Prevents stalled background tasks. Capped at 300s. */
+export const PRISM_LOCAL_LLM_TIMEOUT_MS = (() => {
+  const raw = parseInt(process.env.PRISM_LOCAL_LLM_TIMEOUT_MS || "60000", 10);
+  // FIX (integer overflow): values > 2^31-1 cause setTimeout to fire immediately,
+  // which silently aborts every local LLM call and forces cloud fallback.
+  // Cap at 300s (5 min) — no legitimate compaction call should take longer.
+  const MAX_TIMEOUT = 300_000;
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_TIMEOUT) : 60_000;
+})();
+
+/**
+ * Strict local mode — blocks cloud LLM fallback when local LLM is enabled.
+ * Critical for HIPAA deployments where session data must never leave the device.
+ * When true: compaction throws instead of falling back to Gemini.
+ * When false (default): graceful cloud fallback on local LLM failure.
+ */
+export const PRISM_STRICT_LOCAL_MODE =
+  process.env.PRISM_STRICT_LOCAL_MODE === "true";
+
+/** Redact credentials from a URL for safe logging (strips user:pass@). */
+function redactUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password) {
+      parsed.username = "***";
+      parsed.password = "***";
+    }
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "[invalid URL]";
+  }
+}
+
+if (PRISM_LOCAL_LLM_ENABLED) {
+  console.error(
+    `[Prism] Local LLM enabled: model=${PRISM_LOCAL_LLM_MODEL}, ` +
+    `url=${redactUrl(PRISM_LOCAL_LLM_URL)}, timeout=${PRISM_LOCAL_LLM_TIMEOUT_MS}ms` +
+    (PRISM_STRICT_LOCAL_MODE ? ", STRICT LOCAL MODE (no cloud fallback)" : "")
+  );
+}
+
+// ─── v11.0: Zero-Search Retrieval (HRR) ───────────────────────
+// Dynamic dimension selection based on available system memory.
+// Higher dimensions = higher fact capacity but slower unbinding.
+
+import { totalmem } from "node:os";
+
+export const PRISM_HRR_DIMENSION = (() => {
+  // 1. Manual override via env var
+  const envVal = parseInt(process.env.PRISM_HRR_DIMENSION || "0", 10);
+  if (envVal > 0) {
+    // Ensure power of 2 for FFT
+    if ((envVal & (envVal - 1)) !== 0) {
+      console.error(`Warning: PRISM_HRR_DIMENSION (${envVal}) is not a power of 2. FFT unbinding may fail.`);
+    }
+    return envVal;
+  }
+
+  // 2. Auto-adjustment based on system RAM
+  const totalRamGb = totalmem() / (1024 ** 3);
+
+  if (totalRamGb >= 48) return 8192; // High-end (M4 Max)
+  if (totalRamGb >= 32) return 4096; // Mid-high (M3 Pro)
+  if (totalRamGb >= 16) return 2048; // Standard (M1/M2/M3)
+  return 1024; // Low-memory / Baseline
+})();
+
+if (PRISM_DEBUG_LOGGING) {
+  console.error(`[Prism] HRR Zero-Search Dimension: ${PRISM_HRR_DIMENSION} (Total RAM: ${(totalmem() / (1024**3)).toFixed(1)}GB)`);
+}
+

@@ -943,9 +943,43 @@ export const MIGRATIONS: Migration[] = [
       NOTIFY pgrst, 'reload schema';
     `
   },
+  {
+    version: 44,
+    name: "research_tasks_bridge",
+    sql: `
+      -- v11.0: Research Task Bridge
+      CREATE TABLE IF NOT EXISTS public.research_tasks (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        project TEXT NOT NULL,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        topic TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+        result_summary TEXT,
+        error_message TEXT,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      ALTER TABLE public.research_tasks ENABLE ROW LEVEL SECURITY;
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_policies WHERE tablename = 'research_tasks' AND policyname = 'research_tasks_all'
+        ) THEN
+          CREATE POLICY research_tasks_all ON public.research_tasks
+            FOR ALL USING (true) WITH CHECK (true);
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_research_tasks_status
+        ON public.research_tasks(status, created_at ASC);
+
+      NOTIFY pgrst, 'reload schema';
+    `
+  },
 
 ];
-
 /**
  * Current schema version — derived from the MIGRATIONS array.
  * Automatically updates when new migrations are added.

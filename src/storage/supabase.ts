@@ -40,6 +40,7 @@ import {
   PipelineStatus,          // v7.3: Dark Factory Pipeline
   VerificationHarness,     // v7.2.0: Verification Harness
   ValidationResult,        // v7.2.0: Verification Harness
+  ResearchTask,            // v11.0: Research Task Bridge
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -57,17 +58,23 @@ import { SafetyController } from "../darkfactory/safetyController.js";
 export class SupabaseStorage implements StorageBackend {
   // ─── Lifecycle ─────────────────────────────────────────────
 
-  async initialize(): Promise<void> {
-    debugLog("[SupabaseStorage] Initialized (REST API, stateless)");
+  async initialize(isLocal: boolean = false): Promise<void> {
+    debugLog("[SupabaseStorage] Initializing (REST API, stateless)");
 
     // Auto-apply pending schema migrations (non-fatal)
-    try {
-      await runAutoMigrations();
-    } catch (err) {
-      console.error(
-        "[SupabaseStorage] Auto-migration failed. Server will continue, but some tools may be unstable.",
-        err instanceof Error ? err.message : err
-      );
+    // ONLY run if the active backend is explicitly set to supabase.
+    // This prevents noise for local SQLite users.
+    if (!isLocal) {
+      try {
+        await runAutoMigrations();
+      } catch (err) {
+        console.error(
+          "[SupabaseStorage] Auto-migration failed. Server will continue, but some tools may be unstable.",
+          err instanceof Error ? err.message : err
+        );
+      }
+    } else {
+      debugLog("[SupabaseStorage] Skipping auto-migrations (running in local/sync mode)");
     }
   }
 
@@ -1801,6 +1808,30 @@ export class SupabaseStorage implements StorageBackend {
     // For now we just implement graceful degradation/no-op on Supabase until the SQL is deployed.
     debugLog(`[SupabaseStorage] upsertSemanticKnowledge is not fully implemented in Supabase yet. Skipping for ${data.concept}.`);
     return crypto.randomUUID();
+  }
+
+  // ─── v11.0: Research Task Bridge ──────────────────────────────
+
+  async listPendingResearchTasks(): Promise<ResearchTask[]> {
+    try {
+      const result = await supabaseGet("research_tasks", {
+        status: "eq.PENDING",
+        order: "created_at.asc"
+      });
+      return (Array.isArray(result) ? result : []) as unknown as ResearchTask[];
+    } catch (e: any) {
+      if (e.message?.includes("PGRST202") || e.message?.includes("Could not find the relation")) return [];
+      throw e;
+    }
+  }
+
+  async updateResearchTask(id: string, data: Partial<ResearchTask>): Promise<void> {
+    await supabasePatch("research_tasks", {
+      ...data,
+      updated_at: new Date().toISOString()
+    }, {
+      id: `eq.${id}`
+    });
   }
 }
 
