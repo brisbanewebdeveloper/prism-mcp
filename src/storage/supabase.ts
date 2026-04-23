@@ -1659,7 +1659,6 @@ export class SupabaseStorage implements StorageBackend {
       };
       if (project) query.project = `eq.${project}`;
       if (status) query.status = `eq.${status}`;
-
       const result = await supabaseGet("dark_factory_pipelines", query);
       const rows = (Array.isArray(result) ? result : []) as any[];
       // ─── v7.4: Deserialize contract_payload from JSON TEXT ───

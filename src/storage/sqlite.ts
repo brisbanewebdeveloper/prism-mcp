@@ -845,6 +845,44 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
+    // ─── v12.0 Migration: Prism Projects + Teams ──────────────
+    //
+    // REVIEWER NOTE: Projects are the top-level organizational unit.
+    // Members table supports owner/editor/viewer roles for team collaboration.
+    // Tier limits are enforced at the tool-handler level (not DB constraints).
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_projects (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        status TEXT DEFAULT 'draft',
+        created_by TEXT NOT NULL DEFAULT 'default',
+        team_id TEXT DEFAULT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_projects_team ON prism_projects(team_id)`
+    );
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_projects_status ON prism_projects(status)`
+    );
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_project_members (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        role TEXT NOT NULL DEFAULT 'viewer',
+        assigned_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, user_id),
+        FOREIGN KEY (project_id) REFERENCES prism_projects(id) ON DELETE CASCADE
+      )
+    `);
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_members_user ON prism_project_members(user_id)`
+    );
+
     // ─── v6.1 Migration: Integrity Check ──────────────────────
     //
     // REVIEWER NOTE: PRAGMA integrity_check scans the B-tree structure of
@@ -893,8 +931,8 @@ export class SqliteStorage implements StorageBackend {
       // Special params (not filters)
       if (key === "select") {
         if (value === "*") {
-           select = "*";
-           continue;
+          select = "*";
+          continue;
         }
 
         const VALID_COLUMNS = [
@@ -903,7 +941,8 @@ export class SqliteStorage implements StorageBackend {
           'session_date', 'schema_version', 'created_at', 'updated_at',
           'deleted_at', 'archived_at', 'is_rollup', 'rollup_type',
           'last_accessed_at', 'importance', 'role', 'embedding_status',
-          'embedding_last_error', 'embedding_retry_count', 'embedding_last_attempt_at'
+          'embedding_last_error', 'embedding_retry_count', 'embedding_last_attempt_at',
+          'event_type', 'confidence_score', 'title', 'agent_name', 'rollup_count'
         ];
 
         const requestedColumns = value.split(',').map(c => c.trim());
@@ -3016,8 +3055,8 @@ export class SqliteStorage implements StorageBackend {
         // SQLITE_BUSY (error code 5) means another connection holds the lock.
         // Surface a clear, retryable error instead of crashing.
         const isBusy = err.message?.includes('SQLITE_BUSY') ||
-                       err.message?.includes('database is locked') ||
-                       err.code === 5;
+          err.message?.includes('database is locked') ||
+          err.code === 5;
         if (isBusy) {
           throw new Error(
             '[SqliteStorage] VACUUM failed: database is locked by another connection. ' +
@@ -3036,9 +3075,9 @@ export class SqliteStorage implements StorageBackend {
       sizeAfter,
       message: opts.dryRun
         ? `Dry run: no changes made. Current database size: ${(sizeBefore / (1024 * 1024)).toFixed(2)} MB. ` +
-          `Note: Large databases may take up to 60 seconds to vacuum.`
+        `Note: Large databases may take up to 60 seconds to vacuum.`
         : `VACUUM completed successfully. Reclaimed ${savedMb} MB. ` +
-          `Note: Large databases may take up to 60 seconds to vacuum.`,
+        `Note: Large databases may take up to 60 seconds to vacuum.`,
     };
   }
 
@@ -3742,6 +3781,7 @@ export class SqliteStorage implements StorageBackend {
     await this.db.execute({
       sql: `
         INSERT INTO verification_runs (
+          id, rubric_hash, project, conversation_id, run_at,
           id, rubric_hash, project, conversation_id, run_at,
           passed, pass_rate, critical_failures, coverage_score, result_json, gate_action, gate_override, override_reason, user_id
         )
