@@ -63,6 +63,8 @@ repomix*
 *.sqlite-wal
 
 # Local debug/scratch scripts
+.github/copilot-instructions.md
+UPDATES.md
 test-mcp.js
 test_crdt.js
 test_save.js
