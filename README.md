@@ -12,7 +12,7 @@
 
 **Your AI agent forgets everything between sessions. Prism fixes that — then teaches it to think.**
 
-Prism v11.5.1 is a true **Cognitive Architecture** inspired by human brain mechanics. Beyond flat vector search, your agent now forms principles from experience, follows causal trains of thought, and possesses the self-awareness to know when it lacks information. **Your agents don't just remember; they learn.** With v11.5.1, the entire cognitive pipeline — including ledger compaction, task routing, semantic search, and the new **Deep Research Intelligence** — runs **100% on-device** or via secure clinical discovery (PubMed/ERIC), backed by `prism-coder:7b`, a HIPAA-hardened local LLM. No API keys for core features. No data leaves your machine.
+Prism v11.6.0 is a true **Cognitive Architecture** inspired by human brain mechanics. Beyond flat vector search, your agent now forms principles from experience, follows causal trains of thought, and possesses the self-awareness to know when it lacks information. **Your agents don't just remember; they learn.** With v11.6.0, the cognitive pipeline continues Prism's local-first model, carrying forward **Deep Research Intelligence**, held-out **GRPO tool-calling benchmarks**, and HIPAA-hardened on-device memory. No API keys for core features. No data leaves your machine.
 
 ```bash
 npx -y prism-mcp-server
@@ -52,7 +52,6 @@ https://github.com/dcostenco/prism-mcp/raw/main/docs/prism_mcp_demo.mp4
 Prism v11.5.1 transforms your AI agent from a "Coder" into a "Clinical Scientist." It features a **Tavily-Enhanced Multi-Provider Discovery Pipeline** that grounds Gemini 2.5 Flash's thinking in real-world empirical data.
 
 ### 🥊 The Global Benchmarks: Prism v11 vs. Standard RAG
-
 | Feature | **Standard AI Memory (Mem0/Zep)** | **Prism v11.5.1 (Elite Architecture)** |
 | :--- | :--- | :--- |
 | **Search Complexity** | $O(N)$ or $O(\log N)$ (Scales with data) | **$O(1)$ Zero-Search (Constant time via HRR) ** |
@@ -574,7 +573,15 @@ A gorgeous glassmorphism UI at `localhost:3000` that lets you see exactly what y
 - **Morning Briefing** — AI-synthesized action plan after 4+ hours away
 - **Brain Health** — memory integrity scan with one-click auto-repair
 
+![Mind Palace Dashboard — Neural Knowledge Graph, Project State, and Intent Health](docs/mind-palace-dashboard.png)
 
+![Interactive Knowledge Graph — force-directed neural graph with click-to-filter and importance weighting](docs/knowledge-graph.jpg)
+
+![Time Travel Timeline — browse and restore any historical memory version with diff comparison](docs/time-travel-timeline.jpg)
+
+![Hivemind Radar — real-time multi-agent monitoring with heartbeat, task status, and activity feed](docs/hivemind-radar.jpg)
+
+![Session Ledger — immutable audit trail of every agent decision across all projects](docs/session-ledger.jpg)
 
 ### 🛡️ ABA Precision Security Protocol
 Inspired by Applied Behavior Analysis (ABA) structures in the Synalux platform, Prism incorporates rigorous behavioral safety constraints directly into the MCP connection layer. Advanced output sanitization (`sanitizeMcpOutput`) and behavior-guided guardrails eliminate prompt injection, constrain the generator, and enforce strict, hallucination-free outputs for clinical precision.
@@ -627,16 +634,16 @@ Prism scores coding tasks across **6 weighted heuristic signals** (keyword analy
 
 ### 🧠 Local Prism Coder Engine (prism-coder:7b)
 To achieve zero-latency, offline routing and memory compilation without cloud dependencies, Prism utilizes an internal fine-tuned ML model: **`prism-coder:7b`**.
-Built atop Qwen 2.5 Coder 7B using the MLX framework for Apple Silicon, this engine underwent aggressive Supervised Fine-Tuning (SFT) over 1,000+ past session traces and semantic architectures.
+Built atop Qwen 2.5 Coder 7B using the MLX framework for Apple Silicon, this engine underwent aggressive Supervised Fine-Tuning (SFT) over 3,300+ session traces, then aligned using **GRPO (Group Relative Policy Optimization)** with a decomposed 4-component reward function.
 
-To guarantee structured MCP tool use, it was further aligned using **GRPO (Group Relative Policy Optimization)** with a deterministic reward function that deducts points for missing required parameters or misnaming tools.
-
-**Benchmark Results ([`training/benchmark.py`](training/benchmark.py), N=15 held-out):**
-- **JSON Validity:** 100.0% — all outputs parse as valid JSON
+**Benchmark Results ([`training/benchmark.py`](https://github.com/dcostenco/prism-mcp/blob/main/training/benchmark.py), N=15 held-out):**
+- **Tool-Call Accuracy:** 93.3% — correct tool on unseen prompts (14/15)
+- **Tool Selection:** 100.0% (7/7) — perfect on all tool-call prompts
 - **Retrieval Accuracy:** 100.0% (3/3) — perfect on search/list/knowledge tasks
-- **Parameter Accuracy:** 80.0% — required params present when tool is correct
-- **Tool-Call Accuracy:** 40.0% — correct tool on unseen prompts (improving with additional GRPO iterations)
-- **Generation Speed:** 47.0 Tokens/sec (Apple M4 Max, 36GB)
+- **JSON Validity:** 100.0% — every output parses as valid JSON
+- **Parameter Accuracy:** 73.3% — required params present when tool is correct
+- **Generation Speed:** 29.9 Tokens/sec (Apple M4 Max, 36GB)
+- **Avg Latency:** 2.2s per prompt
 
 **Integration**: Run via Ollama natively to power autonomous file operations and session routing entirely within the local host environment.
 
@@ -937,11 +944,12 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 
 ## <a name="whats-new"></a>🆕 What's New
 
-> **Current release: v11.5.1 — Structural GRPO Alignment & Held-Out Benchmarking**
+> **Current release: v11.6.0 — Release Line Alignment**
 
-- 🧠 **v11.5.1 — Structural GRPO Alignment:** GRPO-aligned local engine with held-out benchmark suite (N=15). 100% JSON validity, 100% retrieval accuracy. → [Changelog](CHANGELOG.md#1150)
-- 🧪 **v11.5.1 — Zero-Search Field Testing:** Field-verified constant-time retrieval. → [Changelog](CHANGELOG.md#1101)
-- 🛡️ **v11.5.1 — HIPAA-Hardened Local LLM:** Your agent's memory now runs entirely on-device. Introducing `prism-coder:7b` for local compaction, task routing, and semantic search. Includes `PRISM_STRICT_LOCAL_MODE` to block cloud fallbacks, SSRF protection, URL credential redaction, and full XML escaping to prevent prompt injection. 22-finding adversarial audit completed. → [Changelog](CHANGELOG.md#1100)
+- 🏷️ **v11.6.0 — Release Line Alignment:** Package metadata and documentation now track the current `custom` branch release line while preserving the verified local-first runtime and held-out benchmark work from v11.5.x. → [Changelog](CHANGELOG.md#1160)
+- 🧠 **v11.5.0 — Structural GRPO Alignment:** GRPO-aligned local engine with held-out benchmark suite (N=15). 93.3% tool-call accuracy, 100% JSON validity, and 100% retrieval accuracy. → [Changelog](CHANGELOG.md#1150)
+- 🧪 **v11.0.1 — Zero-Search Field Testing:** Field-verified constant-time retrieval. → [Changelog](CHANGELOG.md#1101)
+- 🛡️ **v11.0.0 — HIPAA-Hardened Local LLM:** `prism-coder:7b` for local compaction, task routing, and semantic search. `PRISM_STRICT_LOCAL_MODE`, SSRF protection, URL credential redaction, and full XML escaping. → [Changelog](CHANGELOG.md#1100)
 
 - 🧬 **v9.14.0 — Dynamic Hardware Routing:** Platform-aware memory detection auto-selects optimal models (32b for ≥32GB RAM, 14b/7b for lighter hardware). Includes **Nomic Semantic Tool Pruning (RAG)** which embeds all 17 MCP tools into offline vectors, injecting only the Top-3 relevant schemas into context to maximize inference speed.
 - 🔬 **v9.13.0 — Local Embeddings & Zero-API-Key Setup:** `LocalEmbeddingAdapter` using `nomic-embed-text-v1.5` generates 768-dim embeddings entirely on-device. Full semantic search and session memory now work with **zero cloud API keys**. → [Changelog](CHANGELOG.md#9130)
@@ -954,6 +962,43 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 - 🌐 **v7.7.0 — Cloud-Native SSE Transport:** Full Server-Sent Events MCP support for seamless network deployments.
 
 👉 **[Full release history → CHANGELOG.md](CHANGELOG.md)** · **[ROADMAP →](ROADMAP.md)**
+
+---
+
+## <a name="prism-coder-ide"></a>🖥️ Prism Coder IDE — Standalone Desktop App
+
+> **Available on ALL Prism plans** — Free tier included. 14-day trial for paid features.
+
+A VS Code-like standalone desktop IDE purpose-built for Prism Coder. Ships as `.dmg` (macOS) and `.exe` (Windows).
+
+| Feature | Details |
+| :--- | :--- |
+| **Monaco Editor** | Same code editor engine as VS Code — syntax highlighting, IntelliSense, bracket colorization, minimap |
+| **AI Chat Panel** | Real-time SSE streaming from Prism Coder 7B (local via Ollama) with markdown + code block rendering |
+| **Integrated Terminal** | Full PTY terminal (`xterm.js` + `node-pty`) — not a web simulation |
+| **File Explorer** | Recursive file tree with extension-aware icons, context menus, and live file watching |
+| **Dark Theme** | Catppuccin Mocha base with Prism violet accent, JetBrains Mono typography |
+| **Zero Cloud** | 100% local — models run on your hardware, no API keys required for core features |
+| **Cross-Platform** | macOS (`.dmg`, Apple Silicon + Intel) and Windows (`.exe` NSIS installer) |
+
+### 💳 Subscription Plans
+
+| Feature | **Free** | **Advanced ($12/mo)** | **Enterprise ($29/mo)** |
+| :--- | :---: | :---: | :---: |
+| MCP Tools (30+) | ✅ | ✅ | ✅ |
+| Local Memory (SQLite) | ✅ | ✅ | ✅ |
+| CLI (`prism load/sync`) | ✅ | ✅ | ✅ |
+| Mind Palace Dashboard | ✅ | ✅ | ✅ |
+| **Prism Coder IDE** | ✅ | ✅ | ✅ |
+| **Desktop Packages** | ✅ | ✅ | ✅ |
+| Synalux Drive | ❌ | ✅ | ✅ |
+| Cloud Sync (Supabase) | ❌ | ✅ | ✅ |
+| Cloud Models (Gemini/Claude) | ❌ | ✅ | ✅ |
+| Multi-Agent Hivemind | ❌ | ❌ | ✅ |
+| Dark Factory Pipelines | ❌ | ❌ | ✅ |
+| Priority Support | ❌ | ❌ | ✅ |
+
+> 🆓 **Free tier is fully functional** — all 30+ MCP tools, local memory, CLI, IDE, and desktop packages work forever with zero API keys. Paid plans unlock cloud sync, Synalux Drive, cloud models, and enterprise features. **14-day free trial** on all paid plans.
 
 ---
 
@@ -981,25 +1026,27 @@ Standard memory servers (like Mem0, Zep, or the baseline Anthropic MCP) act as p
 
 ### 📊 Local Engine Benchmarks (Prism-Coder 7B)
 
-Prism's local engine (`prism-coder:7b`) is optimized for low-latency, high-validity tool orchestration. Benchmarked on a **held-out test set of 15 prompts** (zero overlap with GRPO training data) to measure real-world generalization, not memorization.
+Prism's local engine (`prism-coder:7b`) is optimized for low-latency, high-validity tool orchestration. Benchmarked on a **held-out test set of 15 prompts** (zero overlap with training data) to measure real-world generalization, not memorization.
 
 | Metric | Score | Details |
 |:-------|:---:|:---|
-| **JSON Validity** | **100.0%** | Every model output parses as valid JSON |
-| **Tool-Call Accuracy** | **40.0%** (N=15 held-out) | Correct tool selection on unseen prompts |
+| **Tool-Call Accuracy** | **93.3%** (14/15 held-out) | Correct tool selection on unseen prompts |
+| **Tool Selection** | **100.0%** (7/7) | Perfect on all tool-call category prompts |
 | **Retrieval Accuracy** | **100.0%** (3/3) | `session_search`, `session_list`, `knowledge_search` |
-| **Reasoning Accuracy** | **60.0%** (3/5) | Correctly avoids tool calls on pure reasoning |
-| **Parameter Accuracy** | **80.0%** | Required params present when tool is correct |
-| **Generation Speed** | **47.0 Tok/sec** | Apple M4 Max, 36GB |
-| **Avg Latency** | **1.6s** | Per-prompt inference time |
+| **JSON Validity** | **100.0%** | Every model output parses as valid JSON |
+| **Reasoning Accuracy** | **80.0%** (4/5) | Correctly avoids tool calls on pure reasoning |
+| **Parameter Accuracy** | **73.3%** | Required params present when tool is correct |
+| **Generation Speed** | **29.9 Tok/sec** | Apple M4 Max, 36GB (LoRA adapter active) |
+| **Avg Latency** | **2.2s** | Per-prompt inference time |
 
-> 🧪 **Verifiable Proof**: These results are produced by our held-out benchmark suite at [`training/benchmark.py`](training/benchmark.py) using 15 non-overlapping test prompts. View the [Benchmark Source](https://github.com/dcostenco/prism-mcp/blob/main/training/benchmark.py), [GRPO Training Script](https://github.com/dcostenco/prism-mcp/blob/main/training/grpo_align.py), and [Protocol Verification Harness](https://github.com/dcostenco/prism-mcp/blob/main/src/verification/gatekeeper.ts) to audit our methodology.
+> 🧪 **Verifiable Proof**: These results are produced by the held-out benchmark suite in [`training/benchmark.py`](training/benchmark.py) using 15 non-overlapping test prompts. Review [`training/grpo_align.py`](training/grpo_align.py) and [`src/verification/gatekeeper.ts`](src/verification/gatekeeper.ts) to audit the training and verification path.
 
 #### 🛡️ The Case for Structural GRPO
-Prism achieves high-validity tool orchestration through **Structural GRPO (Group Relative Policy Optimization)**.
-1. **Deterministic Structural Rewards:** Unlike cloud models that use fuzzy LLM-based reward models, we use a code-based validator that strictly rewards the `<think> → <tool_call>` sequence and penalizes any deviation.
-2. **Synthetic Preference Injection:** We anchor the model with synthetic preference samples during alignment, mapping correct tool-name and parameter schemas for the specific project registry.
-3. **Specialized Adapter Tuning:** While general models (GPT-4o) must handle millions of tasks, our 7B adapter is hyper-specialized for the Prism MCP tool registry, eliminating the "jack-of-all-trades" tax.
+Prism achieves specialist-grade tool accuracy through **Structural GRPO (Group Relative Policy Optimization)** with a decomposed 4-component reward function:
+1. **Format Reward (0.10):** Validates `<think>` tag compliance for chain-of-thought reasoning.
+2. **Tool Reward (0.25):** Grades tool name accuracy against the expected MCP tool registry.
+3. **Parameter Reward (0.25):** Validates required parameters and JSON schema compliance.
+4. **Abstention Reward (0.40):** The heaviest component — teaches the model when *not* to call tools, preventing false-positive hallucinations on general reasoning questions. Trained on 35 gold abstention responses including 10 hard negatives (prompts containing "session", "knowledge", "search", "context" that should NOT trigger tool calls).
 
 
 ### 🏆 Where Prism Crushes the Giants

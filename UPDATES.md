@@ -1,3 +1,40 @@
+# 2026-04-24 - Resolve Active Merge Across Runtime Abstraction, Training Merge, Dashboard Cleanup, And Release-Line Alignment
+
+## Summary
+
+Resolved the active merge by keeping the current branch's startup abstraction and SQLite select contract, semantically merging the GRPO training scripts, removing the incomplete dashboard Cloud tab splice, aligning package/docs to the `v11.6.0` release line without importing unsupported feature claims, and regenerating `package-lock.json` from the resolved manifest.
+
+## What Was Done
+
+- Kept `src/server.ts` on the existing `initializeRuntime()` startup path instead of re-inlining `acquireLock()`, `initConfigStorage()`, and `initTelemetry()`, preserving the current abstraction and avoiding duplicate initialization work.
+- Kept the broader `VALID_COLUMNS` contract in `src/storage/sqlite.ts` so PostgREST-style selects still support the role, embedding retry, event, confidence, title, agent, and rollup fields already present in the live schema.
+- Merged `training/benchmark.py` in favor of the balanced-brace bare-JSON parser so nested tool-call arguments are handled correctly outside `<think>` blocks.
+- Rebuilt the conflicted sections in `training/grpo_align.py` around the decomposed reward function, richer prompt corpus, and full synthetic gold-response map, removing duplicate partial definitions left by the merge.
+- Resolved `src/dashboard/ui.ts` by preserving the stable project/search/factory layout and the tab-visibility fix while removing the incomplete Cloud tab block and its orphaned handlers, which were not wired anywhere else in the repo snapshot.
+- Aligned `package.json`, `README.md`, and `CHANGELOG.md` to the `v11.6.0` branch release line while keeping the README and package description truthful to the codebase's verified feature set.
+- Regenerated `package-lock.json` with npm instead of hand-merging generated dependency data.
+
+## Files Changed
+
+- `CHANGELOG.md`
+- `README.md`
+- `package-lock.json`
+- `package.json`
+- `src/dashboard/ui.ts`
+- `src/server.ts`
+- `src/storage/sqlite.ts`
+- `training/benchmark.py`
+- `training/grpo_align.py`
+- `UPDATES.md`
+
+## Verification Performed
+
+- Confirmed the resolved source and documentation files no longer contain merge conflict markers before lockfile regeneration.
+- Regenerated `package-lock.json` successfully with `npm install --package-lock-only --ignore-scripts`.
+- Ran `npm run lint:dashboard` successfully.
+- Ran `npm run build` successfully.
+- Ran `npm exec vitest run tests/lifecycle-lock.test.ts tests/server-base-tools.test.ts` successfully.
+
 # 2026-04-23 - Resolve Active Merge Across CLI Expansion, Dashboard Cloud UI, SQLite Bootstrap, And Lockfile Drift
 
 ## Summary

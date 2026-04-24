@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## <a name="1160"></a>[11.6.0] - 2026-04-24 — 🏷️ Release Line Alignment
+
+> **The merge-line release.** This version aligns the `custom` branch package metadata and top-level documentation on the `11.6.0` release line without changing the verified local-first runtime behavior carried forward from the `11.5.x` series.
+
+### Changed
+
+- **Release metadata alignment** — Updated package metadata and top-level docs to track the `11.6.0` branch release line.
+- **Benchmark/doc consistency** — Kept the held-out GRPO benchmark numbers and local-first feature claims aligned with the codebase instead of importing unsupported release-note text from the merged branch.
+
 ## <a name="1151"></a>[11.5.1] - 2026-04-22 — 🛡️ Cross-Platform Reliability & CI Recovery
 
 > **The Stability Patch.** This version fixes regressions in the CI pipeline and ensures the 100% precision release is fully compatible with Windows and macOS environments.
