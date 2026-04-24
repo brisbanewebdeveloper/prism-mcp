@@ -56,7 +56,7 @@ TEST_CASES = [
 
 def parse_tool_call(response: str):
     """Extract tool name and arguments from response.
-    
+
     Sanitizes the response first (strips \\ufffd EOS replacement chars),
     then tries multiple formats:
     Accepts multiple formats:
@@ -91,7 +91,7 @@ def parse_tool_call(response: str):
     # 3. Fallback: bare JSON with "name" key, outside <think> blocks
     #    Use a balanced-brace extractor to handle nested arguments
     stripped = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-    
+
     # Find all potential JSON objects using balanced brace matching
     i = 0
     while i < len(stripped):
@@ -120,7 +120,7 @@ def parse_tool_call(response: str):
 def evaluate_response(response: str, expected_tool: str):
     """Score a single response."""
     tool_name, tool_args = parse_tool_call(response)
-    
+
     result = {
         "tool_called": tool_name,
         "expected_tool": expected_tool,
@@ -131,13 +131,13 @@ def evaluate_response(response: str, expected_tool: str):
         "has_think": False,
         "think_length": 0,
     }
-    
+
     # Check for <think> CoT block
     think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL)
     if think_match:
         result["has_think"] = True
         result["think_length"] = len(think_match.group(1).strip())
-    
+
     # Check reasoning (text before tool call, excluding <think> blocks)
     if '<tool_call>' in response:
         pre = response[:response.index('<tool_call>')].strip()
@@ -145,20 +145,20 @@ def evaluate_response(response: str, expected_tool: str):
         result["has_reasoning"] = len(pre_clean) > 10 or result["has_think"]
     elif expected_tool is None:
         result["has_reasoning"] = len(response.strip()) > 20 or result["has_think"]
-    
+
     # Check correct tool
     if expected_tool is None:
         result["correct_tool"] = tool_name is None  # Should NOT have called a tool
     else:
         result["correct_tool"] = tool_name == expected_tool
-    
+
     # Check params
     if tool_name and tool_name in TOOL_PARAMS and tool_args:
         required = TOOL_PARAMS[tool_name]["required"]
         result["params_valid"] = required.issubset(set(tool_args.keys()))
     elif expected_tool is None and tool_name is None:
         result["params_valid"] = True  # No tool = no params needed
-    
+
     return result
 
 
@@ -169,59 +169,59 @@ def run_benchmark(requested_adapter=None):
     except ImportError:
         print("ERROR: mlx_lm not installed")
         sys.exit(1)
-    
+
     # Determine which adapter to use
     adapter = requested_adapter if requested_adapter else (ADAPTER_PATH if os.path.exists(ADAPTER_PATH) else SFT_ADAPTER)
     if adapter and not os.path.exists(adapter):
         print(f"ERROR: No adapter found at {adapter}")
         print("Running without adapter (base model only)")
         adapter = None
-    
+
     print(f"Loading model: {MODEL_PATH}")
     print(f"Adapter: {adapter or 'None (base model)'}")
-    
+
     if adapter:
         model, tokenizer = load(MODEL_PATH, adapter_path=adapter)
     else:
         model, tokenizer = load(MODEL_PATH)
-    
+
     results = []
     total_tokens = 0
     total_time = 0
-    
+
     sys_prompt = "You are Prism, an AI coding assistant. You MUST use the following format for tool calls:\n<think>\n[reasoning about which tool to use]\n</think>\n\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {...}}\n</tool_call>\n\nAvailable tools: session_load_context, session_save, session_search, session_list, session_delete, knowledge_save, knowledge_search, memory_link, session_handoff, session_task_route"
-    
+
     for i, test in enumerate(TEST_CASES):
         prompt_text = f"<|im_start|>system\n{sys_prompt}<|im_end|>\n<|im_start|>user\n{test['prompt']}<|im_end|>\n<|im_start|>assistant\n"
-        
+
         start = time.time()
         response = generate(model, tokenizer, prompt=prompt_text, max_tokens=768)
         elapsed = time.time() - start
-        
+
         print(f"    Response: {response[:150].replace(chr(10), ' ')}...")
-        
+
         tokens = len(tokenizer.encode(response))
         total_tokens += tokens
         total_time += elapsed
-        
+
         eval_result = evaluate_response(response, test["expected_tool"])
         eval_result["prompt"] = test["prompt"]
         eval_result["category"] = test["category"]
         eval_result["response_preview"] = response[:150]
         eval_result["tokens"] = tokens
         eval_result["latency_ms"] = round(elapsed * 1000)
-        
+
         results.append(eval_result)
-        
+
         status = "✅" if eval_result["correct_tool"] else "❌"
         print(f"  [{i+1}/{len(TEST_CASES)}] {status} {test['category']:12} | {test['prompt'][:60]}")
-    
+
     # Compute metrics
     metrics = compute_metrics(results, total_tokens, total_time)
-    
+
     # Generate report
     generate_report(results, metrics, adapter)
-    
+
     return metrics
 
 
@@ -241,12 +241,12 @@ def compute_metrics(results, total_tokens, total_time):
             categories[cat]["params_valid"] += 1
         if v := r.get("has_reasoning"):
             categories[cat]["has_reasoning"] += 1
-    
+
     total = len(results)
     correct = sum(1 for r in results if r["correct_tool"])
     json_valid = sum(1 for r in results if r["json_valid"])
     params_valid = sum(1 for r in results if r["params_valid"])
-    
+
     return {
         "overall_accuracy": correct / total * 100,
         "json_validity": json_valid / total * 100,
@@ -325,5 +325,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prism LLM Benchmark")
     parser.add_argument("--adapter", type=str, help="Path to LoRA adapter")
     args = parser.parse_args()
-    
+
     run_benchmark(requested_adapter=args.adapter)
