@@ -195,8 +195,11 @@ function selectGoogleSearchCredentials(
     return credentials;
   }
 
-  const index = Math.floor(Math.random() * credentials.length);
-  return [credentials[index] ?? credentials[0]];
+  const randomized = [...credentials];
+  const firstIndex = Math.floor(Math.random() * randomized.length);
+  const [firstCredential] = randomized.splice(firstIndex, 1);
+
+  return [firstCredential ?? credentials[0], ...randomized];
 }
 
 // Brave Answers API call (AI Grounding/OpenAI-compatible)

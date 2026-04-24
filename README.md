@@ -1269,7 +1269,7 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GOOGLE_SEARCH_CREDENTIALS` | No | JSON array of ordered Google search credential pairs for failover, or JSON object with `strategy` + `credentials` for failover or random single-request selection |
+| `GOOGLE_SEARCH_CREDENTIALS` | No | JSON array of ordered Google search credential pairs for failover, or JSON object with `strategy` + `credentials` for failover or random-first selection with fallback across the remaining credentials |
 | `GOOGLE_SEARCH_API_KEY` | No | Google Programmable Search API key (single-pair mode) |
 | `GOOGLE_SEARCH_CX` | No | Google Custom Search Engine ID paired with `GOOGLE_SEARCH_API_KEY` |
 | `BRAVE_API_KEY` | No | Brave Search Pro API key for `brave_local_search` and Scholar URL discovery |
@@ -1323,7 +1323,7 @@ Indexed credential pairs are also supported for direct runtime env injection: `G
 `GOOGLE_SEARCH_CREDENTIALS` supports both of these JSON forms:
 
 - Ordered failover: `[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]`
-- Random per request: `{"strategy":"random","credentials":[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]}`
+- Random-first with failover: `{"strategy":"random","credentials":[{"apiKey":"key-1","cx":"cx-1"},{"apiKey":"key-2","cx":"cx-2"}]}`
 
 `brave_answers` is configured separately. Set `BRAVE_ANSWERS_API_KEY` directly for non-Docker setups, or `PRISM_BRAVE_ANSWERS_API_KEY` when using the checked-in Docker Compose launcher path. Google search credential JSON does not affect Brave Answers.
 

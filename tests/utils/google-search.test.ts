@@ -273,7 +273,7 @@ describe("performWebSearchRawWithCredentials", () => {
     ).rejects.toThrow("Google Search credentials are not configured");
   });
 
-  it("selects one credential pair at random for a request", async () => {
+  it("randomizes the first credential for a request", async () => {
     const credentials: GoogleSearchCredential[] = [
       { apiKey: "key-1", cx: "cx-1" },
       { apiKey: "key-2", cx: "cx-2" },
@@ -317,7 +317,7 @@ describe("performWebSearchRawWithCredentials", () => {
     expect(onlyUrl.searchParams.get("cx")).toBe("cx-2");
   });
 
-  it("does not fail over when random mode picks an exhausted credential", async () => {
+  it("fails over after a recoverable 403 when random mode picks an unconfigured project", async () => {
     const credentials: GoogleSearchCredential[] = [
       { apiKey: "key-1", cx: "cx-1" },
       { apiKey: "key-2", cx: "cx-2" },
@@ -325,30 +325,128 @@ describe("performWebSearchRawWithCredentials", () => {
 
     vi.spyOn(Math, "random").mockReturnValue(0.1);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          error: {
-            message: "Quota exceeded",
-            errors: [{ reason: "dailyLimitExceeded", message: "limit" }],
-          },
-        }),
-        { status: 429, statusText: "Too Many Requests" }
+    fetchSpy
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "This project does not have the access to Custom Search JSON API.",
+              errors: [
+                {
+                  reason: "accessNotConfigured",
+                  message:
+                    "This project does not have the access to Custom Search JSON API.",
+                },
+              ],
+            },
+          }),
+          { status: 403, statusText: "Forbidden" }
+        )
       )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [{ title: "Title D", snippet: "Snippet D", link: "https://example.com/d" }],
+          }),
+          { status: 200, statusText: "OK" }
+        )
+      );
+
+    const raw = await performWebSearchRawWithCredentials(
+      "prism",
+      10,
+      0,
+      credentials,
+      randomStrategy
     );
 
-    await expect(
-      performWebSearchRawWithCredentials(
-        "prism",
-        10,
-        0,
-        credentials,
-        randomStrategy
-      )
-    ).rejects.toThrow("Google Search API error: 429 Too Many Requests");
+    expect(JSON.parse(raw)).toEqual({
+      web: {
+        results: [
+          {
+            title: "Title D",
+            description: "Snippet D",
+            url: "https://example.com/d",
+          },
+        ],
+      },
+    });
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const onlyUrl = new URL(String(fetchSpy.mock.calls[0][0]));
-    expect(onlyUrl.searchParams.get("key")).toBe("key-1");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
+    const secondUrl = new URL(String(fetchSpy.mock.calls[1][0]));
+    expect(firstUrl.searchParams.get("key")).toBe("key-1");
+    expect(secondUrl.searchParams.get("key")).toBe("key-2");
+  });
+
+  it("keeps the first credential randomized while preserving later fallbacks", async () => {
+    const credentials: GoogleSearchCredential[] = [
+      { apiKey: "key-1", cx: "cx-1" },
+      { apiKey: "key-2", cx: "cx-2" },
+      { apiKey: "key-3", cx: "cx-3" },
+    ];
+
+    vi.spyOn(Math, "random").mockReturnValue(0.8);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Quota exceeded",
+              errors: [{ reason: "dailyLimitExceeded", message: "limit" }],
+            },
+          }),
+          { status: 429, statusText: "Too Many Requests" }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Quota exceeded",
+              errors: [{ reason: "dailyLimitExceeded", message: "limit" }],
+            },
+          }),
+          { status: 429, statusText: "Too Many Requests" }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [{ title: "Title E", snippet: "Snippet E", link: "https://example.com/e" }],
+          }),
+          { status: 200, statusText: "OK" }
+        )
+      );
+
+    const raw = await performWebSearchRawWithCredentials(
+      "prism",
+      10,
+      0,
+      credentials,
+      randomStrategy
+    );
+
+    expect(JSON.parse(raw)).toEqual({
+      web: {
+        results: [
+          {
+            title: "Title E",
+            description: "Snippet E",
+            url: "https://example.com/e",
+          },
+        ],
+      },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
+    const secondUrl = new URL(String(fetchSpy.mock.calls[1][0]));
+    const thirdUrl = new URL(String(fetchSpy.mock.calls[2][0]));
+    expect(firstUrl.searchParams.get("key")).toBe("key-3");
+    expect(secondUrl.searchParams.get("key")).toBe("key-1");
+    expect(thirdUrl.searchParams.get("key")).toBe("key-2");
   });
 });

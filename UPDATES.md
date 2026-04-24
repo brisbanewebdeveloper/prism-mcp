@@ -1,3 +1,31 @@
+# 2026-04-24 - Fix Random Google Search Credential Failover For Recoverable 403s
+
+## Summary
+
+Hardened Google-backed web search so structured `random` credential selection still distributes the first attempt randomly but now preserves the remaining configured credentials as fallbacks when a recoverable API or project-level error occurs.
+
+## What Was Done
+
+- Kept `brave_web_search` on the existing Google Programmable Search path because the runtime already routes through the Google client and already honors `PRISM_GOOGLE_SEARCH_CREDENTIALS`.
+- Updated `src/utils/braveApi.ts` so `strategy: "random"` now randomizes the first Google credential pair while keeping the remaining pairs available to the existing failover loop.
+- Reused the current `shouldFailoverGoogleCredential()` behavior for `401`, `403`, `429`, and selected `400` reasons instead of adding a second retry path.
+- Expanded `tests/utils/google-search.test.ts` with a regression for the reported `403 accessNotConfigured` failure shape and coverage proving random-first selection still falls through to later credentials.
+- Updated `.env.example` and `README.md` so the documented `random` strategy wording matches the runtime behavior.
+
+## Files Changed
+
+- `README.md`
+- `UPDATES.md`
+- `.env.example`
+- `src/utils/braveApi.ts`
+- `tests/utils/google-search.test.ts`
+
+## Verification Performed
+
+- Ran `npm exec vitest run tests/utils/google-search.test.ts` successfully.
+- Ran `npm run build` successfully.
+- Re-ran the Google-backed search path for `site:doc.oroinc.com OroCRM installation nginx php-fpm linux` against the live configured credentials and confirmed it returned normalized results under `strategy: "random"` instead of stopping at the first recoverable `403`.
+
 # 2026-04-24 - Resolve Active Merge Across Runtime Abstraction, Training Merge, Dashboard Cleanup, And Release-Line Alignment
 
 ## Summary
