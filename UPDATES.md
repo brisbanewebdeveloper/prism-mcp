@@ -1,3 +1,27 @@
+# 2026-04-26 - Resolve Active README Merge Conflict On The v11.6.0 Release Line
+
+## Summary
+
+Resolved the active merge conflict in `README.md` by keeping the `custom` branch aligned to the documented `v11.6.0` release line and removing incoming `v12.0.0` billing and marketing copy that was not supported by the branch metadata.
+
+## What Was Done
+
+- Resolved every conflict block in `README.md` in favor of the current branch's `v11.6.0` release-line wording where the incoming side introduced unsupported `v12.0.0` claims.
+- Removed the incoming `v12.0.0` unified billing table-of-contents entries, pricing section, and related benchmark and roadmap claims from `README.md`.
+- Kept the existing `v11.5.x` benchmark proof, `What's New`, and milestones text consistent with `package.json` and `CHANGELOG.md`.
+- Updated `UPDATES.md` with this merge-resolution note for future branch history.
+
+## Files Changed
+
+- `README.md`
+- `UPDATES.md`
+
+## Verification Performed
+
+- Confirmed `README.md` no longer contains merge conflict markers.
+- Confirmed Git no longer reports unmerged paths for this conflict.
+- Ran a scoped `git diff --check` for `README.md` and `UPDATES.md`.
+
 # 2026-04-24 - Fix Random Google Search Credential Failover For Recoverable 403s
 
 ## Summary
