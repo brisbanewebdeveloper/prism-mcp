@@ -1,3 +1,43 @@
+# 2026-04-29 - Resolve Active Merge Across Release-Line Docs, Dashboard Tabs, And Training Parser
+
+## Summary
+
+Resolved the active merge conflict by keeping the `custom` branch aligned to the `v11.6.0` release line in package/docs, preserving the dashboard tab wiring that matches the current template, regenerating `package-lock.json`, semantically merging the benchmark parser so it supports the current Synalux tag format without losing the balanced-brace JSON fallback, and then clearing the follow-on ledger handler test drift that blocked a clean TypeScript build.
+
+## What Was Done
+
+- Resolved `CHANGELOG.md`, `README.md`, `ROADMAP.md`, and `package.json` in favor of the existing `custom` branch `v11.6.0` identity instead of importing the incoming `v12.x` billing and product-positioning copy.
+- Rebuilt `src/dashboard/ui.ts` around the tab list that matches the currently rendered `project`, `search`, `factory`, `vm`, `marketplace`, and `compliance` panels while keeping the existing project-visibility fix intact.
+- Merged `training/benchmark.py` semantically so it now strips both legacy and Synalux think tags, supports ChatML tool-call extraction, keeps the balanced-brace bare-JSON fallback, and uses the shared `format_system_prompt()` path.
+- Accepted the current working-tree version of `training/grpo_align.py` as the resolved merge result and marked the path resolved after confirming it compiles cleanly.
+- Deleted the conflicted `package-lock.json` and regenerated it from the resolved manifest with npm instead of hand-merging generated dependency metadata.
+- Aligned both `tests/tools/ledgerHandlers.test.ts` and its mirrored `src/tools/__tests__/ledgerHandlers.test.ts` copy to the current storage contracts by typing the mocked storage methods, fixing history snapshot fixtures, and replacing brittle direct `mock.calls[0][0]` indexing with typed helper accessors.
+- Staged the formerly unmerged paths and confirmed Git no longer reports unmerged files.
+
+## Files Changed
+
+- `CHANGELOG.md`
+- `README.md`
+- `ROADMAP.md`
+- `package.json`
+- `package-lock.json`
+- `src/dashboard/ui.ts`
+- `training/benchmark.py`
+- `training/grpo_align.py`
+- `src/tools/__tests__/ledgerHandlers.test.ts`
+- `tests/tools/ledgerHandlers.test.ts`
+- `UPDATES.md`
+
+## Verification Performed
+
+- Confirmed Git reports no unmerged paths after staging the resolved files.
+- Confirmed the previously conflicted files no longer contain merge conflict markers.
+- Ran `npm install --package-lock-only --ignore-scripts` successfully.
+- Ran `npm run lint:dashboard` successfully.
+- Ran `npm run build` successfully after aligning the mirrored ledger handler tests to the current storage interface.
+- Ran `/usr/bin/python3 -m py_compile training/benchmark.py training/grpo_align.py` successfully.
+- Ran `npm exec vitest run tests/tools/ledgerHandlers.test.ts` successfully.
+
 # 2026-04-26 - Resolve Active README Merge Conflict On The v11.6.0 Release Line
 
 ## Summary

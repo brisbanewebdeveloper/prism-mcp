@@ -158,6 +158,13 @@ import {
   SESSION_COGNITIVE_ROUTE_TOOL,
   // v7.1: Task Router
   SESSION_TASK_ROUTE_TOOL,
+  // v12: Developer Onboarding & Enterprise Observability
+  ONBOARDING_WIZARD_TOOL,
+  EXTRACT_ENTITIES_TOOL,
+  API_ANALYTICS_TOOL,
+  BACKUP_DATABASE_TOOL,
+  CONFIGURE_NOTIFICATIONS_TOOL,
+  QUERY_MEMORY_NATURAL_TOOL,
 
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -212,6 +219,13 @@ import {
   sessionStartPipelineHandler,
   sessionCheckPipelineStatusHandler,
   sessionAbortPipelineHandler,
+  // v12: Handler implementations
+  onboardingWizardHandler,
+  extractEntitiesHandler,
+  apiAnalyticsHandler,
+  backupDatabaseHandler,
+  configureNotificationsHandler,
+  queryMemoryNaturalHandler,
 } from "./tools/index.js";
 
 // ─── Security: Boundary Tags for Context Output ──────────────
@@ -344,6 +358,14 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
     SESSION_COGNITIVE_ROUTE_TOOL,  // session_cognitive_route — HDC policy-gated concept routing (v6.5)
     // ─── v6.1: Storage Hygiene tool ───
     MAINTENANCE_VACUUM_TOOL,       // maintenance_vacuum — reclaim SQLite disk space post-purge
+    // ─── v12.1: Developer Onboarding & Framework Bridge ───
+    ONBOARDING_WIZARD_TOOL,        // onboarding_wizard — interactive first-run setup
+    EXTRACT_ENTITIES_TOOL,         // extract_entities — NER from raw text (7 entity types)
+    // ─── v12.2: Enterprise Observability & Reliability ───
+    API_ANALYTICS_TOOL,            // api_analytics — per-project usage tracking
+    BACKUP_DATABASE_TOOL,          // backup_database — scheduled SQLite backup/restore
+    CONFIGURE_NOTIFICATIONS_TOOL,  // configure_notifications — webhook/Slack/email alerts
+    QUERY_MEMORY_NATURAL_TOOL,     // query_memory_natural — NL → structured memory search
   ];
 }
 
@@ -1266,6 +1288,34 @@ export function createServer() {
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
             if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
             result = await sessionAbortPipelineHandler(args); break;
+
+          // ─── v12.1: Developer Onboarding & Framework Bridge ───
+
+          case "onboarding_wizard":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await onboardingWizardHandler(args); break;
+
+          case "extract_entities":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await extractEntitiesHandler(args); break;
+
+          // ─── v12.2: Enterprise Observability & Reliability ───
+
+          case "api_analytics":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await apiAnalyticsHandler(args); break;
+
+          case "backup_database":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await backupDatabaseHandler(args); break;
+
+          case "configure_notifications":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await configureNotificationsHandler(args); break;
+
+          case "query_memory_natural":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await queryMemoryNaturalHandler(args); break;
 
           default:
             result = {

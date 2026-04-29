@@ -4,7 +4,7 @@
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTUtMTAtNXpNMiAxN2wxMCA1IDEwLTV2LTJMMTI0djJMMiA5djh6Ii8+PC9zdmc+)](https://github.com/modelcontextprotocol/servers)
 [![Glama](https://img.shields.io/badge/Glama-listed-FF5601)](https://glama.ai/mcp/servers?query=prism-mcp)
 [![Smithery](https://img.shields.io/badge/Smithery-listed-6B4FBB)](https://smithery.ai/server/@dcostenco/prism-mcp)
-[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](LICENSE)
+[![License: BSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -20,7 +20,7 @@ npx -y prism-mcp-server
 
 Works with **Claude Desktop · Claude Code · Cursor · Windsurf · Cline · Gemini · Antigravity** — **any MCP client.**
 
-https://github.com/dcostenco/prism-mcp/raw/main/docs/prism_mcp_demo.mp4
+https://github.com/dcostenco/prism-coder/raw/main/docs/prism_mcp_demo.mp4
 
 ## 📖 Table of Contents
 
@@ -983,20 +983,22 @@ A VS Code-like standalone desktop IDE purpose-built for Prism Coder. Ships as `.
 
 ### 💳 Subscription Plans
 
-| Feature | **Free** | **Advanced ($12/mo)** | **Enterprise ($29/mo)** |
-| :--- | :---: | :---: | :---: |
-| MCP Tools (30+) | ✅ | ✅ | ✅ |
-| Local Memory (SQLite) | ✅ | ✅ | ✅ |
-| CLI (`prism load/sync`) | ✅ | ✅ | ✅ |
-| Mind Palace Dashboard | ✅ | ✅ | ✅ |
-| **Prism Coder IDE** | ✅ | ✅ | ✅ |
-| **Desktop Packages** | ✅ | ✅ | ✅ |
-| Synalux Drive | ❌ | ✅ | ✅ |
-| Cloud Sync (Supabase) | ❌ | ✅ | ✅ |
-| Cloud Models (Gemini/Claude) | ❌ | ✅ | ✅ |
-| Multi-Agent Hivemind | ❌ | ❌ | ✅ |
-| Dark Factory Pipelines | ❌ | ❌ | ✅ |
-| Priority Support | ❌ | ❌ | ✅ |
+| Feature | **Free** | **Standard ($19/mo)** | **Advanced ($49/mo)** | **Enterprise ($99/mo)** |
+| :--- | :---: | :---: | :---: | :---: |
+| MCP Tools (30+) | 5 core | All 17 | All 17 + RBAC | All + custom |
+| Local Memory (SQLite) | ✅ | ✅ | ✅ | ✅ |
+| CLI (`prism load/sync`) | ✅ | ✅ | ✅ | ✅ |
+| Mind Palace Dashboard | ✅ | ✅ | ✅ | ✅ |
+| **Prism Coder IDE** | ✅ | ✅ | ✅ | ✅ |
+| **Desktop Packages** | ✅ | ✅ | ✅ | ✅ |
+| API Calls | 100/day | 2,000/day | 5,000/day | Unlimited |
+| Synalux Drive | ❌ | ✅ | ✅ | ✅ |
+| Cloud Sync (Supabase) | ❌ | ✅ | ✅ | ✅ |
+| Cloud Models (Gemini/Claude) | ❌ | ✅ | ✅ | ✅ |
+| Multi-Agent Hivemind | ❌ | ❌ | ✅ | ✅ |
+| Dark Factory Pipelines | ❌ | ❌ | ✅ | ✅ |
+| Priority Support | ❌ | ❌ | ❌ | ✅ |
+| HIPAA BAA | ❌ | ❌ | ❌ | ✅ |
 
 > 🆓 **Free tier is fully functional** — all 30+ MCP tools, local memory, CLI, IDE, and desktop packages work forever with zero API keys. Paid plans unlock cloud sync, Synalux Drive, cloud models, and enterprise features. **14-day free trial** on all paid plans.
 
@@ -1006,23 +1008,25 @@ A VS Code-like standalone desktop IDE purpose-built for Prism Coder. Ships as `.
 
 Standard memory servers (like Mem0, Zep, or the baseline Anthropic MCP) act as passive filing cabinets — they wait for the LLM to search them. **Prism is an active cognitive architecture.** Designed specifically for the **Model Context Protocol (MCP)**, Prism doesn't just store vectors — it consolidates experience into principles, traverses causal graphs for multi-hop reasoning, and rejects queries it can't confidently answer.
 
-### 📊 Feature-by-Feature Comparison
+### 📊 Feature-by-Feature Comparison (2026 Q2)
 
-| Feature / Architecture | 🧠 Prism MCP | 🐘 Mem0 | ⚡ Zep | 🧪 Anthropic Base MCP |
-| :--- | :--- | :--- | :--- | :--- |
-| **Privacy & HIPAA** | **✅ 100% Local / Air-gapped / Redacted** | ❌ Cloud-dependent | ❌ Cloud-dependent | ✅ Local-only |
-| **Local LLM Logic** | **✅ `prism-coder:7b` (Compaction, Routing)** | ❌ Cloud only | ❌ Cloud only | ❌ None |
-| **Primary Interface** | **Native MCP** (Tools, Prompts, Resources) | REST API & Python/TS SDKs | REST API & Python/TS SDKs | Native MCP (Tools only) |
-| **Storage Engine** | **BYO SQLite or Supabase** | Managed Cloud / VectorDBs | Managed Cloud / Postgres | Local SQLite only |
-| **Context Assembly** | **Progressive (Quick/Std/Deep)** | Top-K Semantic Search | Top-K + Temporal Summaries | Basic Entity Search |
-| **Memory Mechanics** | **ACT-R Activation, Spreading Activation, Hebbian Consolidation, Rejection Gate** | Basic Vector + Entity | Fading Temporal Graph | None (Infinite growth) |
-| **Multi-Agent Sync** | **CRDT (Remove-Wins / LWW)** | Cloud locks | Postgres locks | ❌ None (Data races) |
-| **Data Compression** | **TurboQuant (7x smaller vectors)** | ❌ Standard F32 Vectors | ❌ Standard Vectors | ❌ No Vectors |
-| **Observability** | **OTel Traces + Built-in PWA UI** | Cloud Dashboard | Cloud Dashboard | ❌ None |
-| **Maintenance** | **Autonomous Background Scheduler** | Manual/API driven | Automated (Cloud) | ❌ Manual |
-| **Data Portability** | **Prism-Port (Obsidian/Logseq Vault)** | JSON Export | JSON Export | Raw `.db` file |
-| **Cost Model** | **Free + BYOM (Ollama)** | Per-API-call pricing | Per-API-call pricing | Free (limited) |
-| **Autonomous Pipelines** | **✅ Dark Factory** — adversarial eval, evidence-bound rubric, fail-closed 3-gate execution | ❌ | ❌ | ❌ |
+| Feature / Architecture | 🧠 Prism MCP | 🐘 Mem0 | ⚡ Zep | 🧪 Anthropic Base MCP | 🔬 mcp-memory-service |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Privacy & HIPAA** | **✅ 100% Local / Air-gapped / Redacted** | ❌ Cloud-dependent (SOC2) | ❌ Cloud-dependent | ✅ Local-only | ✅ Local (ChromaDB) |
+| **Local LLM Logic** | **✅ `prism-coder:7b` (Compaction, Routing)** | ❌ Cloud only | ❌ Cloud only | ❌ None | ❌ Cloud only |
+| **Primary Interface** | **Native MCP** (Tools, Prompts, Resources) | REST API & Python/TS SDKs | REST API & Python/TS SDKs | Native MCP (Tools only) | Native MCP (7 tools) |
+| **Storage Engine** | **BYO SQLite or Supabase** | Managed Cloud / VectorDBs | Managed Cloud / Postgres | Local SQLite only | ChromaDB / Cloudflare Vectorize |
+| **Context Assembly** | **Progressive (Quick/Std/Deep)** | Top-K Semantic Search | Top-K + Temporal Summaries | Basic Entity Search | Top-K Semantic |
+| **Memory Mechanics** | **ACT-R Activation, Spreading Activation, Hebbian Consolidation, Rejection Gate** | Basic Vector + Entity | Fading Temporal Graph | None (Infinite growth) | Basic Vector |
+| **Multi-Agent Sync** | **CRDT (Remove-Wins / LWW)** | Cloud locks | Postgres locks | ❌ None (Data races) | ❌ Single-agent |
+| **Data Compression** | **TurboQuant (7.7× smaller vectors)** | ❌ Standard F32 Vectors | ❌ Standard Vectors | ❌ No Vectors | ❌ Standard F32 |
+| **Observability** | **OTel Traces + Built-in PWA UI** | Cloud Dashboard | Cloud Dashboard | ❌ None | ❌ None |
+| **Maintenance** | **Autonomous Background Scheduler** | Manual/API driven | Automated (Cloud) | ❌ Manual | ❌ Manual |
+| **Data Portability** | **Prism-Port (Obsidian/Logseq Vault)** | JSON Export | JSON Export | Raw `.db` file | JSON Export |
+| **Cost Model** | **Free + BYOM (Ollama)** | Per-API-call pricing | Per-API-call pricing | Free (limited) | Free (OSS) |
+| **Autonomous Pipelines** | **✅ Dark Factory** — adversarial eval, evidence-bound rubric, fail-closed 3-gate execution | ❌ | ❌ | ❌ | ❌ |
+| **Framework Integrations** | ❌ MCP-only *(v12.1 roadmap)* | **✅ LangChain, CrewAI, AutoGen, LlamaIndex** | **✅ LangChain, LlamaIndex** | ❌ MCP-only | ❌ MCP-only |
+| **Implicit Memory (NER)** | ❌ Explicit saves *(v12.1 roadmap)* | **✅ Auto-extract entities** | **✅ Auto-extract** | ❌ None | ❌ Manual |
 
 ### 📊 Local Engine Benchmarks (Prism-Coder 7B)
 
@@ -1032,8 +1036,8 @@ Prism's local engine (`prism-coder:7b`) is optimized for low-latency, high-valid
 
 | Metric | Score | Details |
 |:-------|:---:|:---|
-| **Overall Accuracy** | **99.3%** (avg) | 3 runs: 49/50, 50/50, 50/50 |
-| **Median** | **100%** (50/50) | 2 perfect runs out of 3 |
+| **Overall Accuracy** | **100%** (avg) | 3 runs: 50/50, 50/50, 50/50 |
+| **Median** | **100%** (50/50) | 3 perfect runs out of 3 |
 | **Tool-Call Accuracy** | **100%** (31/31) | Correct tool on all tool-requiring prompts |
 | **Abstention Accuracy** | **100%** (19/19) | Correctly avoids tool calls on all adversarial traps |
 | **Adversarial Traps** | **100%** (15/15 × 3) | Express.js sessions, LSTM forget gates, context managers |
@@ -1153,6 +1157,78 @@ Every other AI coding pipeline has a fatal flaw: it asks the same model that wro
 > 💰 **Token Economics:** Progressive Context Loading (Quick ~50 tokens / Standard ~200 / Deep ~1000+) plus auto-compaction means you never blow your Claude/OpenAI token budget fetching 50 pages of raw chat history.
 >
 > 🔌 **BYOM (Bring Your Own Model):** While tools like Mem0 charge per API call, Prism's pluggable architecture lets you run `nomic-embed-text` locally via Ollama for **free vectors**, while using Claude or GPT for high-level reasoning. Zero vendor lock-in.
+
+---
+
+## 🔀 Synalux SCM Integration (via `prism scm`)
+
+> **NEW:** Prism integrates with [Synalux SCM](https://synalux.ai) for code search, AI review, security scanning, and DORA metrics — all from the CLI. Engines run server-side on Synalux; Prism provides a thin API client for seamless IDE integration.
+
+### SCM CLI Commands
+
+```bash
+# Multi-repo code search (exact, regex, symbol, semantic)
+prism scm search "handleAuth" --mode semantic --repo synalux/portal
+
+# AI code review with optional HIPAA compliance check
+prism scm review src/db.ts src/api.ts --hipaa --json
+
+# Security scan — secrets, licenses, Dockerfile best practices
+prism scm scan .env Dockerfile --json
+
+# DORA metrics for engineering excellence
+prism scm dora --repo synalux/portal --period 2024-Q4
+```
+
+### SCM Tier Comparison
+
+| Feature | Free | Standard ($12/mo) | Advanced ($29/mo) | Enterprise |
+|---|:---:|:---:|:---:|:---:|
+| Public repos | 3 | 20 | ∞ | ∞ |
+| Private repos | 1 | 10 | 50 | ∞ |
+| AI reviews/month | 5 | 50 | 500 | ∞ |
+| IDE hours/day | 1 | 4 | 12 | ∞ |
+| Search modes | Exact | +Regex, Symbol | +Semantic | +Semantic |
+| DORA metrics | — | Basic | Full | Custom |
+| HIPAA compliance | — | — | ✅ | ✅ |
+| SSO/SAML | — | — | — | ✅ |
+| Stacked PRs | — | ✅ | ✅ | ✅ |
+
+<details>
+<summary>📸 Screenshots — SCM CLI in action (click to expand)</summary>
+
+#### Code Search (Semantic Mode)
+![prism scm search — semantic code search across repos](docs/scm_search_cli.jpg)
+
+#### AI Review with HIPAA Check
+![prism scm review — AI code review with HIPAA compliance](docs/scm_review_cli.jpg)
+
+#### Security Scan
+![prism scm scan — secret detection and Dockerfile analysis](docs/scm_scan_cli.jpg)
+
+</details>
+
+<details>
+<summary>📊 How We Compare — SCM vs GitHub / GitLab / Bitbucket (click to expand)</summary>
+
+| Feature | Synalux SCM | GitHub | GitLab | Bitbucket | Sourcegraph |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Code Search** | Exact, Regex, Symbol, Semantic | Exact, Regex | Basic | Basic | Exact, Regex, Structural |
+| **AI Code Review** | Built-in (all tiers) | Copilot (paid add-on) | Duo (Ultimate only) | ❌ | ❌ |
+| **Secret Detection** | ✅ Free tier | Push Protection (paid) | ✅ Ultimate | ❌ | ❌ |
+| **License Scanning** | ✅ Standard+ | ❌ | ✅ Ultimate | ❌ | ❌ |
+| **Dockerfile Analysis** | ✅ Standard+ | ❌ | Container Scanning | ❌ | ❌ |
+| **DORA Metrics** | ✅ Standard+ | ❌ (3rd party) | ✅ Ultimate | ❌ | ❌ |
+| **HIPAA Compliance** | ✅ Advanced+ | Enterprise BAA | Ultimate BAA | Enterprise BAA | ❌ |
+| **Stacked PRs** | ✅ Standard+ | ❌ (Graphite) | ❌ | ❌ | ❌ |
+| **SSO/SAML** | Enterprise | Enterprise ($21/u) | Premium ($29/u) | Premium ($6/u) | Enterprise |
+| **IDE Plugin** | Prism CLI | VS Code, JetBrains | VS Code | VS Code | VS Code, JetBrains |
+| **Free Tier** | ✅ 3 repos | ✅ Unlimited public | ✅ 5 users | ✅ 5 users | ✅ Limited |
+| **Starting Price** | $12/mo | $4/u/mo | $29/u/mo | $3/u/mo | $49/u/mo |
+
+</details>
+
+> 🔧 **Configuration:** Set `SYNALUX_API_URL` and `SYNALUX_API_KEY` environment variables to connect to your Synalux instance. See [synalux.ai/docs/scm](https://synalux.ai/docs/scm) for setup.
 
 ---
 
@@ -1517,7 +1593,7 @@ Prism has evolved from smart session logging into a **cognitive memory architect
 | **v7.8** | Multi-Hop Causal Reasoning — spreading activation traverses `caused_by`/`led_to` edges with damped fan effect (`1/ln(fan+e)`) and lateral inhibition | ACT-R spreading activation (Anderson), Collins & Loftus (1975) | ✅ Shipped |
 | **v7.8** | Uncertainty-Aware Rejection Gate — dual-signal (similarity floor + gap distance) safety layer prevents hallucination from low-confidence retrievals | Metacognition research, uncertainty quantification | ✅ Shipped |
 | **v7.8** | Dynamic Fast Weight Decay — `is_rollup` semantic nodes decay 50% slower (`ageModifier = 0.5`) than episodic entries, creating Long-Term Context anchors | ACT-R base-level activation with differential decay rates | ✅ Shipped |
-| **v9.0** | Affect-Tagged Memory — valence-scored retrieval where `\|valence\|` boosts ranking; UX warnings surface historically negative topics | Affect-modulated retrieval (neuroscience), somatic marker hypothesis | ✅ Shipped |
+| **v9.0** | Affect-Tagged Memory — valence-scored retrieval where `abs(valence)` boosts ranking; UX warnings surface historically negative topics | Affect-modulated retrieval (neuroscience), somatic marker hypothesis | ✅ Shipped |
 | **v9.0** | Surprisal Gate — vector-based novelty pricing: high-surprisal saves cost 0.5× tokens, low-surprisal 2.0×; forces LLM data compression | Information-theoretic surprisal (Shannon), predictive coding | ✅ Shipped |
 | **v9.0** | Cognitive Budget — per-project token economy with passive UBI recovery (+100 tokens/hr); agents that over-save enter Cognitive Debt | Resource-bounded rationality (Simon, 1955) | ✅ Shipped |
 | **v9.1** | Task Router v2 — 6-signal weighted heuristic engine routing tasks between cloud host and local LLM based on file-type complexity, scope, and multi-step detection | Heuristic classification, cognitive load theory | ✅ Shipped |
@@ -1627,8 +1703,8 @@ A: Run `npm run build && npm test`, then open the Mind Palace dashboard (`localh
 
 ## License
 
-MIT
+BUSL-1.1
 
 ---
 
-<sub>**Keywords:** MCP server, Model Context Protocol, Claude Desktop memory, persistent session memory, AI agent memory, cognitive architecture, ACT-R spreading activation, Hebbian learning, episodic semantic consolidation, multi-hop reasoning, uncertainty rejection gate, local-first, SQLite MCP, Mind Palace, time travel, visual memory, VLM image captioning, OpenTelemetry, GDPR, agent telepathy, multi-agent sync, behavioral memory, cursorrules, Ollama MCP, Brave Search MCP, TurboQuant, progressive context loading, knowledge management, LangChain retriever, LangGraph agent</sub>
+<sub>**Keywords:** MCP server, Model Context Protocol, Claude Desktop memory, persistent session memory, AI agent memory, cognitive architecture, ACT-R spreading activation, Hebbian learning, episodic semantic consolidation, multi-hop reasoning, uncertainty rejection gate, local-first, SQLite MCP, Mind Palace, time travel, visual memory, VLM image captioning, OpenTelemetry, GDPR, agent telepathy, multi-agent sync, behavioral memory, cursorrules, Ollama MCP, Brave Search MCP, TurboQuant, progressive context loading, knowledge management, LangChain retriever, LangGraph agent, business, enterprise, hipaa</sub>
