@@ -401,19 +401,28 @@ export const PRISM_DASHBOARD_PORT = Number.isInteger(parsedDashboardPort)
   ? parsedDashboardPort
   : 3000;
 
-// ─── v2.0 / v12.1: Storage Backend Selection ────────────────
-// Both "local" (SQLite) and "supabase" (PostgreSQL) are implemented.
+// ─── v2.0 / v12.1 / v13: Storage Backend Selection ──────────
+// Three backends are implemented:
+//   "local"    — SQLite, fully offline. Free-tier default.
+//   "supabase" — direct Supabase REST. Legacy direct-write path. Deprecated for paid tiers.
+//   "synalux"  — thin HTTP client of synalux portal. Paid-tier default. Mediates project
+//                validation, tier gating, and audit. See SynaluxStorage.
 //
-// v12.1: Default changed from "local" to "auto".
-//   "auto"     = prefer Supabase when credentials are resolvable, else local.
-//   "local"    = forced local SQLite (free tier, HIPAA/PRISM_STRICT_LOCAL_MODE).
-//   "supabase" = forced Supabase (error if credentials missing).
-//
-// Set PRISM_STORAGE=local to force local SQLite.
-// Set PRISM_STORAGE=supabase to force Supabase REST API.
+// Auto-resolution (PRISM_STORAGE=auto, the default) picks in this order:
+//   1. PRISM_FORCE_LOCAL=true → "local" (override everything)
+//   2. SYNALUX_API_KEY + PRISM_SYNALUX_BASE_URL set → "synalux"
+//   3. SUPABASE_URL + SUPABASE_KEY set → "supabase" (legacy)
+//   4. else → "local"
 
-export const PRISM_STORAGE: "local" | "supabase" | "auto" =
-  (process.env.PRISM_STORAGE as "local" | "supabase" | "auto") || "auto";
+export const PRISM_STORAGE: "local" | "supabase" | "synalux" | "auto" =
+  (process.env.PRISM_STORAGE as "local" | "supabase" | "synalux" | "auto") || "auto";
+
+/**
+ * Hard override — when true, forces local SQLite regardless of any cloud
+ * credentials. Used by free-tier installs and HIPAA deployments that must
+ * never touch the network for memory operations.
+ */
+export const PRISM_FORCE_LOCAL = process.env.PRISM_FORCE_LOCAL === "true";
 // Logged at debug level — see debug() at bottom of file
 
 // ─── Optional: Supabase (Session Memory Module) ───────────────
@@ -445,6 +454,18 @@ export const SUPABASE_CONFIGURED =
   !!SUPABASE_URL &&
   !!SUPABASE_KEY &&
   isHttpUrl(SUPABASE_URL);
+
+// ─── Synalux Cloud Backend (thin-client mode) ───────────────
+// When PRISM_SYNALUX_BASE_URL + PRISM_SYNALUX_API_KEY are set, the MCP
+// becomes a thin HTTP client of the synalux portal. This is the paid-tier
+// default. Synalux portal owns project validation, tier gating, audit logs,
+// and hivemind agent coordination.
+export const PRISM_SYNALUX_BASE_URL = sanitizeEnv(process.env.PRISM_SYNALUX_BASE_URL);
+export const PRISM_SYNALUX_API_KEY = sanitizeEnv(process.env.PRISM_SYNALUX_API_KEY);
+export const SYNALUX_CONFIGURED =
+  !!PRISM_SYNALUX_BASE_URL &&
+  !!PRISM_SYNALUX_API_KEY &&
+  isHttpUrl(PRISM_SYNALUX_BASE_URL);
 
 if (process.env.SUPABASE_URL && !SUPABASE_URL) {
   console.error(
@@ -535,15 +556,12 @@ export const PRISM_SCHEDULER_INTERVAL_MS = parseInt(
 
 // ─── v5.4: Autonomous Web Scholar ─────────────────────────────
 // Background LLM research pipeline powered by Brave Search + Firecrawl.
-// Tavily can be used as an alternative when TAVILY_API_KEY is set.
-// Defaults are conservative to prevent runaway API costs.
 
 export const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
-export const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
-export const PRISM_SCHOLAR_ENABLED = process.env.PRISM_SCHOLAR_ENABLED === "true"; // Opt-in
+export const PRISM_SCHOLAR_ENABLED = process.env.PRISM_SCHOLAR_ENABLED === "true";
 
-if (PRISM_SCHOLAR_ENABLED && !FIRECRAWL_API_KEY && !TAVILY_API_KEY) {
-  console.error("Warning: Neither FIRECRAWL_API_KEY nor TAVILY_API_KEY is set. Web Scholar will fall back to free search.");
+if (PRISM_SCHOLAR_ENABLED && !FIRECRAWL_API_KEY) {
+  console.error("Warning: FIRECRAWL_API_KEY not set. Web Scholar will fall back to free search.");
 }
 export const PRISM_SCHOLAR_INTERVAL_MS = parseInt(
   process.env.PRISM_SCHOLAR_INTERVAL_MS || "0", 10  // Default manual-only

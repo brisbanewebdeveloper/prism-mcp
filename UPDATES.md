@@ -1,3 +1,34 @@
+# 2026-05-03 - Resolve Active BCBA Merge On The v13.0.1 Release Line
+
+## Summary
+
+Resolved the active `bcba` into `custom` merge by keeping the current `v13.0.1` package and changelog release line, aligning stale README/package description copy to that release, preserving the Google credential failover behavior, and preserving project-aware ledger write validation.
+
+## What Was Done
+
+- Kept `package.json`, `package-lock.json`, and `CHANGELOG.md` aligned to `v13.0.1`, including the executable bin permission build/prepublish behavior.
+- Updated `README.md` so the opening copy and What's New section no longer describe `v11.6.0` as the current release while the package/changelog identify `v13.0.1`.
+- Preserved `src/utils/braveApi.ts` random-first Google credential selection with fallback credentials still available for recoverable Google API errors.
+- Preserved `src/tools/ledgerHandlers.ts` project mismatch hard-rejection before ledger writes, including the auto-registration note for first-save repo path discovery.
+- Added mirrored handler-level coverage in both ledger handler test copies for project mismatch rejection and auto-created project registry notes.
+
+## Files Changed
+
+- `README.md`
+- `package.json`
+- `package-lock.json`
+- `src/tools/__tests__/ledgerHandlers.test.ts`
+- `tests/tools/ledgerHandlers.test.ts`
+- `UPDATES.md`
+
+## Verification Performed
+
+- Confirmed the resolved conflict paths no longer contain merge conflict markers.
+- Confirmed Git reports no unmerged paths before staging the resolved files.
+- Ran `npm install --package-lock-only --ignore-scripts` successfully.
+- Ran `npm exec vitest run tests/utils/google-search.test.ts tests/utils/projectResolver.test.ts tests/tools/ledgerHandlers.test.ts` successfully.
+- Ran `npm run build` successfully.
+
 # 2026-04-29 - Resolve Active Merge Across Release-Line Docs, Dashboard Tabs, And Training Parser
 
 ## Summary

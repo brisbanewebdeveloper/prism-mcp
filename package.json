@@ -1,8 +1,8 @@
 {
   "name": "prism-mcp-server",
-  "version": "11.6.0",
-  "mcpName": "io.github.dcostenco/prism-mcp",
-  "description": "Prism v11.6.0: The world's first O(1) Cognitive Memory Architecture for AI Agents. Features held-out benchmarked GRPO tool-calling, cross-platform reliability, Zero-Search Retrieval (HDC/HRR), and HIPAA-hardened local-first storage.",
+  "version": "13.0.1",
+  "mcpName": "io.github.dcostenco/prism-coder",
+  "description": "Prism-Coder v13.0.1: The world's first O(1) Cognitive Memory Architecture for AI Agents. Adaptive context, 100% Tool-Call Accuracy (BFCL Gold Certified), 54 Agent Skills, Zero-Search Retrieval (HDC/HRR), HIPAA-hardened local-first storage, and SLERP-optimized GRPO alignment.",
   "module": "index.ts",
   "type": "module",
   "main": "dist/server.js",
@@ -16,7 +16,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run chmod-bins",
+    "chmod-bins": "node -e \"['dist/cli.js','dist/server.js','dist/utils/universalImporter.js'].forEach(f => { try { require('fs').chmodSync(f, 0o755); } catch (e) { console.warn('chmod skipped', f, e.message); } })\"",
+    "prepublishOnly": "npm run build",
     "lint:dashboard": "node scripts/lint-dashboard-es5.cjs",
     "start": "node dist/server.js",
     "test": "vitest run",
@@ -116,7 +118,7 @@
     }
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.81.0",
+    "@anthropic-ai/sdk": "^0.92.0",
     "@google/generative-ai": "^0.24.1",
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -127,7 +129,6 @@
     "@opentelemetry/sdk-trace-node": "^2.6.1",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@supabase/supabase-js": "^2.99.3",
-    "@tavily/core": "^0.6.0",
     "cheerio": "^1.2.0",
     "commander": "^14.0.3",
     "fflate": "^0.8.2",

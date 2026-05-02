@@ -12,7 +12,7 @@
 
 **Your AI agent forgets everything between sessions. Prism fixes that — then teaches it to think.**
 
-Prism v11.6.0 is a true **Cognitive Architecture** inspired by human brain mechanics. Beyond flat vector search, your agent now forms principles from experience, follows causal trains of thought, and possesses the self-awareness to know when it lacks information. **Your agents don't just remember; they learn.** With v11.6.0, the cognitive pipeline continues Prism's local-first model, carrying forward **Deep Research Intelligence**, held-out **GRPO tool-calling benchmarks**, and HIPAA-hardened on-device memory. No API keys for core features. No data leaves your machine.
+Prism v13.0.1 is a true **Cognitive Architecture** inspired by human brain mechanics. Beyond flat vector search, your agent now forms principles from experience, follows causal trains of thought, adapts to user context, and possesses the self-awareness to know when it lacks information. **Your agents don't just remember; they learn.** With v13.0.1, the cognitive pipeline continues Prism's local-first model, carrying forward **Deep Research Intelligence**, held-out **GRPO tool-calling benchmarks**, and HIPAA-hardened on-device memory. No API keys for core features. No data leaves your machine.
 
 ```bash
 npx -y prism-mcp-server
@@ -49,7 +49,7 @@ https://github.com/dcostenco/prism-coder/raw/main/docs/prism_mcp_demo.mp4
 
 ## 🔬 <a name="deep-research-intelligence"></a>v11.5.1 Deep Research Intelligence (Auto-Scholar)
 
-Prism v11.5.1 transforms your AI agent from a "Coder" into a "Clinical Scientist." It features a **Tavily-Enhanced Multi-Provider Discovery Pipeline** that grounds Gemini 2.5 Flash's thinking in real-world empirical data.
+Prism v11.5.1 transforms your AI agent from a "Coder" into a "Clinical Scientist." It features a **Multi-Provider Discovery Pipeline** (Brave + Firecrawl + Google Scholar) that grounds Gemini 2.5 Flash's thinking in real-world empirical data.
 
 ### 🥊 The Global Benchmarks: Prism v11 vs. Standard RAG
 | Feature | **Standard AI Memory (Mem0/Zep)** | **Prism v11.5.1 (Elite Architecture)** |
@@ -78,7 +78,7 @@ Prism features a cutting-edge **Zero-Search Retrieval** system for its cognitive
 
 ### 🔍 Supported Discovery Engines & Databases
 
-1.  **Tavily AI** (Elite): Primary discovery engine for AI-native deep crawling and PDF/Abstract extraction.
+1.  **Brave Search + Firecrawl** (Primary): Web search + deep scraping for full-text article extraction.
 2.  **PubMed (NCBI)** (Clinical): The world's largest biomedical database for clinical citations.
 3.  **ERIC (Education Research)** (Behavioral): The definitive database for ABA and pediatric interventions.
 4.  **Semantic Scholar** (Academic): AI-powered research tool providing "TLDR" summaries of 200M+ papers.
@@ -88,6 +88,16 @@ Prism features a cutting-edge **Zero-Search Retrieval** system for its cognitive
 
 ### 🏥 Flagship Implementation: [Synalux](https://synalux.ai)
 **Synalux** is a high-compliance, local-first Practice Management System for ABA and Pediatrics. It is the flagship implementation of the Prism v11.5.1 engine, utilizing **Zero-Search Retrieval** and **Parallel Academic Discovery** to provide clinicians with real-time, evidence-based reasoning.
+
+| Resource | Link |
+|----------|------|
+| **Synalux Docs** | [github.com/dcostenco/synalux-docs](https://github.com/dcostenco/synalux-docs) |
+| **Synalux Platform** | [synalux.ai](https://synalux.ai) |
+| **Prism Coder 7B (HuggingFace)** | [huggingface.co/dcostenco/prism-coder-7b](https://huggingface.co/dcostenco/prism-coder-7b) |
+| **BFCL Submission** | [PR #1332](https://github.com/ShishirPatil/gorilla/pull/1332) |
+| **Changelog** | [synalux-docs/CHANGELOG.md](https://github.com/dcostenco/synalux-docs/blob/main/CHANGELOG.md) |
+| **Roadmap** | [synalux-docs/ROADMAP.md](https://github.com/dcostenco/synalux-docs/blob/main/ROADMAP.md) |
+| **PrismAAC** | [github.com/dcostenco/prism-aac](https://github.com/dcostenco/prism-aac) — AAC web app for children with motor impairments. Powered by `prism-coder:7b` for offline text correction, AI Chat, translation, caregiver-note parsing, and emergency phone-call AI (13/13 on live Twilio test). Ships **all-neural offline TTS across 14 locales** via Kokoro-82M (Apache-2.0, 6 langs) + Piper (MIT, 5 langs) + Azure Neural fallback (Cantonese + emotional styles). Optional local servers `mlx-vlm` and `mlx-whisper` add scene understanding and HQ STT for Mac users. |
 
 ---
 
@@ -198,13 +208,13 @@ For HTTP-native MCP clients, set `PRISM_MCP_TRANSPORT=http`, then connect to `ht
 | **Ledger compaction** | ✅ `prism-coder:7b` via Ollama | ✅ Text provider key |
 | **Task routing (LLM tiebreaker)** | ✅ `prism-coder:7b` via Ollama | N/A (heuristic-only) |
 | Morning Briefings | ❌ | ✅ Text provider key |
-| Web Scholar research | ❌ | ✅ [`BRAVE_API_KEY`](#environment-variables) + [`FIRECRAWL_API_KEY`](#environment-variables) (or `TAVILY_API_KEY`) |
+| Web Scholar research | ❌ | ✅ [`BRAVE_API_KEY`](#environment-variables) + [`FIRECRAWL_API_KEY`](#environment-variables) |
 | VLM image captioning | ❌ | ✅ Provider key |
 | Autonomous Pipelines (Dark Factory) | ❌ | ✅ Text provider key |
 
 > 🔑 The core Mind Palace works **100% offline** with zero API keys — including semantic vector search with `embedding_provider=local`. Cloud keys unlock text generation, web search, research, and automation features. See [Environment Variables](#environment-variables).
 
-> **Optional API keys:** `GOOGLE_SEARCH_CREDENTIALS` (or `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX`) for web search; `BRAVE_API_KEY` for Brave local search and Scholar discovery; `FIRECRAWL_API_KEY` or `TAVILY_API_KEY` for Scholar scraping; `BRAVE_ANSWERS_API_KEY` or `PRISM_BRAVE_ANSWERS_API_KEY` for `brave_answers`; and provider keys such as `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `VOYAGE_API_KEY` depending on your text and embedding configuration.
+> **Optional API keys:** `GOOGLE_SEARCH_CREDENTIALS` (or `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX`) for web search; `BRAVE_API_KEY` for Brave local search and Scholar discovery; `FIRECRAWL_API_KEY` for Scholar scraping; `BRAVE_ANSWERS_API_KEY` or `PRISM_BRAVE_ANSWERS_API_KEY` for `brave_answers`; and provider keys such as `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `VOYAGE_API_KEY` depending on your text and embedding configuration.
 
 > 💰 **API Cost Note:** With `embedding_provider=local`, semantic search is fully free and offline. Cloud providers (`GOOGLE_API_KEY` for Gemini, `VOYAGE_API_KEY`, `OPENAI_API_KEY`) have generous free tiers. `BRAVE_API_KEY` offers 2,000 free searches/month. `FIRECRAWL_API_KEY` has a free plan with 500 credits. For typical solo development, expect **$0/month** on the free tiers.
 
@@ -230,6 +240,9 @@ For HTTP-native MCP clients, set `PRISM_MCP_TRANSPORT=http`, then connect to `ht
 > **Your agent remembers everything.** No re-uploading files. No re-explaining decisions.
 
 ---
+
+<details>
+<summary><strong>📖 Setup Guides</strong> — MCP client configs, schema migrations, troubleshooting <em>(technical · click to expand)</em></summary>
 
 ## <a name="setup-guides"></a>📖 Setup Guides
 
@@ -515,6 +528,8 @@ Prism can be deployed natively to cloud platforms like [Render](https://render.c
 > ```
 > Claude Code users can use the `.clauderules` auto-load hook shown in the [Setup Guides](#setup-guides). Prism also has a **server-side fallback** (v5.2.1+) that auto-pushes context after 10 seconds if no load is detected.
 
+</details>
+
 ---
 
 ## <a name="universal-import-bring-your-history"></a>📥 Universal Import: Bring Your History
@@ -636,14 +651,17 @@ Prism scores coding tasks across **6 weighted heuristic signals** (keyword analy
 To achieve zero-latency, offline routing and memory compilation without cloud dependencies, Prism utilizes an internal fine-tuned ML model: **`prism-coder:7b`**.
 Built atop Qwen 2.5 Coder 7B using the MLX framework for Apple Silicon, this engine underwent aggressive Supervised Fine-Tuning (SFT) over 3,300+ session traces, then aligned using **GRPO (Group Relative Policy Optimization)** with a decomposed 4-component reward function.
 
-**Benchmark Results ([`training/benchmark.py`](https://github.com/dcostenco/prism-mcp/blob/main/training/benchmark.py), N=15 held-out):**
-- **Tool-Call Accuracy:** 100.0% — correct tool on unseen prompts (15/15)
-- **Tool Selection:** 100.0% (7/7) — perfect on all tool-call prompts
-- **Retrieval Accuracy:** 100.0% (3/3) — perfect on search/list/knowledge tasks
-- **JSON Validity:** 100.0% — every output parses as valid JSON
-- **Parameter Accuracy:** 73.3% — required params present when tool is correct
-- **Generation Speed:** 29.9 Tokens/sec (Apple M4 Max, 36GB)
-- **Avg Latency:** 2.2s per prompt
+**Benchmark Results — v12 production model:**
+- **BFCL Tool-Call Accuracy:** 100% (64/64)
+- **AAC realigned eval (production paths from prism-aac):** 89.6% overall — text-correct 80%, emergency Q&A **100% (13/13)**, translation 87.5%, caregiver-note parsing 85.7%, ask-AI 100%
+- **Live emergency phone call (Twilio):** 13/13 questions answered correctly with proactive safety guidance
+- **Generation Speed:** 130 ms / call on Apple M5 Max
+- **Quantization:** Q4_K_M GGUF, 4 GB on disk
+- **Distribution:** [`dcostenco/prism-coder-7b`](https://huggingface.co/dcostenco/prism-coder-7b) on HuggingFace; `ollama pull prism-coder:7b`
+
+**v16 in training (Modal H100, May 2026):** combined synalux + AAC SFT (~7,300 examples) targeting the 5 remaining v12 failures plus full multi-locale coverage of the 14 prism-aac locales (incl. zh-Hans / zh-Hant / zh-HK / Romanian / Ukrainian / Russian / German / Korean / Japanese / Arabic). DoRA rank=256, continuing from v12-fused base. Reliability gate: BFCL ≥ 95% AND AAC eval ≥ 89% (v12 baseline) AND Emergency Q&A == 13/13 — promote to `prism-coder:7b` only on all-pass. See [`training/modal_v16_sft.py`](training/modal_v16_sft.py) and [`training/deploy_v16.sh`](training/deploy_v16.sh).
+
+**Sister local servers (M-series Apple Silicon, optional):** when running on a Mac, prism-aac users can additionally stand up `mlx-vlm` (Qwen2.5-VL-7B for camera/scene understanding, port 8001) and `mlx-whisper` (large-v3-turbo for high-accuracy STT, port 8002) for fully-offline multimodal AI. See [`training/whisper_server.py`](training/whisper_server.py).
 
 **Integration**: Run via Ollama natively to power autonomous file operations and session routing entirely within the local host environment.
 
@@ -944,9 +962,11 @@ The Generator strips the `console.log`, resubmits, and the next `EVALUATE` retur
 
 ## <a name="whats-new"></a>🆕 What's New
 
-> **Current release: v11.6.0 — Release Line Alignment**
+> **Current release: v13.0.1 — Executable bin permissions**
 
-- 🏷️ **v11.6.0 — Release Line Alignment:** Package metadata and documentation now track the current `custom` branch release line while preserving the verified local-first runtime and held-out benchmark work from v11.5.x. → [Changelog](CHANGELOG.md#1160)
+- 🔧 **v13.0.1 — Executable bin permissions:** Published binaries now receive the execute bit during build and prepublish so global installs launch correctly from MCP clients. → [Changelog](CHANGELOG.md)
+- 🧬 **v13.0.0 — The Adaptive Release:** Adaptive context, canonical skill routing, and cross-system behavioral profile support across the Prism ecosystem. → [Changelog](CHANGELOG.md#1300)
+- 🏗️ **v11.6.0 — Release Line Alignment:** Package metadata and documentation tracked the earlier `custom` branch release line while preserving the verified local-first runtime and held-out benchmark work from v11.5.x.
 - 🧠 **v11.5.0 — Structural GRPO Alignment:** GRPO-aligned local engine with held-out benchmark suite (N=15). 93.3% tool-call accuracy, 100% JSON validity, and 100% retrieval accuracy. → [Changelog](CHANGELOG.md#1150)
 - 🧪 **v11.0.1 — Zero-Search Field Testing:** Field-verified constant-time retrieval. → [Changelog](CHANGELOG.md#1101)
 - 🛡️ **v11.0.0 — HIPAA-Hardened Local LLM:** `prism-coder:7b` for local compaction, task routing, and semantic search. `PRISM_STRICT_LOCAL_MODE`, SSRF protection, URL credential redaction, and full XML escaping. → [Changelog](CHANGELOG.md#1100)
@@ -1232,6 +1252,9 @@ prism scm dora --repo synalux/portal --period 2024-Q4
 
 ---
 
+<details>
+<summary><strong>💻 CLI Reference</strong> — commands for CI/CD, scripts, and non-MCP environments <em>(technical · click to expand)</em></summary>
+
 ## <a name="cli-reference"></a>💻 CLI Reference
 
 Prism includes a CLI for environments where MCP tools aren't available (CI/CD pipelines, Bash scripts, non-MCP IDEs like Antigravity).
@@ -1262,6 +1285,13 @@ prism verify generate                          # Bless current rubric as canonic
 > 📦 **Installation:** The CLI is available as `prism` when installed globally (`npm install -g prism-mcp-server`), or via `node dist/cli.js` for local dev builds.
 
 ---
+
+</details>
+
+---
+
+<details>
+<summary><strong>🔧 Tool Reference</strong> — full schema for all 30+ MCP tools <em>(technical · click to expand)</em></summary>
 
 ## <a name="tool-reference"></a>🔧 Tool Reference
 
@@ -1396,6 +1426,13 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 
 ---
 
+</details>
+
+---
+
+<details>
+<summary><strong>⚙️ Environment Variables</strong> — full config reference, env vars, dashboard settings <em>(technical · click to expand)</em></summary>
+
 ## <a name="environment-variables"></a>Environment Variables
 
 > **🚦 TL;DR — Just want the best experience fast?** Two options:
@@ -1407,7 +1444,7 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 > GOOGLE_API_KEY=...             # Gemini text features and optional cloud embeddings
 > GOOGLE_SEARCH_CREDENTIALS=...  # Web search (or use GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX)
 > BRAVE_API_KEY=...              # Brave local search and Scholar URL discovery
-> FIRECRAWL_API_KEY=...          # Scholar scraping (or use TAVILY_API_KEY instead)
+> FIRECRAWL_API_KEY=...          # Scholar scraping
 > BRAVE_ANSWERS_API_KEY=...      # brave_answers grounding
 > ```
 > **Zero keys = zero problem.** Core session memory, keyword search, semantic search (local embeddings), time travel, and the full dashboard work 100% offline. Cloud keys are optional power-ups.
@@ -1421,8 +1458,7 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 | `GOOGLE_SEARCH_API_KEY` | No | Google Programmable Search API key (single-pair mode) |
 | `GOOGLE_SEARCH_CX` | No | Google Custom Search Engine ID paired with `GOOGLE_SEARCH_API_KEY` |
 | `BRAVE_API_KEY` | No | Brave Search Pro API key for `brave_local_search` and Scholar URL discovery |
-| `FIRECRAWL_API_KEY` | No | Firecrawl API key — required for Web Scholar scraping unless using Tavily |
-| `TAVILY_API_KEY` | No | Tavily Search API key — alternative to Brave+Firecrawl for Web Scholar |
+| `FIRECRAWL_API_KEY` | No | Firecrawl API key — required for Web Scholar scraping |
 | `PRISM_BRAVE_ANSWERS_API_KEY` | No | Prism-scoped alias for `BRAVE_ANSWERS_API_KEY` |
 | `PRISM_STORAGE` | No | `"local"` (default) or `"supabase"` — restart required |
 | `PRISM_ENABLE_HIVEMIND` | No | `"true"` to enable multi-agent tools — restart required |
@@ -1482,6 +1518,13 @@ Some configurations are stored dynamically in SQLite (`system_settings` table) a
 - **`intent_health_stale_threshold_days`** (default: `30`): Number of days before a project is considered fully stale for Intent Health scoring.
 
 ---
+
+</details>
+
+---
+
+<details>
+<summary><strong>🏗️ Architecture</strong> — startup sequence, storage layers, auto-load mechanics <em>(technical · click to expand)</em></summary>
 
 ## <a name="architecture"></a>Architecture
 
@@ -1559,6 +1602,13 @@ All platforms benefit from the **server-side fallback** (v5.2.1): if `session_lo
 
 ---
 
+</details>
+
+---
+
+<details>
+<summary><strong>🧬 Scientific Foundation</strong> — cognitive science citations, ACT-R, HRR, peer-reviewed models <em>(technical · click to expand)</em></summary>
+
 ## <a name="scientific-foundation"></a>🧬 Scientific Foundation
 
 Prism has evolved from smart session logging into a **cognitive memory architecture** — grounded in real research, not marketing. Every retrieval decision is backed by peer-reviewed models from cognitive psychology, neuroscience, and distributed computing.
@@ -1619,6 +1669,10 @@ The core unbinding engine is verified via Synalux's cognitive testing suite:
 
 ---
 
+</details>
+
+---
+
 ## 💼 B2B Consulting & Enterprise Support
 
 Prism MCP is open-source and free for individual developers. For teams and enterprises building autonomous AI workflows or integrating MCP-native memory at scale, we offer professional consulting and setup packages.
@@ -1645,10 +1699,13 @@ Prism MCP is open-source and free for individual developers. For teams and enter
 
 ## <a name="milestones-roadmap"></a>📦 Milestones & Roadmap
 
-> **Current: v11.5.1** — Structural GRPO Alignment (100% Accuracy) ([CHANGELOG](CHANGELOG.md))
+> **Current: v13.0** — The Adaptive Release ([CHANGELOG](CHANGELOG.md#1300))
 
 | Release | Headline |
 |---------|----------|
+| **v13.0** | 🧬 **The Adaptive Release** — BCBA behavioral brain (universal skill), project-aware skill auto-loading (23 skills), adaptive context injection, 83 security findings fixed, encrypted sync IV fix, timing-safe checksums. [Details →](CHANGELOG.md#1300) |
+| **v12.5** | 💳 **Unified Billing & Agent Skill Ecosystem** — Synalux-priced tiers ($19/$49/$99), 14-day trial, 54 skills, BSL-1.1 license. |
+| **v11.6.0** | 🏗️ **Agent Infrastructure Resilience** — Production-grade serialized queue, memory guardian, queue watchdog, status dashboard. 115/115 tests. |
 | **v11.5.1** | 🧠 **Structural GRPO Alignment** — Perfect 100% accuracy cross-validated on Synalux Elite platform. |
 | **v11.0.1** | 🧪 **Production Stability** — Field-tested Zero-Search logic merge, local logic finalization, HIPAA-hardened security refinement. |
 | **v11.0** | 🧠 **Zero-Search Retrieval** — Holographic Reduced Representations (HRR) + Deep Research Intelligence [🧪 Field Testing - Synalux](https://synalux.ai/docs) |
@@ -1662,9 +1719,7 @@ Prism MCP is open-source and free for individual developers. For teams and enter
 | **v7.0** | 🧬 ACT-R Activation Memory |
 
 ### Future Tracks
-- **v11.1: Multi-Graph Causal Layer** — Intent-aware retrieval routing traversing an LLM-inferred causal `because` edge-type layer for deep reasoning.
-- **v11.2: Federated Memory Mesh** — Hierarchical memory namespaces with role-based access control for enterprise agent teams.
-- **v11.3: Predictive Prefetch** — ACT-R based predictive models prefetch likely-needed memories before the agent asks.
+- **v14.0: Prism-Coder v2** — Retrained model with adaptive behavioral alignment (training in progress).
 
 👉 **[Full ROADMAP.md →](ROADMAP.md)**
 

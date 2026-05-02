@@ -146,12 +146,20 @@ vi.mock("../../src/utils/vaultExporter.js", () => ({
   buildVaultDirectory: vi.fn(() => ({})),
 }));
 
+vi.mock("../../src/utils/projectResolver.js", () => ({
+  resolveProject: vi.fn((declaredProject: string) => Promise.resolve({
+    ok: true,
+    project: declaredProject,
+  })),
+}));
+
 // ======================================================================
 // IMPORTS — after mocks
 // ======================================================================
 
 import { getStorage } from "../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../src/storage/configStorage.js";
+import { resolveProject } from "../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../src/storage/interface.js";
 import {
   sessionSaveLedgerHandler,
@@ -168,6 +176,7 @@ import {
 const mockGetStorage = vi.mocked(getStorage);
 const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
+const mockResolveProject = vi.mocked(resolveProject);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -231,6 +240,10 @@ describe("ledgerHandlers", () => {
     mockGetStorage.mockResolvedValue(storage as any);
     mockGetSetting.mockResolvedValue("");
     mockGetAllSettings.mockResolvedValue({});
+    mockResolveProject.mockImplementation((declaredProject: string) => Promise.resolve({
+      ok: true,
+      project: declaredProject,
+    }));
   });
 
   // ====================================================================
@@ -373,6 +386,43 @@ describe("ledgerHandlers", () => {
       await sessionSaveLedgerHandler(validArgs);
       // decayImportance is called async, may not resolve immediately
       expect(storage.decayImportance).toHaveBeenCalledWith("test-project", "test-user-id", 30);
+    });
+
+    it("rejects project mismatches before writing the ledger", async () => {
+      mockResolveProject.mockResolvedValueOnce({
+        ok: false,
+        error: 'Project mismatch: declared "test-project" but files_changed indicate "other-project".',
+        hint: 'Re-issue the request with project="other-project".',
+      });
+
+      const result = await sessionSaveLedgerHandler({
+        ...validArgs,
+        files_changed: ["/repo/other-project/src/app.ts"],
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("Project mismatch");
+      expect(result.content[0].text).toContain("No ledger entry was written");
+      expect(storage.saveLedger).not.toHaveBeenCalled();
+    });
+
+    it("mentions auto-created project registry entries", async () => {
+      mockResolveProject.mockResolvedValueOnce({
+        ok: true,
+        project: "test-project",
+        autoCreated: true,
+      });
+
+      const result = await sessionSaveLedgerHandler({
+        ...validArgs,
+        files_changed: ["/repo/test-project/src/app.ts"],
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain(
+        'Auto-registered project "test-project" with repo_path derived from files_changed'
+      );
+      expect(storage.saveLedger).toHaveBeenCalledTimes(1);
     });
 
     // --- Input Validation ---
@@ -891,14 +941,14 @@ describe("ledgerHandlers", () => {
   describe("sessionForgetMemoryHandler", () => {
     it("soft-deletes a memory entry by default", async () => {
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-123",
+        memory_id: "a0000000-0000-4000-8000-000000000001",
       });
 
       expect(result.isError).toBe(false);
       expect(result.content[0].text).toContain("Soft Deleted");
-      expect(result.content[0].text).toContain("uuid-123");
+      expect(result.content[0].text).toContain("a0000000-0000-4000-8000-000000000001");
       expect(storage.softDeleteLedger).toHaveBeenCalledWith(
-        "uuid-123",
+        "a0000000-0000-4000-8000-000000000001",
         "test-user-id",
         undefined
       );
@@ -906,7 +956,7 @@ describe("ledgerHandlers", () => {
 
     it("soft-deletes with reason for audit trail", async () => {
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-456",
+        memory_id: "a0000000-0000-4000-8000-000000000002",
         reason: "GDPR Article 17 request",
       });
 
@@ -914,7 +964,7 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Reason");
       expect(result.content[0].text).toContain("GDPR Article 17 request");
       expect(storage.softDeleteLedger).toHaveBeenCalledWith(
-        "uuid-456",
+        "a0000000-0000-4000-8000-000000000002",
         "test-user-id",
         "GDPR Article 17 request"
       );
@@ -922,7 +972,7 @@ describe("ledgerHandlers", () => {
 
     it("hard-deletes when hard_delete is true", async () => {
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-789",
+        memory_id: "a0000000-0000-4000-8000-000000000003",
         hard_delete: true,
       });
 
@@ -930,14 +980,14 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Hard Deleted");
       expect(result.content[0].text).toContain("permanently removed");
       expect(storage.hardDeleteLedger).toHaveBeenCalledWith(
-        "uuid-789",
+        "a0000000-0000-4000-8000-000000000003",
         "test-user-id"
       );
     });
 
     it("does not call hardDeleteLedger when hard_delete is false", async () => {
       await sessionForgetMemoryHandler({
-        memory_id: "uuid-aaa",
+        memory_id: "a0000000-0000-4000-8000-000000000004",
         hard_delete: false,
       });
 
@@ -973,7 +1023,7 @@ describe("ledgerHandlers", () => {
       storage.softDeleteLedger.mockRejectedValue(new Error("Entry not found"));
 
       const result = await sessionForgetMemoryHandler({
-        memory_id: "nonexistent-uuid",
+        memory_id: "a0000000-0000-4000-8000-000000000005",
       });
 
       expect(result.isError).toBe(true);
@@ -984,7 +1034,7 @@ describe("ledgerHandlers", () => {
       storage.hardDeleteLedger.mockRejectedValue(new Error("FK constraint"));
 
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-fail",
+        memory_id: "a0000000-0000-4000-8000-000000000006",
         hard_delete: true,
       });
 
@@ -1135,7 +1185,7 @@ describe("ledgerHandlers", () => {
     it("returns error for non-existent file", async () => {
       const result = await sessionSaveImageHandler({
         project: "test-project",
-        file_path: "/nonexistent/path/image.png",
+        file_path: join(tempDir, "does-not-exist.png"),
         description: "Missing image",
       });
 
@@ -1490,7 +1540,7 @@ describe("ledgerHandlers", () => {
 
     it("sessionForgetMemoryHandler includes 'tombstoned' in soft-delete response", async () => {
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-test",
+        memory_id: "550e8400-e29b-41d4-a716-446655440000",
       });
 
       expect(result.content[0].text).toContain("tombstoned");
@@ -1498,7 +1548,7 @@ describe("ledgerHandlers", () => {
 
     it("sessionForgetMemoryHandler mentions hard_delete option in soft-delete response", async () => {
       const result = await sessionForgetMemoryHandler({
-        memory_id: "uuid-test",
+        memory_id: "550e8400-e29b-41d4-a716-446655440000",
       });
 
       expect(result.content[0].text).toContain("hard_delete: true");

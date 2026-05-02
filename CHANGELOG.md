@@ -2,14 +2,118 @@
 
 All notable changes to this project will be documented in this file.
 
-## <a name="1160"></a>[11.6.0] - 2026-04-24 — 🏷️ Release Line Alignment
+## [13.0.1] - 2026-05-02 — 🔧 Executable bin permissions
 
-> **The merge-line release.** This version aligns the `custom` branch package metadata and top-level documentation on the `11.6.0` release line without changing the verified local-first runtime behavior carried forward from the `11.5.x` series.
+Bug fix: when installed globally via `npm i -g prism-mcp-server`, the
+binaries (`prism`, `prism-coder`, `prism-mcp-server`, `prism-import`)
+ended up without the execute bit, so MCP clients (Claude Code, Claude
+Desktop, Cursor, etc.) couldn't launch the server — they'd get a
+"permission denied" when trying to spawn it.
 
-### Changed
+Root cause: `tsc` doesn't preserve or set the +x bit on its compiled
+output, and the published tarball inherited the missing perm.
 
-- **Release metadata alignment** — Updated package metadata and top-level docs to track the `11.6.0` branch release line.
-- **Benchmark/doc consistency** — Kept the held-out GRPO benchmark numbers and local-first feature claims aligned with the codebase instead of importing unsupported release-note text from the merged branch.
+Fix:
+- Added `npm run chmod-bins` to set 0755 on `dist/cli.js`,
+  `dist/server.js`, `dist/utils/universalImporter.js`.
+- `build` now runs `tsc && npm run chmod-bins`.
+- `prepublishOnly` runs the full build to guarantee published tarballs
+  have the right perms regardless of how the maintainer publishes.
+
+If you hit "permission denied" on 13.0.0, either upgrade to 13.0.1 or
+manually `chmod +x` the files in `~/.npm-global/lib/node_modules/prism-mcp-server/dist/`.
+
+## <a name="1300"></a>[13.0.0] - 2026-05-02 — 🧬 The Adaptive Release
+
+> **prism-coder now feels.** Every response the model returns is shaped in real time by the user's emotional register, motor rhythm, and ambient environment — without anyone writing a "be empathetic" instruction. PrismAAC, Synalux, and prism-mcp now share a single behavioral profile that travels with the user across surfaces, and skill routing is canonical at synalux instead of duplicated across three repos.
+
+### ✨ Wow factor — what users notice immediately
+
+- **Auto Tone Switch.** When a child types `"I need help!"` on PrismAAC, the TTS voice automatically softens to a calm, slower, emergency register — *and* the prism-coder response is shaped to validate first, then offer concrete next steps. No flag, no setting. The model receives an `<adaptive_context>` block on every chat carrying `dominant_mood`, `current_utterance_guidance`, and the user's preferred categories.
+- **Cursor that learns.** PrismAAC's head/body/finger trackers feed actual dwell-to-trigger latency back into the adaptive engine. After ~10 selections the dwell time, smoothing alpha, and cursor sensitivity all adapt to the child's motor rhythm, clamped to safe ranges (`400–3000ms` dwell, never silences voice).
+- **Identity-locked tracking.** Multi-camera face tracker and pose tracker now reject other faces in the frame via IoU continuity — no more cursor jumping to a sibling who walks behind the user.
+- **One source of truth.** Skill routing for the entire prism-coder ecosystem now lives in synalux at `/api/v1/skills/routing`. Adding a new project skill is one PR in synalux; prism-mcp + future surfaces pick it up within 5 minutes via cached fetch.
+
+<details>
+<summary>🧬 Adaptive Engine — 5 systems, BCBA-aligned</summary>
+
+The adaptive engine observes 5 dimensions of user behavior and shapes runtime parameters accordingly. All adaptations are **additive** (never restrict capability), all guarded by hard safety clamps tested as invariants:
+
+1. **Tone** — `detectTone(text)` returns one of `neutral | friendly | excited | empathetic | serious`. Routes Azure TTS style, speech rate, and a system-prompt addendum injected into prism-coder. Detection is Unicode-aware tokenize + light stem so `"hurts"`, `"hurting"`, `"bleeding"` all match.
+2. **Gesture speed** — running average of dwell-to-trigger latency + cursor velocity. After 1000 samples, switches from straight average to EMA (α=0.02, half-life ≈ 35 samples) so a real motor regression is still tracked.
+3. **Pronunciation** — learns "wawa → water" patterns. Hard guard: emergency words (help/hurt/scared/911/bleeding/choking/fire/stuck/lost) are *uncorrectable* — neither `recordMispronunciation` nor `correctPronunciation` will let them be shadowed.
+4. **Background noise** — EMA noise floor with `threshold = floor + 15dB`, **clamped at ≤ -20dB** so a loud environment never pushes the threshold above what voice can hit.
+5. **Prompt patterns** — frequency-weighted category preference (`count × exp(-age_days/14)`), 30-day decay on time-of-day vocabulary so summer routines don't haunt the autumn UI.
+
+`PROFILE_VERSION = 2` with v1 → v2 migration. Schema lives canonically at `synalux-private/portal/src/shared/adaptiveEngine.ts`; PrismAAC mirrors it for offline operation, with `training/sync_adaptive_engine.sh` as a structural drift check.
+
+Hysteresis: `dominantMood` only flips when ≥6 of last 10 events agree, so a single emergency doesn't trap the system in `'urgent'` for the next half hour.
+</details>
+
+<details>
+<summary>📡 Cross-system wiring</summary>
+
+```
+PrismAAC client ──► autoSwitchTone() ──► Azure style + rate
+       │
+       ├─► localStorage profile (free tier)
+       │
+       └─► POST /api/v1/adaptive/profile (paid tier sync)
+                    │
+                    ▼
+             Supabase adaptive_profiles (RLS'd)
+                    │
+                    ▼
+       /api/v1/chat ──► buildSystemContext({ latestUtterance })
+                    │
+                    ▼
+       prism-coder receives <adaptive_context> block
+```
+
+For MCP clients (Claude Desktop, IDE assistants, voice agents), 5 new tools expose the same profile via prism-mcp:
+
+- `adaptive_get_profile` — current profile + signals snapshot
+- `adaptive_set_profile` — caregiver/admin replace
+- `adaptive_record_event` — incremental write
+- `adaptive_detect_tone` — pure function, no side effects
+- `adaptive_reset` — caregiver wipe (`confirm: true`)
+</details>
+
+<details>
+<summary>🛡️ Security hardening</summary>
+
+- **CSP**: Removed global `'unsafe-eval'` from synalux portal CSP. MediaPipe WASM runs on the proxied `prism-aac.vercel.app` origin, so synalux pages don't need eval relaxations. The prior policy disabled CSP's primary defense across the entire portal.
+- **Permissions-Policy**: Per-route allowlist. `/prism-aac/*` and `/telehealth/*` get camera+mic; everywhere else explicitly denies.
+- **PHI redaction**: 50+ ABA/clinical-vocabulary phrase allowlist — `Applied Behavior Analysis`, `Discrete Trial Training`, `Functional Behavior Assessment` etc no longer redacted to `[REDACTED] [REDACTED] Analysis`. Real names still redacted.
+- **Emergency endpoint**: Added per-destination rate limit (3 calls/hr to the same number from any source IP), max 5 contacts/request, E.164 validation. Closes the Twilio-abuse vector where rotating IPs could spam arbitrary numbers.
+- **prism-mcp encryptedSync**: Wrapped `JSON.parse` so a malformed packet from a misbehaving peer no longer crashes the receiver with an unhandled `SyntaxError`.
+- **prism-mcp SSRF**: Loopback gated behind `PRISM_DEV_MODE` flag instead of unconditionally rejected (private RFC1918 ranges still always denied).
+</details>
+
+<details>
+<summary>🧪 Testing</summary>
+
+- prism-mcp: 17 new tests covering skill routing fallback chain + encryptedSync corruption guard.
+- synalux portal: 31 new tests for PHI clinical-allowlist + emergency endpoint validation.
+- prism-aac: 121 tests pass (48 adaptive, 53 camera tracking + identity locking, 20 head-tracker edge cases).
+
+```bash
+# Adaptive engine drift check across repos
+bash /Users/admin/prism/training/sync_adaptive_engine.sh
+```
+</details>
+
+### Migration
+
+No client breaking changes. Adaptive profile localStorage is auto-migrated v1 → v2 on first read. Skill content keys (`skill:*`) unchanged — only the routing source moved.
+
+### Acknowledgments
+
+This release was driven by a deep code review that surfaced numerical correctness, safety, and cross-system architectural issues in prior agent-authored commits. The single-source-of-truth principle came from user direction: "do not just copy paste skills for each".
+
+---
+
+## <a name="1200"></a>[12.0.0] - 2026-04-23 — 💳 Unified Billing & Agent Skill Ecosystem
 
 ## <a name="1151"></a>[11.5.1] - 2026-04-22 — 🛡️ Cross-Platform Reliability & CI Recovery
 

@@ -104,6 +104,13 @@ describe("acquireLock() stale PID handling", () => {
 
       throw new Error(`unexpected read: ${path}`);
     });
+    mockWriteFileSync.mockImplementation((_filePath, _data, options) => {
+      if (typeof options === "object" && options !== null && "flag" in options && options.flag === "wx") {
+        const error = new Error("file exists") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      }
+    });
 
     const { acquireLock } = await import("../src/lifecycle.js");
     acquireLock();
@@ -111,7 +118,7 @@ describe("acquireLock() stale PID handling", () => {
     expect(killSpy).toHaveBeenNthCalledWith(1, 69, 0);
     expect(killSpy).toHaveBeenNthCalledWith(2, 69, "SIGTERM");
     vi.runAllTimers();
-    expect(killSpy).toHaveBeenNthCalledWith(3, 69, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(69, "SIGKILL");
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       "/tmp/prism-test-home/.prism-mcp/server-default.pid",
       process.pid.toString(),

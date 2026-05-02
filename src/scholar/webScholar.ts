@@ -1,7 +1,6 @@
 import {
   BRAVE_API_KEY,
   FIRECRAWL_API_KEY,
-  TAVILY_API_KEY,
   GOOGLE_SEARCH_API_KEY,
   GOOGLE_SEARCH_CX,
   SEMANTIC_SCHOLAR_API_KEY,
@@ -15,7 +14,6 @@ import { debugLog } from "../utils/logger.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { randomUUID } from "node:crypto";
 import { performWebSearchRaw } from "../utils/braveApi.js";
-import { performTavilySearch, performTavilyExtract } from "../utils/tavilyApi.js";
 import { performGoogleSearch } from "../utils/googleSearchApi.js";
 import { getTracer } from "../utils/telemetry.js";
 import { searchYahooFree, scrapeArticleLocal } from "./freeSearch.js";
@@ -110,8 +108,7 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
   try {
     const useGoogle = !!(GOOGLE_SEARCH_API_KEY && GOOGLE_SEARCH_CX);
     const useBraveFirecrawl = !useGoogle && !!(BRAVE_API_KEY && FIRECRAWL_API_KEY);
-    const useTavily = !useGoogle && !useBraveFirecrawl && !!TAVILY_API_KEY;
-    const useFreeFallback = !useGoogle && !useBraveFirecrawl && !useTavily;
+    const useFreeFallback = !useGoogle && !useBraveFirecrawl;
 
     const topic = overrideTopic || await selectTopic();
     const project = overrideProject || SCHOLAR_PROJECT;
@@ -134,9 +131,6 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
       const braveResponse = await performWebSearchRaw(topic, PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN);
       const braveData = JSON.parse(braveResponse);
       urls = (braveData.web?.results || []).map((r: any) => r.url).filter(Boolean);
-    } else if (useTavily) {
-      const tavilyResults = await performTavilySearch(TAVILY_API_KEY!, topic, PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN);
-      urls = tavilyResults.map(r => r.url).filter(Boolean);
     } else {
       // Parallel Academic Discovery (PubMed + ERIC + Semantic Scholar)
       const academicCount = Math.ceil(PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN / 2);
@@ -159,18 +153,11 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
     await hivemindHeartbeat(`Scraping ${urls.length} articles on: ${topic}`);
     const scrapedTexts: string[] = [];
 
-    if (useTavily) {
-      const extracted = await performTavilyExtract(TAVILY_API_KEY!, urls);
-      for (const item of extracted) {
-        if (item.rawContent) scrapedTexts.push(`Source: ${item.url}\n\n${item.rawContent.slice(0, 15_000)}`);
-      }
-    } else {
-      for (const url of urls) {
-        try {
-          const article = await scrapeArticleLocal(url);
-          scrapedTexts.push(`Source: ${url}\nTitle: ${article.title}\n\n${article.content.slice(0, 15_000)}`);
-        } catch {}
-      }
+    for (const url of urls) {
+      try {
+        const article = await scrapeArticleLocal(url);
+        scrapedTexts.push(`Source: ${url}\nTitle: ${article.title}\n\n${article.content.slice(0, 15_000)}`);
+      } catch {}
     }
 
     if (scrapedTexts.length === 0) return "All scrapes failed";
@@ -212,7 +199,7 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
 async function searchPubMed(query: string, count: number): Promise<string[]> {
   const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmode=json&retmax=${count}`;
   try {
-    const searchResp = await fetch(searchUrl);
+    const searchResp = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) });
     if (!searchResp.ok) throw new Error("PubMed Search failed");
     const searchData = await searchResp.json();
     const pmids: string[] = searchData.esearchresult?.idlist || [];
@@ -226,7 +213,7 @@ async function searchPubMed(query: string, count: number): Promise<string[]> {
 async function searchERIC(query: string, count: number): Promise<string[]> {
   const url = `https://api.ies.ed.gov/eric/?search=${encodeURIComponent(query)}&rows=${count}&format=json`;
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!resp.ok) throw new Error("ERIC Search failed");
     const data = await resp.json();
     return (data.response?.docs || []).map((doc: any) => `https://eric.ed.gov/?id=${doc.id}`);
@@ -241,7 +228,7 @@ async function searchSemanticScholar(query: string, count: number): Promise<stri
   try {
     const headers: Record<string, string> = {};
     if (SEMANTIC_SCHOLAR_API_KEY) headers["x-api-key"] = SEMANTIC_SCHOLAR_API_KEY;
-    const resp = await fetch(url, { headers });
+    const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
     if (!resp.ok) throw new Error("Semantic Scholar Search failed");
     const data = await resp.json();
     return (data.data || []).map((paper: any) => paper.url).filter(Boolean);
