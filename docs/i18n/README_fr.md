@@ -20,39 +20,54 @@
 
 ### Downloads
 
-| Platform | Package | Size |
-|----------|---------|------|
-| **Windows** | [Prism Coder-1.0.0-Setup.exe](https://github.com/dcostenco/prism-coder/releases/download/v1.0.0/Prism.Coder-1.0.0-Setup.exe) | 99 MB |
-| **macOS (Apple Silicon)** | [Prism Coder-1.0.0-arm64.dmg](https://github.com/dcostenco/prism-coder/releases/download/v1.0.0/Prism.Coder-1.0.0-arm64.dmg) | 113 MB |
-| **Linux** | [Prism Coder-1.0.0.AppImage](https://github.com/dcostenco/prism-coder/releases/download/v1.0.0/Prism.Coder-1.0.0.AppImage) | 119 MB |
-| **npm (MCP Server)** | `npx -y prism-mcp-server` | — |
+Latest IDE release: **v2.1.1** ([release notes](https://github.com/dcostenco/prism-coder/releases/tag/v2.1.1-ide)) — Merge conflict editor (Accept Current/Incoming/Both + auto-stage), enhanced Builder/Deploy/Workflow panels, all v2.1.0 features intact.
 
-| What You Get | Time Saved vs. Traditional |
+| Platform | Package | Version | Size |
+|----------|---------|:-------:|:----:|
+| **macOS (Apple Silicon)** | [Prism Coder-2.1.1-arm64.dmg](https://github.com/dcostenco/prism-coder/releases/download/v2.1.1-ide/Prism.Coder-2.1.1-arm64.dmg) | **v2.1.1** | 115 MB |
+| **macOS (Apple Silicon, zip)** | [Prism Coder-2.1.1-arm64.zip](https://github.com/dcostenco/prism-coder/releases/download/v2.1.1-ide/Prism.Coder-2.1.1-arm64.zip) | **v2.1.1** | 110 MB |
+| **Windows (signed)** | [Prism Coder-2.1.1-Setup.exe](https://github.com/dcostenco/prism-coder/releases/download/v2.1.1-ide/Prism.Coder-2.1.1-Setup.exe) | **v2.1.1** | 103 MB |
+| **Linux (arm64)** | [Prism Coder-2.1.1.AppImage](https://github.com/dcostenco/prism-coder/releases/download/v2.1.1-ide/Prism.Coder-2.1.1.AppImage) | **v2.1.1** | 121 MB |
+| **npm (MCP Server)** | `npx -y prism-mcp-server` | latest | — |
+
+> **macOS:** Signed with Developer ID. First launch: right-click → **Open** if Gatekeeper warns.
+>
+> **Windows:** Authenticode-signed (DigiCert-timestamped). SmartScreen may warn — click **More info → Run anyway**.
+
+| What You Get | Status |
 |---|:---:|
-| 🤖 **Agent Mode** — autonomous multi-step task execution with diff previews | ~95% |
-| 🏗️ **Website Builder** — 6 templates, section editor, export to HTML/ZIP | ~90% |
-| 🎨 **Visual Drag & Drop** — 11 component types, canvas drop zone, live property editor | ~85% |
-| 🔑 **Auth & Database** — 6 auth providers, table CRUD, RLS, storage buckets | ~90% |
-| 🐳 **DevContainers** — 8 base images, port forwarding, resource limits, Codespaces export | ~80% |
-| 📋 **Customer Board (HIPAA)** — 12-pattern PHI scanner, moderator controls, ticket lifecycle | ~70% |
-| 🎨 **Media Studio** — AI image/video/3D generation, tier-gated quality | ~98% |
-| 🚀 **One-Click Deploy** — Vercel, Netlify, Synalux Cloud, custom server | ~98% |
-| 👥 **Real-Time Collaboration** — multiplayer editing with cursor presence | ~60% |
-| 📊 **SEO + Analytics** — 8-category audit + traffic dashboard | ~99% |
-| 🏪 **Marketplace** — 10-category extension registry, install with one click | ~90% |
-| 📋 **Workflow Engine** — natural language → structured project workflows | ~90% |
-| 🔀 **Git Integration** — branch, stage, commit, push without leaving IDE | ~60% |
-| 🌐 **12-Language i18n** — full UI translation including Arabic RTL | ~100% |
+| 💻 **Real Terminal** — xterm.js + node-pty, multi-tab, resize | ✅ v2.1 |
+| ✨ **Inline AI Completions** — ghost-text via local Ollama FIM, Tab to accept | ✅ v2.1 |
+| 🤖 **Agent Mode** — autonomous multi-step task execution with diff previews | ✅ |
+| 🎨 **Media Studio** — AI image/video/3D generation with prompt + tier-gated quality | ✅ v2.1 |
+| 🏗️ **Website Builder** — 6 templates, section editor, export to HTML | ✅ |
+| 🎨 **Visual Drag & Drop** — 11 component types, canvas drop zone, property editor | ✅ |
+| 📋 **Customer Board (HIPAA)** — 12-pattern PHI scanner, moderator controls, ticket lifecycle | ✅ |
+| 🔀 **Git Integration** — status, stage, commit, push, pull, branches, Monaco diff viewer | ✅ |
+| 🐙 **GitHub** — PRs, issues, actions via `gh` CLI | ✅ |
+| 📋 **Tasks Runner** — VS Code tasks.json parser, JSONC, streaming output | ✅ |
+| 🐛 **Debugger** — Node.js CDP, breakpoints, stepping, expression eval | ✅ |
+| 🔑 **Auth & Database** — 6 auth provider toggles, DB connect form, CLI guides | ✅ |
+| 🐳 **DevContainers** — 8 base images, docker run + .devcontainer.json export | ✅ |
+| 🏪 **Skill Browser** — scans ~/.agent/skills/, search, rescan | ✅ v2.1 |
+| 🚀 **Deploy** — env var management + CLI recipes (Vercel/Netlify/Custom) | ✅ |
+| 📋 **Workflow Engine** — 8-step default dev workflow, status tracking, persistence | ✅ |
+| 🌐 **12-Language i18n** — full UI translation including Arabic RTL | ✅ |
+| 📊 **SEO Audit** — URL input + Lighthouse trigger, analytics provider guide | ✅ v2.1 |
+| 🔒 **SSH Remote** — host registry, command execution, streaming output | ✅ |
+| 🎯 **Design-to-Code** — screenshot → Builder sections via vision model | ✅ |
+| 📜 **Version History** — git-backed snapshots per builder project | ✅ |
+| 👥 **Collaboration** — v2.2 (CRDT editing, presence, team chat) | 🟡 roadmap |
 
-**27/27 features** — more than any competitor (Cursor: 9, Windsurf: 9, Replit: 12, Bolt: 9).
-
-👉 **[Full IDE README with screenshots, architecture, and technical details →](https://github.com/dcostenco/prism-coder/releases/tag/v1.0.0)**
+👉 **[Full v2.1.1 release notes →](https://github.com/dcostenco/prism-coder/releases/tag/v2.1.1-ide)**
 
 ---
 
 ![Prism Hivemind Multi-Agent Dashboard](../v11_hivemind_multi_agent_dashboard.jpg)
 
 **Your AI agent forgets everything between sessions. Prism fixes that — then teaches it to think.**
+
+> **🆕 May 2026 — `prism-coder:7b` v18aac released.** New on-device LLM backing the agent: AAC realigned eval **47/48 (98%)**, emergency_qa **13/13 perfect**, text_correct **15/15 perfect**, translate **8/8 perfect**, plus first-class gesture-recognition support for accessibility (smile/brow/jaw/blink/head-tilt). Built on Qwen2.5-Coder-7B-Instruct with full SFT on commercial-safe data (Apache 2.0 / CC-BY-4.0). Hybrid `prism-coder:7b-coder` (BFCL-optimized variant) coming soon for a top-rank function-calling track. See `prism/training/HYBRID_RESEARCH.md` for the dual-model deployment plan.
 
 <details>
 <summary>Cognitive Architecture Deep Dive (v12.5)</summary>
@@ -121,7 +136,7 @@ Prism v12.5 unifies Prism and Synalux into a **single billing architecture** wit
 - **10 Vendor Skills** — Vercel, Supabase, Stripe, Sentry, OpenAI, Addy Osmani, Garry Tan/gstack
 - **30+ Community Skills** — Installed and optimized from the Gemini ecosystem
 
-> 📦 **Packages:** [`prism-mcp-server`](https://www.npmjs.com/package/prism-mcp-server) (npm) · [Prism Coder IDE](https://github.com/dcostenco/prism-coder/releases/tag/v1.0.0) (VS Code) · `prism` CLI
+> 📦 **Packages:** [`prism-mcp-server`](https://www.npmjs.com/package/prism-mcp-server) (npm) · [Prism Coder IDE](https://github.com/dcostenco/prism-coder/releases/tag/v2.1.1-ide) (VS Code) · `prism` CLI
 
 ---
 
@@ -744,9 +759,9 @@ Built atop Qwen 2.5 Coder 7B using the MLX framework for Apple Silicon, this eng
 - **Quantization:** Q4_K_M GGUF, 4 GB on disk
 - **Distribution:** [`dcostenco/prism-coder-7b`](https://huggingface.co/dcostenco/prism-coder-7b) on HuggingFace; `ollama pull prism-coder:7b`
 
-**v16 in training (Modal H100, May 2026):** combined synalux + AAC SFT (~7,300 examples) targeting the 5 remaining v12 failures plus full multi-locale coverage of the 14 prism-aac locales (incl. zh-Hans / zh-Hant / zh-HK / Romanian / Ukrainian / Russian / German / Korean / Japanese / Arabic). DoRA rank=256, continuing from v12-fused base. Reliability gate: BFCL ≥ 95% AND AAC eval ≥ 89% (v12 baseline) AND Emergency Q&A == 13/13 — promote to `prism-coder:7b` only on all-pass. See [`training/modal_v16_sft.py`](../../training/modal_v16_sft.py) and [`training/deploy_v16.sh`](../../training/deploy_v16.sh).
+**v18aac (current):** full SFT on commercial-safe data (Apache 2.0 / CC-BY-4.0). AAC eval 47/48 (98%), emergency_qa 13/13 perfect, text_correct 15/15, translate 8/8. First-class gesture-recognition support. DoRA rank=256 on Qwen2.5-Coder-7B-Instruct base.
 
-**Sister local servers (M-series Apple Silicon, optional):** when running on a Mac, prism-aac users can additionally stand up `mlx-vlm` (Qwen2.5-VL-7B for camera/scene understanding, port 8001) and `mlx-whisper` (large-v3-turbo for high-accuracy STT, port 8002) for fully-offline multimodal AI. See [`training/whisper_server.py`](../../training/whisper_server.py).
+**Sister local servers (M-series Apple Silicon, optional):** when running on a Mac, prism-aac users can additionally stand up `mlx-vlm` (Qwen2.5-VL-7B for camera/scene understanding, port 8001) and `mlx-whisper` (large-v3-turbo for high-accuracy STT, port 8002) for fully-offline multimodal AI.
 
 **Integration**: Run via Ollama natively to power autonomous file operations and session routing entirely within the local host environment.
 
