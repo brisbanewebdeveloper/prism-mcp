@@ -1,3 +1,38 @@
+# 2026-05-06 - Resolve Active BCBA Merge While Preserving Custom Runtime Invariants
+
+## Summary
+
+Resolved the active `bcba` into `custom` merge by keeping the custom branch's `v13.0.1` release line and runtime invariants, while retaining compatible incoming fixes for local LLM tool-call normalization, residual-distribution timeout stability, telemetry/provider-related additions, and targeted training artifact ignore rules.
+
+## What Was Done
+
+- Kept the custom branch versions for the broad docs/runtime conflict set so the package remains aligned to `v13.0.1`, Google-backed `brave_web_search` keeps credential failover, lifecycle lock cleanup remains procfs-based, ledger saves keep project mismatch hard rejection, and Supabase REST calls retain call-time credentials plus configurable API prefixes.
+- Preserved the incoming `normalizeToolCallFormat` helper and wired it into `callLocalLlm()` before the existing structural tool-call extraction path.
+- Kept the incoming residual-distribution test timeout for the known long-running high-residual R@5 case.
+- Added targeted `.gitignore` coverage for Modal watcher status/alert files, iterative Modelfile experiments, and BFCL output dumps without accepting a blanket `training/` ignore.
+- Resolved the `Brave-Gemini-Research-MCP-Server` submodule delete/modify conflict in favor of the custom branch deletion and staged the corresponding `.gitmodules` update.
+- Regenerated `package-lock.json` from the resolved `package.json` instead of hand-merging generated lockfile content.
+
+## Files Changed
+
+- `.gitignore`
+- `.gitmodules`
+- `src/utils/localLlm.ts`
+- `src/utils/normalizeToolCallFormat.ts`
+- `tests/normalizeToolCallFormat.test.ts`
+- `tests/residual-distribution.test.ts`
+- `package-lock.json`
+- Incoming non-conflict additions already staged by the merge, including `examples/vercel-ai-sdk-prism/`, telemetry/provider updates, vault exporter updates, and soft-delete migration/test coverage.
+
+## Verification Performed
+
+- Confirmed Git reports no unmerged paths after staging the resolved files.
+- Confirmed the repository has no exact Git conflict markers with `rg -n '^(<<<<<<< .+|=======$|>>>>>>> .+)' .`.
+- Ran `npm install --package-lock-only --ignore-scripts` successfully.
+- Ran `npm run lint:dashboard` successfully.
+- Ran `npm run build` successfully.
+- Ran `npm exec vitest run tests/utils/google-search.test.ts tests/lifecycle-lock.test.ts tests/tools/ledgerHandlers.test.ts tests/verification/cli-integration.test.ts tests/residual-distribution.test.ts tests/normalizeToolCallFormat.test.ts` successfully: 6 files, 142 tests passed.
+
 # 2026-05-03 - Resolve Active BCBA Merge On The v13.0.1 Release Line
 
 ## Summary
