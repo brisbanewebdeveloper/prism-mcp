@@ -1,8 +1,8 @@
 {
   "name": "prism-mcp-server",
-  "version": "13.0.1",
+  "version": "15.2.1",
   "mcpName": "io.github.dcostenco/prism-coder",
-  "description": "Prism-Coder v13.0.1: The world's first O(1) Cognitive Memory Architecture for AI Agents. Adaptive context, 100% Tool-Call Accuracy (BFCL Gold Certified), 54 Agent Skills, Zero-Search Retrieval (HDC/HRR), HIPAA-hardened local-first storage, and SLERP-optimized GRPO alignment.",
+  "description": "Prism Coder — Cognitive memory + tool-calling intelligence for AI agents. Mind Palace persistent memory (BFCL Gold Certified, 100% Tool-Call Accuracy, 54 Agent Skills, Zero-Search HDC/HRR retrieval, HIPAA-hardened local-first storage, SLERP-optimized GRPO alignment) plus the prism-coder:7b / 14b open-weights LLM fleet.",
   "module": "index.ts",
   "type": "module",
   "main": "dist/server.js",
@@ -116,6 +116,11 @@
     "@huggingface/transformers": {
       "optional": true
     }
+  },
+  "overrides": {
+    "hono": "^4.12.18",
+    "fast-uri": "^3.1.2",
+    "ip-address": "^10.2.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",

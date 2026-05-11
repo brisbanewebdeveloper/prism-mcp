@@ -2,6 +2,166 @@
 
 All notable changes to this project will be documented in this file.
 
+## [15.2.0] - 2026-05-10 — 🛡 Two-namespace skill architecture + Synalux dynamic content
+
+### What's new
+
+**Two-namespace skill separation** — Platform skills (`skill:*`) are read-only. User-local skills get their own `user_skill:*` namespace, written by dashboard only when `user_local.enabled=true` in routing table (off by default).
+
+**Synalux dynamic skill content** — `GET /api/v1/skills/content` checks Supabase `platform_skills` table first (admin-updatable without redeploy), falls back to filesystem. Admin endpoint `POST /api/v1/admin/skills` gates on `isPlatformAdmin()`.
+
+**Skill routing schema v2** — `resolveSkillsForProject` returns `{ names, user_local }`. Routing table gains `user_local: { enabled, key_prefix }`.
+
+**New universal skills** — `execute-method-literally` (26-case test suite, verbatim May 2026 replay), `pre-push-audit` Rule 19 (`tsc --noEmit` before every push).
+
+## [15.1.0] - 2026-05-10 — 🔗 Skill content via Synalux for paid tier
+
+`fetchSkillContent()` in SynaluxStorage, skill content batch-fetched from Synalux on `session_load_context`, `execute-method-literally` in universal routing, Architecture docs Section 12.
+
+## [15.0.0] - 2026-05-10 — 🔄 Proactive drift detection + evidence-first behavioral protocol
+
+### What's new
+
+**Proactive session drift detection** (`session_cognitive_route` pattern)
+Three direct Prism calls — no scripts, no cron, no hooks — detect when an AI agent has drifted from stated goals mid-session and self-correct before the user notices. Returns `on_track / minor_drift / major_drift`. Routes major drift alerts to Synalux portal for cross-session visibility. 10 behavioral test cases cover: obvious drift, scope creep, on-track false positive, promise gaps, repeated fixes, cascading violations, and Synalux routing. Documented as the flagship v15 feature.
+
+**Evidence-first behavioral protocol** (new skill + CLAUDE.md gates)
+Prevents AI agents from reporting `done / fixed / working / 90%+` without observable evidence. Five hard gates that supersede all other instructions: (1) no positive completion claim without evidence; (2) diagnose before asserting causes; (3) write test before pushing any bug fix; (4) training quality gate BFCL ≥90%; (5) 60-min drift check for long sessions. Born from five May 2026 failures that each wasted 1-3 hours of production work. Evidence gate table maps every claim type to required proof.
+
+**TTS audio protection** (prism-aac)
+- `PROTECT_PLAY_MS=600ms`: autoSpeak calls that arrive within 600ms of a playing source are gracefully dropped instead of killing the audio. Fixes complete silence from rapid prediction-tile taps.
+- `interrupt` parameter threaded through `speakAzure → decodeAndPlay`: replaces the shared `_nextSpeakInterrupt` flag that could be stolen by concurrent autoSpeak calls, silencing the Speak button.
+- `volume=0` guard in `speak()`: early exit with console.warn before any network call.
+- `vol=` and `rate=` added to TTS log for live diagnostics.
+- 10 unit tests covering: flag theft, rapid-tap protection, interrupt override, volume=0, NaN volume, suspended AudioContext, 3 concurrent autoSpeak, Speak wins among concurrent calls.
+
+**SW auto-bump** (prism-aac)
+`NEXT_PUBLIC_BUILD_ID = VERCEL_GIT_COMMIT_SHA[:8]` on every Vercel deploy. SW killswitch version changes automatically — no manual bump needed. Identical pattern applied to Synalux portal (`synalux-sw-v` key in localStorage, fires once per deploy not every session).
+
+**Search keyboard** (prism-aac)
+- Opening Search now shows the keyboard immediately (no second tap needed).
+- On-screen keyboard keys route to the search input via `searchKeyBridge.ts` pub/sub — tile taps no longer land in the message bar while searching.
+
+**Tone fix** (prism-aac)
+`toneToAzureStyle()` replaced invalid `'general'` (default) and `'gentle'` (empathetic) with valid `ToneStyle` members. `tone=general` no longer appears in TTS logs.
+
+**SSML rate formula restored** (prism-aac)
+`rate × 2` formula (capped at 1.4) confirmed working via tts-live-diag-rate.mjs. Stored slider 0.5 → SSML 1.0 (normal speed). Fixes Romanian/Ukrainian 2× slower regression.
+
+**Marketplace catalog** (synalux-private)
+`marketplace_modules` table created via migration `20260510_marketplace_modules.sql`. Resolves 500 on every `/api/v1/marketplace/catalog` call (table was never applied to prod Supabase).
+
+**13 synalux stub fixes**
+Unread count, mail sync (IMAP→501, OAuth→real Gmail fetch), inbox thread 503, accounting providers removed (no longer returned as 'planned'), Zoom 501→422, chat providers cleaned, e-sign 501→422, feature-flags DB error returns success:false, SMS send 501→503, marketplace/installed 401, MathPanel + MathKeyboardRegion stub comments removed.
+
+**Inbox / messages** (prism-aac + synalux-private)
+- `/api/v1/prism-aac/inbox/poll` now returns real Gmail unread messages (via user's OAuth grant) and unclaimed SMS from `inbound_sms` table. Previously returned `[]`.
+- Per-message TTS on arrival: speaks "New message from [sender]: [text]" for ≤3 messages.
+- Reply button (↩) on schedule message tasks opens AACChatPanel and pre-selects the sender contact.
+
+**Twilio env fix**
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` were set but empty in Vercel production. Values pushed from `.env.local`.
+
+**Training infrastructure** (vast.ai)
+- `autonomous-training-protocol` skill: mandatory layer3 corpus assert (≥40 examples), BFCL ≥90% gate before "done".
+- `train_max_quality_vastai.py`: DoRA SFT script with paged_adamw_8bit, TRL API compat, crash.log, PID file, SIGTERM handler.
+- `monitor_training.sh`: 5-min polling daemon with macOS alerts, crash dedup, GPU stall detection, disk threshold.
+- Layer3 corpus (45 examples) merged into training data for 32B/35B tier.
+
+### Why a major bump
+
+The drift detection + evidence-first protocol represent a change in how Prism agents operate — not just what they can do. These behavioral guarantees are additive but meaningful enough to warrant a major version signal.
+
+### npm
+
+```
+npm install -g prism-mcp-server@15.0.0
+```
+
+---
+
+## [14.0.0] - 2026-05-07 — 🧠 Prism Coder: project rename + algorithm-stability contract
+
+The project is renamed from **Prism MCP** to **Prism Coder** to reflect its full surface — the Mind Palace memory server *and* the `prism-coder:7b` / `prism-coder:14b` open-weights LLM fleet that ships alongside it. The npm package remains published as `prism-mcp-server` so existing install URLs (`npm install -g prism-mcp-server`, `npx prism-mcp-server`, the `mcp.json` entries every consumer already wrote) keep working without churn — but the `prism-coder` binary that package provides has been the canonical entry point since v12, and "Prism Coder" is now the user-facing project name across README, docs, and all new surfaces. v14.0.0 also formalises Prism's algorithm exports as a stable public contract so external consumers can depend on the constants without re-implementing them.
+
+### What's new
+
+- **Algorithm-stability contract.** The following exports are now considered stable public API under SemVer: `actrActivation.ts` (`baseLevelActivation`, `parameterizedSigmoid`, `compositeRetrievalScore`, all `ACT_R_*` / `DEFAULT_*` constants); `spreadingActivation.ts` (`applySpreadingActivation`, the 0.7/0.3 hybrid score blend, the `finalM=7` cap); `routerExperience.ts` (`getExperienceBias`, `MAX_BIAS_CAP=0.15`, `MIN_SAMPLES=5`, the bias-scale formula); `compactionHandler.ts` (default `threshold=50`, `keep_recent=10`, `MAX_ENTRIES_CHARS=25_000`); `graphMetrics.ts` warning ratios (0.20 / 0.30 / 0.40 / 0.85 with their min-sample gates); `config.ts` (`PRISM_ACTR_DECAY`, `PRISM_GRAPH_PRUNE_MIN_STRENGTH`, full `PRISM_GRAPH_PRUNE_*` family). Breaking changes go through deprecation cycles announced here in CHANGELOG.
+
+- **`docs/WOW_FEATURES.md`** — citation-grade catalogue of Prism's algorithms with their constants, semantics, and reuse patterns. Written for engineers who want their thresholds backed by published implementations rather than guesswork.
+
+- **`docs/releases/v14.0.0-prism-as-foundation.md`** — release notes covering what the contract guarantees, why now, and the migration path for systems that have been re-implementing Prism algorithms in their own code.
+
+- **First reference consumer documented:** an external audit hooks framework (separate skill, not in this repo) that ports ACT-R decay, the spreading-activation hybrid blend, experience bias, and the graph-metrics warning ratios with citations. 327 tests in that consumer pin the constants — divergence from this repo's source is caught automatically.
+
+### Why a major bump
+
+External systems were already building on Prism algorithms with hand-tuned approximations. Two failure modes when that happens: (1) the consumer's thresholds drift from Prism's over time, and (2) a copy-pasted constant loses its citation in 6 months and nobody remembers why `0.15` was chosen. Formalizing the stability contract fixes both.
+
+### What's NOT in this release
+
+- No new MCP tools.
+- No model changes — `prism-coder:7b` and `prism-coder:14b` unchanged from v13.1.x.
+- No schema changes.
+
+### npm
+
+`prism-mcp-server` v14.0.0 is published to npm — same package name, semver-major bump aligned with the project rename + the new public API contract. Earlier 13.1.1 stays available for users who want the pre-rename release.
+
+---
+
+## [13.1.1] - 2026-05-05 — Tool-call format normalizer + Modal training resilience
+
+### Local LLM client
+- **`normalizeToolCallFormat`** new helper at `src/utils/normalizeToolCallFormat.ts` — coerces three stochastic v18-clean tool-call format variants into the canonical singular wrapper:
+  1. Plural wrapper + XML-attr params: `<tool_calls><tool_call name="X"><param name="Y" value="Z"/></tool_call></tool_calls>`
+  2. CJK angle brackets: `〈tool_call〉{...}〈/tool_call〉`
+  3. `<functioncall>` envelope with stringified or object arguments
+
+  All three normalize to: `<tool_call>{"name":"X","arguments":{"Y":"Z"}}</tool_call>`
+- **`callLocalLlm`** pipes raw model output through the normalizer before the existing think-tag / multi-format extractor, so downstream parsers see only canonical input.
+- **12-test suite** at `tests/normalizeToolCallFormat.test.ts` — covers each variant + multi-call + surrounding text + canonical pass-through + malformed JSON fallback.
+
+### Training infra hardening
+- **`modal-training-resilience` skill applied to 32B resume + polish scripts** (`training/modal_v18coder_32b_resume.py`, `training/modal_v18coder_32b_polish_phase1_5.py`):
+  - `GracefulExitCallback` at `0.92 × MODAL_TIMEOUT_S` — saves + clean-stops before Modal's hard kill (Phase 1 lost 481 steps to a hard kill we want to never repeat)
+  - `save_steps` tightened: resume 500→200, polish 200→100
+  - `local_entrypoint()` now raises with explicit `--detach` instructions — the silent `.spawn()` failure mode is documented in the error message
+- **103-file training infra catchup** committed — Python builders, deploy scripts, eval tools, DoRA YAML config, and research notes that had accumulated untracked over the v17/v18 campaign. `.gitignore` extended to drop iterative `Modelfile.v[0-9]*` experiments and BFCL output dumps.
+
+### Production Modelfiles
+- `training/Modelfile.published` and `training/Modelfile.restore` now committed — these were untracked but are the canonical production / rollback Modelfiles for `prism-coder:7b`.
+
+### Test counts
+- `tests/normalizeToolCallFormat.test.ts`: 12/12 passing in 82ms.
+
+---
+
+## [13.1.0] - 2026-05-04 — 🤖 Prism Coder 14B sibling + tier-aware local routing
+
+Coordinated cross-product release with **synalux-private v0.14.4** and **prism-aac v0.2.1**. No prism-mcp-server code changes (the model fleet lives in Ollama; npm package is unchanged) — this entry documents what ships through the Synalux portal that prism-mcp clients reach.
+
+### Model fleet
+- **`prism-coder:7b` re-trained from clean Qwen2.5-Coder-7B base.** Replaces v18aac-MAX (BFCL 47.2%) with v18clean-epoch0 (BFCL **88.1%** 3-run StdDev 0%, AAC realigned **47/48 (97.9%)**, caregiver targeted **20/20**, emergency_qa 13/13, text_correct 15/15, translate 8/8). +40.9pp BFCL recovery, no AAC regression.
+- **`prism-coder:14b` sibling shipped.** Qwen2.5-Coder-14B base + AAC SYSTEM directive, **32K context**, BFCL 85.9%, AAC 46/48 (95.8%), caregiver targeted 18/20.
+- **Rollback path:** `ollama cp prism-coder:7b-prev-20260504-1325 prism-coder:7b` (≤ 1 min restore).
+
+### Tier-aware local routing (Synalux portal)
+- New pure-function routing module with **39 TDD tests** pinning behaviour. Security-hardened: privilege boundary on tier sanitization, ReDoS-proof regexes, audit-safe reason strings (fixed enumeration), failsafe defaults, p99 < 1ms.
+- Routing matrix:
+  - `free` simple → `prism-coder:7b` local · medium → Gemini Flash · complex → Gemini Flash
+  - `standard` simple → 7B · medium → `prism-coder:14b` local · complex → Claude Haiku
+  - `advanced` / `enterprise` simple → 7B · medium → 14B local · complex → Claude Opus
+- Saves ~$0.01–0.05 per paid-tier medium AAC query (Claude → local 14B). Estimated annual saving ≈ $190K–210K at 10K-user scale.
+
+### Azure Neural TTS unblocked for all tiers
+- Removed free-tier 403 gate on `/api/v1/tts`. Azure Neural voice + auto-tone-switch now work for every authenticated tier. Cost ≈ $480/mo at 10K users — acceptable AAC dignity baseline.
+
+### Phase 0 of the 32B/72B campaign — Synalux/Prism-Memory training data
+- Built `synalux_sft_pipeline.py` (~570 lines): extracts from local `~/.prism-mcp/data.db` SQLite + Prism Supabase, anonymises (PII / customer names / paths / secrets / clinical), chunks long content, renders Qwen `<|im_start|>` ChatML.
+- 5,721 training rows generated, **zero PII leaks** across 5-pattern audit (customer names, emails, phones, paths, API keys).
+- Phase 1 (32B SFT, ~$340) launched on Modal H100×4 today; Phase 2 (72B) queued.
+
 ## [13.0.1] - 2026-05-02 — 🔧 Executable bin permissions
 
 Bug fix: when installed globally via `npm i -g prism-mcp-server`, the
@@ -114,6 +274,72 @@ This release was driven by a deep code review that surfaced numerical correctnes
 ---
 
 ## <a name="1200"></a>[12.0.0] - 2026-04-23 — 💳 Unified Billing & Agent Skill Ecosystem
+
+> **The Platform Unification Release.** Prism v12.0.0 aligns Prism and Synalux into a single, unified billing architecture with identical tier pricing, adds 54 production-ready agent skills, and introduces a 14-day free trial across all paid tiers.
+
+### 💳 Unified Billing Architecture
+
+- **Synalux-Priced Tiers** — Both Prism and Synalux now share identical pricing: Standard ($19/mo), Advanced ($49/mo), Enterprise ($99/mo). Prism retains an additional Free tier for community access.
+- **14-Day Free Trial** — All paid tiers (Standard, Advanced, Enterprise) include a 14-day trial period. Configured via `DEFAULT_TRIAL_DAYS` constant with automatic Stripe `subscription_data.trial_period_days` injection.
+- **Stripe Test-Mode** — Test-mode price IDs documented inline (`price_test_standard_19`, `price_test_advanced_49`, `price_test_enterprise_99`). Production IDs loaded from environment variables.
+- **Removed Legacy Tiers** — Deleted `prism_pro` ($12) and `prism_elite` ($29) plan definitions. Synalux Free tier removed from `PlanId` type and `BASE_PRICE_TABLE`.
+- **Prism Checkout Route** — Updated `/api/v1/prism/checkout` to use `DEFAULT_TRIAL_DAYS` (was hardcoded to 0). New users default to `prism_free` plan.
+
+### 🧠 Agent Skill Ecosystem (54 Skills)
+
+- **10 Super-Skills Compacted** — Reduced from 22,937 to 6,191 lines (73% reduction) by stripping verbose comparison matrices and code templates, retaining essential decision tables and checklists.
+- **4 Medical Skills** — `hipaa-compliance`, `clinical-documentation`, `medical-billing-coding`, `patient-data-privacy` — healthcare-specific compliance and workflow automation.
+- **10 Vendor Skills** — Vercel, Supabase, Stripe, Sentry, OpenAI, Addy Osmani, Garry Tan/gstack — tailored for the Synalux tech stack.
+- **Skills Centralized** — Single source of truth at `/skills/`, symlinked to IDE extensions directory.
+
+### 🎨 Pricing Page UI
+
+- **Synalux Section** — 3-tier card layout (Standard, Advanced, Enterprise) with feature lists, hover animations, and CTA buttons wired to Stripe checkout.
+- **Prism IDE Section** — New dedicated section for Prism Coder IDE Extension with 4-tier layout (Free, Standard, Advanced, Enterprise).
+- **Multi-Currency Table** — USD, CAD, GBP, EUR, AUD, NZD pricing with volume discount tiers.
+- **14-Day Trial Badge** — Prominent green banner across all paid tier cards.
+
+### Engineering
+- Files changed: `stripe.ts`, `pricing-engine.ts`, `pricing/page.tsx`, `prism/checkout/route.ts`, `package.json`, `CHANGELOG.md`
+- Licenses verified: Prism (MIT), Synalux (BSL-1.1)
+- TypeScript: clean, zero errors expected
+
+---
+
+
+
+## <a name="1160"></a>[11.6.0] - 2026-04-22 — 🏗️ Agent Infrastructure Resilience
+
+> **The Multi-Agent Stability Release.** Prism v11.6.0 introduces production-grade infrastructure for running multiple AI agents concurrently without resource exhaustion, deadlocks, or zombie processes. Every component is cross-platform (macOS/Linux) with zero GNU dependencies.
+
+### 🏗️ Agent Infrastructure
+
+- **Serialized Execution Queue (`agent_queue.sh` v2.0)** — Complete rewrite replacing GNU `flock` with Python `fcntl.flock` for macOS-native file locking. Ensures strict mutual exclusion when loading Ollama models, preventing OOM crashes from concurrent model loads. Includes PID tracking and automatic cleanup on exit.
+- **Memory Guardian Daemon (`memory_guardian.sh`)** — Background watchdog that proactively monitors RAM pressure via `vm_stat` page-out rate. Auto-evicts idle Ollama models before swap exhaustion occurs. Configurable thresholds with graceful degradation. Logs to `/tmp/memory_guardian.log`.
+- **Queue Watchdog (`queue_watchdog.sh`)** — Detects and auto-drains hung queue entries based on PID file age (>10 min). Prevents deadlocks in long-running pipelines. Non-destructive: only removes entries whose owning process has exited.
+- **Unified Status Dashboard (`agent_status.sh`)** — Color-coded CLI providing real-time visibility into queue depth, guardian health, Ollama model status, and system memory. Supports `--json` mode for programmatic consumption by other tools and CI/CD pipelines.
+
+### 🧪 Testing & Verification
+
+- **115/115 Tests Passing** across 5 test suites:
+  - **Unit tests** (60) — Core `claw_agent_lite.py` logic: model selection, hardware detection, streaming buffer, error handling
+  - **Concurrent tests** (17) — File lock contention, parallel agent serialization, race condition guards
+  - **Shell integration tests** (21) — `agent_queue.sh`, `memory_guardian.sh`, `ollama_warmup.sh` lifecycle and interaction
+  - **Mock Ollama integration** (8) — Self-contained HTTP mock server for deterministic pipeline testing without live models
+  - **Live stress tests** (9) — Real Ollama integration under concurrent load with status dashboard verification
+
+### 🔧 Codebase Hardening
+
+- **Bash `set -e` Arithmetic Fix** — Resolved `((x++))` pitfall where zero-result arithmetic causes script exit under strict mode. Applied across all shell scripts.
+- **macOS Compatibility** — Eliminated all GNU-specific dependencies (`flock`, `timeout`, `readlink -f`). All scripts work out-of-the-box on macOS and Linux.
+- **10 Bug Fixes in `claw_agent_lite.py`** — JSON parsing resilience, null pointer guards, connection failure handling, streaming buffer for split `<think>` tags, and proper error propagation for programmatic integration.
+
+### Engineering
+- New files: `agent_queue.sh` (v2.0), `memory_guardian.sh`, `queue_watchdog.sh`, `agent_status.sh`, `test_integration_pipeline.py`, `test_shell_scripts.sh`, `test_live_stress.sh`
+- Modified: `claw_agent_lite.py`, `ollama_warmup.sh`
+- All changes verified on Apple M4 Max (36GB) and compatible with M3 (18GB)
+
+---
 
 ## <a name="1151"></a>[11.5.1] - 2026-04-22 — 🛡️ Cross-Platform Reliability & CI Recovery
 
@@ -379,7 +605,7 @@ This release was driven by a deep code review that surfaced numerical correctnes
 - Dependencies: `playwright` + `playwright-stealth` (Python), Chromium browser binary
 - 1 new file: `browse.py` (680 lines)
 - Registered as `local-browser` Antigravity skill for future agent auto-routing
-- Compatible with Prism MCP integration (Phase 3 planned)
+- Compatible with Prism Coder integration (Phase 3 planned)
 
 ---
 
