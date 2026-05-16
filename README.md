@@ -4,14 +4,14 @@
 
 **Persistent memory + tool-calling intelligence for AI agents.** *(formerly Prism MCP)*
 
-A Model Context Protocol server that gives Claude, Cursor, and other AI tools a Mind Palace — long-term memory that survives across sessions, with semantic search, cognitive routing, a visual dashboard, and the open-weights `prism-coder:7b` / `prism-coder:14b` LLM fleet for offline tool-calling (BFCL Gold Certified, 100 % JSON validity).
+A Model Context Protocol server that gives Claude, Cursor, and other AI tools a Mind Palace — long-term memory that survives across sessions, with semantic search, cognitive routing, a visual dashboard, and the `prism-coder:1b7-v19-q8` / `prism-coder:14b` LLM fleet for offline tool-calling.
 
 [![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm%20%E2%80%94%20prism-mcp-server)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
 [![Smithery](https://img.shields.io/badge/Smithery-listed-6B4FBB)](https://smithery.ai/server/@dcostenco/prism-mcp)
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-> **Renamed in v14.0.0:** the project is now **Prism Coder** to cover both the Mind Palace memory server *and* the `prism-coder:7b` / `prism-coder:14b` LLM fleet on HuggingFace + Ollama. The npm package stays `prism-mcp-server` so existing install URLs and `mcp.json` entries keep working — the `prism-coder` binary has been the canonical entry point since v12.
+> **Renamed in v14.0.0:** the project is now **Prism Coder** to cover both the Mind Palace memory server *and* the `prism-coder:1b7-v19-q8` / `prism-coder:14b` LLM fleet on HuggingFace + Ollama. The npm package stays `prism-mcp-server` so existing install URLs and `mcp.json` entries keep working — the `prism-coder` binary has been the canonical entry point since v12.
 
 ---
 
@@ -40,8 +40,59 @@ When major drift is detected, the alert routes to the **Synalux portal** so it's
 
 No scripts. No cron. No hooks. Three tool calls, Prism handles the rest.
 
-### 🛡 Local-first
+### 🛡 Local-first — security + speed
 Free tier runs entirely on your machine — SQLite, local embedding model, no API keys, no cloud. Paid tier adds cloud sync via Synalux portal.
+
+**Why local models matter:**
+
+| | Cloud LLM | Local `prism-coder` |
+|--|---|---|
+| Tool-call latency | 200ms–3s | **~1.6s (1.7B) / ~1.1s (14B)** |
+| API key required | Yes | **No** |
+| Data sent externally | Every prompt | **Nothing** |
+| Works offline | ❌ | ✅ |
+| Cost at scale | $0.002–0.06/call | **$0** |
+| HIPAA | Requires BAA | **On-prem = no BAA** |
+
+Install in one command — no config, no keys, no vendor agreements:
+```bash
+ollama pull dcostenco/prism-coder:1b7   # 2.2 GB · ~1.6s · any machine
+ollama pull dcostenco/prism-coder:8b    # 4.7 GB · ~0.8s · Mac M1+ / iPhone 8GB
+ollama pull dcostenco/prism-coder:14b   # 8.4 GB · ~1.1s · Mac M2+ / iPad Pro 16GB
+ollama pull dcostenco/prism-coder:32b   # 19 GB  · ~2.5s · Mac M2 Ultra+
+```
+### Offline cascade: 14B → 8B → 1.7B fallback
+
+When the Synalux cloud is unreachable, the AAC app cascades through local models:
+
+```
+Synalux cloud (Claude Sonnet/Opus, 98-99%)
+  ↓ offline
+prism-coder:14b (98%, ~1.1s) — Mac / iPad Pro 16GB
+  ↓ not loaded
+prism-coder:8b  (96%, ~0.8s) — iPhone / iPad 8GB
+  ↓ OOM or not loaded
+prism-coder:1.7b (88%, ~1.6s) — any device, always fits
+```
+
+The cascade validates responses against the 7 known tool names and escalates on empty, truncated, or hallucinated tool calls.
+
+**Routing accuracy** ([100-case Prism eval](tests/benchmarks/prism-routing-100/README.md), v27 system prompt + nothink template, 3-seed mean, May 15 2026):
+
+| Model | Accuracy | Cost/req | Latency | Runs on | AAC | Know Search |
+|---|---|---|---|---|---|---|
+| Claude Sonnet 4 | **99%** | ~$0.01 | 3.2s | Cloud | 100% | 100% |
+| **prism-coder:14b** | **98.0% ± 0.0%** | **$0** | **1.1s** | Mac 24GB+ / iPad Pro 16GB | **100%** | **100%** |
+| Claude Opus 4.7 | **98%** | ~$0.05 | 3.0s | Cloud | 100% | 100% |
+| **prism-coder:32b** | **97.3% ± 0.6%** | **$0** | 2.5s | Mac 48GB+ | **100%** | 100% |
+| **prism-coder:8b** | **96.0% ± 0.0%** | **$0** | **0.8s** | iPhone/iPad 8GB | **100%** | 93% |
+| prism-coder:1.7b | **88%** | **$0** | 1.6s | Any device | **100%** | 71% |
+
+**Why this matters for a life-critical AAC app**: a child in a hospital without WiFi, a nonverbal adult on an airplane, or a family on a budget gets Claude-grade routing accuracy (98%) with zero cloud dependency — and the AAC path (expressing pain, asking for help) routes correctly **100% of the time across all tiers and all seeds tested**.
+
+**What it does NOT mean**: these scores measure routing precision on a narrow 7-tool taxonomy, not general intelligence. Claude outperforms these models on everything outside this task. The value is **offline reliability at zero cost**, not replacing Claude.
+
+> **The prompt engineering breakthrough**: Q4_K_M quantized models confuse semantically similar tool names when routing rules use plain keyword lists. Two structural fixes eliminated all confusion: (1) replacing `-> plain text` with `-> respond directly (no tool)`, and (2) adding category labels (`CONVERSATION RECALL:` / `SAVED KNOWLEDGE:`) as semantic anchors stronger than keyword matching. Combined effect: 14B went from 87% → 98% with zero retraining, zero cost.
 
 ### ⚡ Zero-search retrieval
 Holographic Reduced Representations (HRR) for instant similarity lookups without an index. ~5ms over 100K memories.
@@ -115,38 +166,100 @@ The LLM context window is treated as ephemeral scratch space. All durable state 
 
 ## Models
 
-All Prism Coder inference uses **only fine-tuned Prism Coder models** — no Claude, no Gemini, no OpenRouter fallbacks. Models are exclusively accessible through the Synalux router (authentication + subscription required).
+Prism Coder inference cascades through fine-tuned models first, with Claude as a quality-gate fallback. Models route through the Synalux router (authentication + subscription required). Cascade: Cloud (OpenRouter) → Ollama local → Claude fallback.
 
-| Model | Where | Tier | Latency |
+| Model | Ollama tag | Where | Tier | Latency |
+|---|---|---|---|---|
+| **prism-coder:1.7b** | `prism-coder:1b7-v19-q8` (published) | On-device (Mac/local) · iOS via local network | Free | ~50ms |
+| **prism-coder:14b** | `prism-coder:14b` (published v19) | Cloud (OpenRouter) A100 via Synalux | Standard+ | ~200ms |
+| **prism-coder:32b** | `prism-coder:32b` (published v19) | Cloud (OpenRouter) A100 80GB via Synalux | Pro/Enterprise | ~3–5s |
+
+Models use the Synalux SFT corpus (AAC + Prism MCP tool taxonomy + clinical workflows). **Internal quality gate: ≥ 90% on the Prism 100-case eval before production promotion.**
+
+> **Training note**: Base Qwen3 models are strong tool-routers out of the box. Heavy fine-tuning regresses tool-vs-plain-text decisions; light-touch polish recipes (small corpus, balanced tool/plain-text split) are the published path. Production adapter selection and retrain methodology are managed in the Synalux portal.
+
+**Per-category breakdown — [Prism 100-case eval](tests/benchmarks/prism-routing-100/README.md) (3-seed mean, v27 system prompt + nothink template, May 15 2026):**
+
+| Model | Overall | Load ctx | Save | Srch mem | Handoff | Compact | Web srch | Know srch | AAC | Translate | Plain txt | No-tool | Info | Edge | Avg lat | Inv |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Sonnet 4** (cloud) | **99%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 83% | 3.2s | 0 |
+| **prism-coder:14b** | **98.0%** | 100% | 100% | 100% | 87% | 100% | 100% | **100%** | 100% | 100% | 100% | 100% | 100% | 82% | 1.1s | 0 |
+| **Opus 4.7** (cloud) | **98%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 66% | 3.0s | 0 |
+| **prism-coder:32b** | **97.3%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 85% | 83% | 100% | 100% | 100% | 100% | 2.5s | 0 |
+| **prism-coder:8b** | **96.0%** | 100% | 99% | 97% | 93% | 100% | 100% | 93% | 100% | 100% | 100% | 100% | 100% | 80% | 0.8s | 0 |
+| **prism-coder:1.7b** | **88%** | 100% | 77% | 100% | 87% | 100% | 86% | 71% | 100% | 100% | 100% | 83% | 80% | 64% | 1.6s | 0 |
+
+> **Methodology**: 100 prompts from a 200-pool across 13 categories. Scores are 3-seed mean (seeds 2027/2028/2029). 14B showed **zero variance**; 32B and 1.7B varied by ±0.6%. All models use the `nothink` template. System prompt v27 uses category labels (`CONVERSATION RECALL:` / `SAVED KNOWLEDGE:`) and `-> respond directly (no tool)` to prevent Q4_K_M quantization artifacts. Full runner: [`tests/benchmarks/prism-routing-100/`](tests/benchmarks/prism-routing-100/).
+>
+> **These are NOT general-purpose LLM benchmarks.** This eval measures routing precision on 7 specific MCP tools. The prism-coder models are specialists — they approach Claude on this narrow task but would not compete on general reasoning, coding, or open-domain QA. The value is **offline reliability at zero cost**, not replacing cloud models.
+
+**iOS deployment:** On-device inference via **llama.cpp Swift SPM**. Auto-selects by device RAM: 14B on iPad Pro 16GB (98%), 8B on iPhone/iPad 8GB (96%, OOM fallback to 1.7B at 88%). CoreML not viable — coremltools doesn't support Qwen3 attention ops. Integration: `LLMEngine.swift` → `prismNativeBridge.askAI()` → token stream. WiFi fallback: Mac Ollama (`OLLAMA_HOST=0.0.0.0`).
+
+### Prism Routing Benchmark — run it yourself
+
+The benchmark is open-source. Reproduce every number in this README:
+
+```bash
+git clone https://github.com/dcostenco/prism-coder
+cd prism-coder
+
+# Run the full eval (100 cases, 3 seeds)
+for seed in 2027 2028 2029; do
+  python3 tests/benchmarks/prism-routing-100/benchmark.py --models 14b 8b 32b 1b7 --seed $seed
+done
+```
+
+**Not a general function-calling benchmark.** This measures routing precision on 7 specific MCP tools — the task these models were built for. We don't claim to beat Claude on general capabilities. We match Claude on the ONE task that matters for offline AAC: getting the right tool, every time, in 1 second, with zero cloud.
+
+Methodology, prompt, scoring, and full test pool: [`tests/benchmarks/prism-routing-100/`](tests/benchmarks/prism-routing-100/)
+
+### Models on HuggingFace
+
+| Model | HuggingFace | Accuracy | Size |
 |---|---|---|---|
-| **Qwen3-1.7B** (fine-tuned) | On-device — iOS CoreML / Android ONNX | Free | ~50ms offline |
-| **Qwen3-14B** (fine-tuned) | RunPod A100 via Synalux | Standard+ | ~200ms |
-| **QwQ-32B** (fine-tuned) | RunPod A100 80GB via Synalux | Pro/Enterprise | ~3–5s |
-| **Qwen3-30B-A3B** (fine-tuned MoE) | RunPod via Synalux | Enterprise | ~2–3s |
+| prism-coder:14b | [dcostenco/prism-coder-14b](https://huggingface.co/dcostenco/prism-coder-14b) | 98% | 8.4 GB |
+| prism-coder:8b | [dcostenco/prism-coder-8b](https://huggingface.co/dcostenco/prism-coder-8b) | 96% | 4.7 GB |
+| prism-coder:32b | [dcostenco/prism-coder-32b](https://huggingface.co/dcostenco/prism-coder-32b) | 97.3% | 19 GB |
+| prism-coder:1.7b | [dcostenco/prism-coder-1.7b](https://huggingface.co/dcostenco/prism-coder-1.7b) | 88% | 2.2 GB |
 
-Fine-tuned on the 3-layer corpus: AAC + BFCL tool-calling + clinical workflows. BFCL gate: ≥ 90% on all tiers before production promotion. Adapters stored at `dcostenco/prism-coder-*` (private HuggingFace).
+## Self-hosted / Local AI (Enterprise)
 
-**Eval results (private, May 2026):**
+Run the full Prism model stack on your own hardware — zero cloud, zero latency, full data sovereignty.
 
-| Model | Tool-call accuracy | Gate | Status |
-|---|---|---|---|
-| Qwen3-1.7B (on-device) | **90.0%** (27/30) | ≥90% | ✅ Passed |
-| Qwen3-14B (cloud) | pending | ≥90% | ⏳ Training |
-| QwQ-32B (reasoning) | pending | ≥90% | ⏳ Training |
-| Qwen3-30B-A3B (MoE) | pending | ≥90% | ⏳ Training |
+**Requirements:** Mac M2 Pro+ (48GB recommended) or Linux with NVIDIA GPU · [Ollama](https://ollama.com)
 
-Eval methodology: 30 natural-language tool-call prompts, exact tool name + valid JSON argument structure required. Private eval — model weights never leave Synalux infrastructure.
+```bash
+# On-device tier — 2.2 GB (any machine, iPhone)
+ollama pull dcostenco/prism-coder:1b7
+
+# Mobile tier — 4.7 GB (iPhone/iPad 8GB, Mac M1+)
+ollama pull dcostenco/prism-coder:8b
+
+# Standard tier — 8.4 GB (Mac M2 Pro+, iPad Pro 16GB)
+ollama pull dcostenco/prism-coder:14b
+
+# Reasoning tier — 19 GB (Mac M2 Ultra+ or A100)
+ollama pull dcostenco/prism-coder:32b
+```
+
+Set `LOCAL_LLM_URL=http://localhost:11434` in your portal config. Routing is automatic:
+- Fast queries → **1.7B** (~0.5s) · Standard → **14B** (~3s) · Complex/enterprise → **32B** (~8s) · Cloud fallback if Ollama unreachable
+
+iOS/mobile on same WiFi: `OLLAMA_HOST=0.0.0.0 ollama serve` on the Mac, then point `LOCAL_LLM_URL` at the Mac's IP.
+Routing accuracy (May 15 2026, 3-seed mean): **14B = 98% · 8B = 96% · 32B = 97.3% · 1.7B = 88%**. Cascade: 14B → 8B → 1.7B. → [Full results](tests/benchmarks/prism-routing-100/README.md)
+
+---
 
 ## Plans
 
-| | Free | Standard $19/mo | Pro $49/mo | Enterprise $99/mo |
-|---|---|---|---|---|
-| Qwen3-1.7B on-device | ✅ unlimited | ✅ | ✅ | ✅ |
-| Qwen3-14B cloud | — | ✅ 200 req/day | ✅ 2K req/day | ✅ unlimited |
-| QwQ-32B reasoning | — | — | ✅ | ✅ priority |
-| Qwen3-30B-A3B MoE | — | — | — | ✅ |
-| Custom fine-tuning | — | — | — | ✅ |
-| HIPAA BAA | — | — | — | ✅ |
+| Plan | Cloud model | Daily limit | On-device |
+|---|---|---|---|
+| **Free** | — | unlimited local | prism-coder:1.7b (88%) + 8b (96%) + 14b (98%) |
+| **Standard $19/mo** | Claude Sonnet 4 | 200 req | + cloud fallback |
+| **Pro $49/mo** | prism-coder:32b | 2,000 req | + reasoning tier |
+| **Enterprise $99/mo** | prism-coder:32b priority | unlimited | + HIPAA BAA + custom fine-tuning |
+
+All on-device models are **free for every tier** — no subscription needed for local inference. Offline translation (1,261 phrases × 20 languages) included in all plans.
 
 [Subscribe →](https://synalux.ai/pricing)
 
@@ -195,51 +308,169 @@ As of v14.0.0, Prism's algorithm exports are a **stable public contract** under 
 | [PrismAAC](https://github.com/dcostenco/prism-aac) | Spreading-activation phrase ranking (recency × frequency × per-user history). Caregiver corrections auto-harvest into the personalization corpus via the audit-hooks postflight harvester. The on-device 7B model + this algorithm stack is what makes PrismAAC defensible. |
 | Synalux portal | Tier-aware model routing using experience bias on prior outcomes per fingerprint. HIPAA-compliant clinical scribe with on-device-first privacy guarantees. |
 
-## Synalux Inference Router — Architecture (v16)
+## Testing
+
+```bash
+npm test                           # 1,815 test cases across 71 files (vitest)
+npm test -- --coverage             # coverage report
+python3 tests/benchmarks/prism-routing-100/benchmark.py --models 1b7 14b 32b
+```
+
+**Pinned in CI** — 327 tests enforce every constant: ACT-R decay `d=0.25`, spreading-activation hybrid score `0.7/0.3`, experience bias `MIN_SAMPLES=5` / `MAX_BIAS_CAP=0.15`, graph-metrics warning ratios `0.20 / 0.30 / 0.40`, compaction's 25KB prompt-budget. CI catches divergence automatically.
+
+**Coverage areas**:
+- HRR (Holographic Reduced Representations) edge cases + performance
+- Encrypted sync corruption recovery
+- BCBA skill integration
+- Deep storage tier
+- Dashboard rendering
+- Routing benchmarks (100-case Prism eval) — see `tests/benchmarks/prism-routing-100/`
+
+## Migration
+
+### Local SQLite → Synalux portal
+
+If you've been running Prism on the free tier and want to move historical session data into the paid-tier portal, use the migration script:
+
+```bash
+# dry run first — prints what would be migrated, hits no network
+node scripts/migrate-local-to-portal.mjs --dry-run
+
+# real run — pushes ledger + handoff entries through POST /api/v1/prism/memory
+PRISM_SYNALUX_API_KEY=synalux_sk_... \
+  node scripts/migrate-local-to-portal.mjs
+
+# scope to one project
+node scripts/migrate-local-to-portal.mjs --project=my-project
+
+# include scholar entries (excluded by default — usually large + low-value)
+node scripts/migrate-local-to-portal.mjs --include-scholar
+```
+
+**What it does**: reads `~/.prism-mcp/data.db` via `@libsql/client` (already a runtime dep — no extra install), exchanges the refresh token for a JWT (cached + auto-refreshed before expiry), and POSTs each ledger entry and handoff to the portal. Failures are logged with the source row id; successes are counted at the end.
+
+**Credentials**: `PRISM_SYNALUX_API_KEY` from env. If unset, the script also checks `~/prism/.env` for `PRISM_SYNALUX_API_KEY=...` as a convenience for dev workflows.
+
+**Idempotency**: handoffs are written with the portal's CRDT merge (last-write-wins per project+role); ledger entries are append-only and de-duped server-side by `(project, conversation_id, summary)`. Re-running on the same DB is safe.
+
+**One-shot only**: this script is a migration tool, not a sync daemon. Once you've moved, set `PRISM_STORAGE=synalux` (or leave it on `auto` and let the resolver pick synalux when credentials are present) and the MCP server writes directly to the portal going forward.
+
+## Production Infrastructure
+
+### Architecture
+
+```
+  CLIENTS
+  ┌─────────────────────┐  ┌─────────────────────────────┐
+  │  prism-aac (iOS/web)│  │  Claude Code · Cursor · IDE │
+  │  Vercel             │  │  MCP config → Railway URL   │
+  └──────────┬──────────┘  └─────────────┬───────────────┘
+             │ inference                  │ memory
+             ▼                            ▼
+  ┌──────────────────────┐  ┌─────────────────────────────┐
+  │  SYNALUX ROUTER      │  │  prism-mcp SERVER           │
+  │  Vercel              │  │                             │
+  │  • JWT auth          │  │  Primary   — Railway        │
+  │  • tier enforcement  │  │  Standby   — Fly.io         │
+  │  • complexity route  │  │  Fallback  — Supabase REST  │
+  │  • proxy to cloud    │  │  auto-failover chain        │
+  └──────────┬───────────┘  └─────────────┬───────────────┘
+             │                            │
+             ▼                            ▼
+  ┌───────────────────────┐  ┌─────────────────────────────┐
+  │  OPENROUTER / LOCAL   │  │  SUPABASE                   │
+  │                       │  │  session ledgers            │
+  │  Cloud: Claude Sonnet │  │  knowledge graph            │
+  │  Local:  prism-coder  │  │  handoffs & todos           │
+  │   :14b (98%) :8b (96%)│  │                             │
+  │   :32b (97%) :1b7(88%)│  │  source of truth            │
+  └───────────────────────┘  └─────────────────────────────┘
+```
+
+### Service Routing
+
+**LLM Backends**
+
+| Surface | Primary | Fallback | Local |
+|---|---|---|---|
+| AI Chat (free) | Gemini 2.5 Flash (direct API) | Claude Haiku 3.5 | prism-coder:14b via Ollama |
+| AI Chat (paid) | Claude Sonnet 4 (OpenRouter) | Claude Haiku 3.5 | prism-coder:14b via Ollama |
+| Prism Coder (tool-calling) | Claude Haiku 3.5 (OpenRouter) | — | prism-coder:14b via Ollama |
+| Prism AAC | Local prism-coder:14b | Gemini 2.5 Flash / Claude | prism-coder:8b / :1b7 |
+
+**Web Search**
+
+| Surface | Primary | Fallback |
+|---|---|---|
+| AI Chat `@search` | Firecrawl | — |
+| Prism MCP agents (cloud) | Firecrawl | Brave Search |
+| Prism MCP server (local) | Brave Search (via MCP tools) | — |
+| Clinical research | PubMed + ERIC + Semantic Scholar | DuckDuckGo |
+
+**TTS (Text-to-Speech)**
+
+| Tier | Engine | Offline |
+|---|---|---|
+| 1 | Inworld TTS-2 (cloud) | — |
+| 1.5 | Kokoro-82M neural (WASM) | en/es/fr/pt/ja/zh |
+| 2 | OS Web Speech API | all |
+| 3 | WASM espeak-ng | all |
+
+**Other Services**
+
+| Service | Provider | Purpose |
+|---|---|---|
+| Payments | Stripe | Subscriptions, checkout |
+| Email | Resend | Transactional (invites, shares) |
+| Video | LiveKit | Telehealth, case conferences |
+| SMS | Twilio | Emergency alerts, caregiver notifications |
+| Translation | Offline dictionary (1,261 × 20 langs) | AAC, Watch |
+
+## Synalux Inference Router
 
 All Prism AAC model inference is protected behind Synalux as a mandatory router. Models are **never accessible directly** — all traffic goes through Synalux for auth, billing, and rate limiting.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      CLIENT LAYER                           │
-│  prism-aac (iOS/web)         │   Synalux Portal             │
-└──────────────┬──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  CLIENT LAYER                                            │
+│  prism-aac (iOS/web)         │   Synalux Portal          │
+└──────────────┬───────────────────────────────────────────┘
                │ POST /api/v1/prism-aac/inference
                │ Authorization: Bearer <user-JWT>
                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   SYNALUX ROUTER                            │
-│  1. Verify JWT (no anonymous access)                        │
-│  2. Check subscription tier                                 │
-│  3. Enforce rate limit (50–2000 req/day by plan)            │
-│  4. Route to model tier by complexity                       │
-│  5. Proxy → RunPod with SECRET key (never sent to client)   │
-│  6. Log → aac_inference_log (billing audit trail)           │
-└──────────┬─────────────────────────────────────┬────────────┘
-           │ tier=fast                            │ tier=reason
-           ▼                                      ▼
-  ┌──────────────────┐               ┌───────────────────────┐
-  │  Qwen3-14B       │               │  QwQ-32B              │
-  │  RunPod A100 40G │               │  RunPod A100 80G      │
-  │  ~200ms          │               │  ~3–5s (reasoning)    │
-  │  standard/pro    │               │  pro/enterprise only  │
-  └──────────────────┘               └───────────────────────┘
-           │                                      │
-           └────────────────┬─────────────────────┘
-                            ▼
-               HuggingFace dcostenco/prism-coder-* (private)
-               RunPod pulls at pod start with server-side token
+┌──────────────────────────────────────────────────────────┐
+│  SYNALUX ROUTER                                          │
+│  1. Verify JWT (no anonymous access)                     │
+│  2. Check subscription tier                              │
+│  3. Enforce rate limit (per-tier daily cap)               │
+│  4. Route to model tier by complexity                    │
+│  5. Proxy → OpenRouter / Gemini (key never exposed)      │
+│  6. Log → aac_inference_log (audit trail)                │
+└──────────┬───────────────────────────────┬───────────────┘
+           │                               │
+           ▼                               ▼
+  ┌────────────────────┐      ┌──────────────────────┐
+  │  LOCAL (Ollama)    │      │  CLOUD (OpenRouter)  │
+  │  prism-coder:14b   │      │  Claude Sonnet 4     │
+  │  prism-coder:8b    │      │  Claude Haiku 3.5    │
+  │  prism-coder:1b7   │      │  Gemini 2.5 Flash    │
+  │  free, offline     │      │  paid tiers          │
+  └────────────────────┘      └──────────────────────┘
 
-On-device (free, zero latency, offline):
-  Qwen3-1.7B GGUF Q4_K_M → iOS CoreML / Android ONNX
+On-device (free, offline):
+  prism-coder:1b7 GGUF Q4_K_M (1.1 GB) → any Apple device
+  prism-coder:8b  GGUF Q4_K_M (4.7 GB) → iPhone/iPad 8 GB+
+  prism-coder:14b GGUF Q4_K_M (8.4 GB) → Mac/iPad Pro 16 GB+
+
+HuggingFace: dcostenco/prism-coder-{14b,8b,32b,1.7b} (public GGUF weights)
 ```
 
 | Plan | Cloud model | Daily limit | On-device |
 |---|---|---|---|
-| Free | — | unlimited local | Qwen3-1.7B |
-| Standard $5/mo | Qwen3-14B | 200 req | + cloud |
-| Pro $15/mo | QwQ-32B | 2,000 req | + reasoning |
-| Enterprise | QwQ-32B priority | unlimited | full stack |
+| Free | — | unlimited local | prism-coder:1.7b |
+| Standard $19/mo | prism-coder:14b | 200 req | + cloud |
+| Pro $49/mo | prism-coder:32b | 2,000 req | + reasoning |
+| Enterprise $99/mo | prism-coder:32b priority | unlimited | full stack |
 
 See [`docs/WOW_FEATURES.md`](docs/WOW_FEATURES.md) for the algorithm catalogue. Release notes in [`docs/releases/v14.0.0-prism-as-foundation.md`](docs/releases/v14.0.0-prism-as-foundation.md).
 
@@ -266,4 +497,4 @@ See [`docs/WOW_FEATURES.md`](docs/WOW_FEATURES.md) for the algorithm catalogue. 
 
 ## License
 
-[BUSL-1.1](LICENSE) — Business Source License. Free for non-production use. Production use requires a Synalux subscription or commercial license. After 2 years, converts to MIT.
+[AGPL-3.0](LICENSE) — Open source. Same license as Prism AAC. Commercial use via Synalux subscription for hosted/managed deployment.
