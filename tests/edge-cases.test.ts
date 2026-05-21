@@ -49,6 +49,7 @@ import {
 import { buildVaultDirectory } from "../src/utils/vaultExporter.js";
 import { TurboQuantCompressor } from "../src/utils/turboquant.js";
 import { deepStoragePurgeHandler } from "../src/tools/hygieneHandlers.js";
+import { _setStorageForTesting } from "../src/storage/index.js";
 import { createTestDb } from "./helpers/fixtures.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -874,6 +875,7 @@ describe("Deep Storage — deepStoragePurgeHandler(): older_than_days = 0 guard"
   afterEach(() => {
     cleanup?.();
     cleanup = undefined;
+    _setStorageForTesting(null); // reset singleton so next test starts clean
   });
 
   it("older_than_days = 0 → returns isError=false (no purge, not an error)", async () => {
@@ -883,12 +885,11 @@ describe("Deep Storage — deepStoragePurgeHandler(): older_than_days = 0 guard"
      * The handler must NOT forward 0 to the storage layer — it should
      * return a clean success response indicating nothing was purged.
      *
-     * This guards against the accidental footgun where a caller omits
-     * older_than_days entirely (defaults to 30) vs. explicitly sets 0.
+     * No DB needed: the handler short-circuits at the olderThanDays === 0
+     * guard before ever calling getStorage(). createTestDb() was previously
+     * here but caused 12+ second timeouts on Windows (native SQLite binding
+     * init) for a path that never touches storage.
      */
-    const testDb = await createTestDb("deep-storage-ttl-zero");
-    cleanup = testDb.cleanup;
-
     const result = await deepStoragePurgeHandler({
       older_than_days: 0,
       dry_run: false,
@@ -904,10 +905,8 @@ describe("Deep Storage — deepStoragePurgeHandler(): older_than_days = 0 guard"
     /**
      * WHY: Dry-run with TTL=0 must also be a clean no-op — it's a
      * preview call, so it definitely must not throw or return isError=true.
+     * No DB needed (same reason as above — handler returns before getStorage()).
      */
-    const testDb = await createTestDb("deep-storage-ttl-zero-dry");
-    cleanup = testDb.cleanup;
-
     const result = await deepStoragePurgeHandler({
       older_than_days: 0,
       dry_run: true,
@@ -921,9 +920,14 @@ describe("Deep Storage — deepStoragePurgeHandler(): older_than_days = 0 guard"
      * WHY: The handler docs say older_than_days defaults to 30 when omitted.
      * 30 >= 7 so the storage layer MUST accept it. This test confirms the
      * default is wired correctly and doesn't accidentally produce an error.
+     *
+     * NOTE: We inject testDb.storage into the module singleton before calling
+     * the handler so it uses our ephemeral DB rather than trying to resolve
+     * a backend from env/config (which hangs in CI when no backend is set).
      */
     const testDb = await createTestDb("deep-storage-default-days");
     cleanup = testDb.cleanup;
+    _setStorageForTesting(testDb.storage);
 
     // Empty database — 0 entries eligible, but should succeed
     const result = await deepStoragePurgeHandler({

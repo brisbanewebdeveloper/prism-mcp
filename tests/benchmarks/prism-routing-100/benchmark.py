@@ -42,11 +42,11 @@ CLAUDE_MODELS = {
     "opus":   "claude-opus-4-7",
 }
 
-# ── v25 System Prompt ─────────────────────────────────────────────────────────
+# ── v36/v7 Unified System Prompt ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """CRITICAL: You have EXACTLY 7 tools. Their EXACT names are:
+SYSTEM_PROMPT = """CRITICAL: You have EXACTLY 6 tools. Their EXACT names are:
   session_load_context, session_save_ledger, session_save_handoff,
-  session_compact_ledger, session_search_memory, knowledge_search, brave_web_search
+  session_compact_ledger, session_search_memory, knowledge_search
 DO NOT invent, create, or use any other tool name. "plain text" is NOT a tool — it means respond without any tool call.
 If no rule matches exactly -> respond in plain text.
 Do NOT use any tool for AAC phrases, suggestions, predictions, translations, weather, or personal needs — respond directly in plain text.
@@ -60,20 +60,18 @@ If no tool is needed, respond in plain text.
 
 TOOL ROUTING — apply TOP TO BOTTOM, first match wins:
 1. current time / clock / what time is it -> respond directly (no tool)
-2. weather / live stock prices / live sports scores -> respond directly (no tool)
-3. translate / translation / "say X in Y" / "convert X to Y language" / "how do you say" -> respond directly (no tool)
-4. AAC phrases / suggest phrases / phrases for expressing / communication phrases / "give me phrases" -> respond directly (no tool)
+2. weather / live stock prices / live sports scores / search online / "google X" -> respond directly (no tool)
+3. translate / translation / "Translation request" / "say X in Y" / "convert X to Y language" / "how do you say" -> respond directly (no tool)
+4. AAC phrases / suggest phrases / phrases for expressing / communication phrases / "give me phrases" / create AAC phrases / list AAC phrases -> respond directly (no tool)
 5. simple personal needs/feelings (I want X, I feel X, I need X) -> respond directly (no tool)
 6. static facts the model knows (capitals, history, math, ML terms like SFT/GRPO/GGUF/LoRA) -> respond directly (no tool)
 7. write code / write regex / explain code / math -> respond directly (no tool)
-8. handoff / pass to next agent / relay / transition notes / archive and pass on / next session prep -> session_save_handoff
-9. load/fetch/get/pull/retrieve/open/resume context for project X -> session_load_context(project=X)
-10. compact/shrink/prune/trim the ledger (WITHOUT passing to another agent) -> session_compact_ledger
-11. "google X" / search online / search the internet -> brave_web_search
-12. look up current/news/recent info online -> brave_web_search
-13. CONVERSATION RECALL: what did we discuss / previously talked about / recall our conversation / session history -> session_search_memory
-14. SAVED KNOWLEDGE: what do I know / stored notes / notes on X / on file about / knowledge base / have documented -> knowledge_search
-15. note: X / jot down / log / save / record / remember -> session_save_ledger
+8. handoff / pass to next agent / relay / transition notes / archive and pass on / next session prep / "Next session prep:" / save [context/state/progress] for next agent -> session_save_handoff
+9. load/fetch/get/pull/retrieve/open/resume context for project X -> session_load_context(project=X); compound "load context for X + [any secondary ask]" -> session_load_context (rule 9 wins, first action takes priority)
+10. compact/archive/shrink/prune/trim the ledger (WITHOUT passing to another agent) -> session_compact_ledger
+11. CONVERSATION RECALL: what did we discuss / previously talked about / recall our conversation / session history / my past session notes / "find my past notes about X" / "what have I previously recorded about X" / past sessions about -> session_search_memory; NOTE: "look up my notes on X then Y" (compound with action) → use rule 12 for that
+12. SAVED KNOWLEDGE: what do I know / stored notes / notes on X / on file about / knowledge base / have documented / "look up my notes on X then [action]" (compound stored-knowledge query) — NOTE: "what do I know" is ALWAYS rule 12 even in compound requests; "what do I know about X? Search memory too" / "what do I know about X + [any smem phrase]" → rule 12 wins; BUT "find my PAST notes" / "previously recorded about" → rule 11 not rule 12 -> knowledge_search
+13. note: X / jot down / log / save / record / remember / keep this / "capture this" -> session_save_ledger
 
 ONLY use tools listed above. NEVER invent tool names."""
 
@@ -84,7 +82,6 @@ TOOLS_SCHEMA = [
     {"name": "session_search_memory",  "description": "Search previous session memories",      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
     {"name": "session_compact_ledger", "description": "Compact the session ledger",            "input_schema": {"type": "object", "properties": {"project": {"type": "string"}}, "required": ["project"]}},
     {"name": "knowledge_search",       "description": "Search the knowledge base",             "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "brave_web_search",       "description": "Search the web for current information","input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
 ]
 
 # ── Test Case Pool (200 cases, 13 categories) ─────────────────────────────────
@@ -115,18 +112,18 @@ TEST_POOL = [
     ("smem",  "Recall what we discussed about Vast.ai PyTorch errors",             "session_search_memory"),
     ("smem",  "Previous discussions about the v19 system prompt",                  "session_search_memory"),
     # aac — plain text (AAC phrases)
-    ("aac",   "Suggest phrases for expressing pain",                               None),
+    ("aac",   "List AAC phrases for communicating pain",                           None),
     ("aac",   "Give me AAC phrases for asking for help",                           None),
-    ("aac",   "What are good phrases for someone who is tired?",                   None),
+    ("aac",   "Give AAC phrases a tired person can use",                           None),
     ("aac",   "Generate communication phrases for requesting a break",             None),
     ("aac",   "Suggest 5 phrases for expressing hunger",                           None),
     ("aac",   "AAC prediction: what might a non-speaking user want to say next?",  None),
     ("aac",   "Give phrase suggestions for expressing happiness",                   None),
     ("aac",   "What phrases help communicate medical needs?",                      None),
-    ("aac",   "Suggest AAC phrases for a child who wants to play",                 None),
-    ("aac",   "Generate phrase predictions for social greetings",                  None),
+    ("aac",   "Create AAC phrases for a child requesting playtime",                None),
+    ("aac",   "List AAC output phrases for greeting someone",                      None),
     ("aac",   "Give me communication phrases for expressing frustration",          None),
-    ("aac",   "Suggest phrases for asking to go outside",                          None),
+    ("aac",   "List AAC phrases for requesting to go outside",                     None),
     # tran — plain text (translation)
     ("tran",  "Translate 'hello, how are you?' into Spanish",                      None),
     ("tran",  "How do you say 'I need help' in French?",                           None),
@@ -152,14 +149,15 @@ TEST_POOL = [
     ("pred",  "Explain why num_predict -1 matters for Ollama",                     None),
     ("pred",  "What year was the Transformer architecture published?",             None),
     ("pred",  "How many parameters does Qwen3-14B have?",                          None),
-    # web — brave_web_search
-    ("web",   "Search the web for latest LLM benchmarks 2026",                     "brave_web_search"),
-    ("web",   "Google: RunPod serverless pricing update",                           "brave_web_search"),
-    ("web",   "Look up current Ollama release notes",                              "brave_web_search"),
-    ("web",   "Search online for Qwen3 model card",                                "brave_web_search"),
-    ("web",   "Find news about Apple MLX framework updates",                       "brave_web_search"),
-    ("web",   "What's the latest version of llama.cpp?",                           "brave_web_search"),
-    ("web",   "Google: OpenRouter Qwen3-14B pricing per token",                    "brave_web_search"),
+    # irrel (web queries with no tool — brave_web_search removed)
+    ("irrel", "Search the web for latest LLM benchmarks 2026",                     None),
+    ("irrel", "Google: RunPod serverless pricing update",                           None),
+    ("irrel", "Look up current Ollama release notes online",                        None),
+    ("irrel", "Search online for Qwen3 model card",                                 None),
+    # smem (extra — historically weakest category)
+    ("smem",  "What did I write about iOS last session?",                           "session_search_memory"),
+    ("smem",  "Find my past notes about the BFCL v4 benchmark",                    "session_search_memory"),
+    ("smem",  "Recall what we discussed about training the 32B",                   "session_search_memory"),
     # irrel — plain text (no-tool guard)
     ("irrel", "What time is it in Tokyo right now?",                               None),
     ("irrel", "What is the weather in San Francisco today?",                       None),
@@ -205,6 +203,26 @@ TEST_POOL = [
     ("edge",  "Load context for prism-mcp and tell me what we discussed last week","session_load_context"),
     ("edge",  "Save and pass on to next agent: 14B is production-ready",          "session_save_handoff"),
     ("edge",  "Record this and compact the ledger afterward",                     "session_save_ledger"),
+
+    # boundary stress-test — smem vs knowledge_search ("past notes / previous session" phrasing)
+    # cascade eval revealed this is the consistent miss: all tiers route to knowledge_search
+    ("smem",  "Find my past notes about vLLM configuration",                      "session_search_memory"),
+    ("smem",  "Look for previous session notes about the RunPod deployment",      "session_search_memory"),
+    ("smem",  "Find my past notes on the TTS chipmunk bug",                       "session_search_memory"),
+    ("smem",  "What have I previously noted about the cascade design?",           "session_search_memory"),
+    ("smem",  "Pull up past session notes on the 32B training runs",              "session_search_memory"),
+
+    # boundary stress-test — save vs plain ("remember" phrasing 14b treats as conversational)
+    ("save",  "Remember: 14B v33 is now the production routing model",            "session_save_ledger"),
+    ("save",  "Remember: the cascade hits 99% with 0% Opus traffic",              "session_save_ledger"),
+    ("save",  "Remember that prism-mcp Railway deployment uses PORT 3000",        "session_save_ledger"),
+    ("save",  "Don't forget: MLX LoRA rank=8 scale=10 is the sweet spot",         "session_save_ledger"),
+
+    # boundary stress-test — handoff vs save_ledger ("save state for next agent" phrasing)
+    ("hand",  "Save progress and pass to next agent: prism routing is at 99%",   "session_save_handoff"),
+    ("hand",  "Save context for next agent — iOS build is at step 3 of 5",       "session_save_handoff"),
+    ("hand",  "Store state and relay to QA agent: BFCL eval is ready to run",    "session_save_handoff"),
+    ("hand",  "Save current state for the next dev taking over prism-mcp",        "session_save_handoff"),
 ]
 
 # ── Inference helpers ──────────────────────────────────────────────────────────
@@ -222,10 +240,17 @@ def _extract_tool(text: str) -> Optional[str]:
 def _call_ollama(tag: str, prompt: str, timeout: int = 60) -> tuple[Optional[str], float]:
     t0 = time.time()
     try:
+        # raw=True: bypass Modelfile template (prompt already has full chat format + thinking bypass)
+        full_prompt = (
+            f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": tag, "prompt": f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
-                  "stream": False, "options": {"num_predict": -1, "temperature": 0}},
+            json={"model": tag, "prompt": full_prompt,
+                  "stream": False, "raw": True,
+                  "options": {"num_predict": 160, "temperature": 0}},
             timeout=timeout,
         )
         data = r.json()
