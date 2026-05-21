@@ -390,6 +390,7 @@ export class SynaluxStorage extends SupabaseStorage {
       const totalHandoffs = typeof inventory?.active_projects === "number" ? inventory.active_projects : 0;
       return {
         missingEmbeddings: 0,
+        unrepairableEmbeddings: 0,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],
         staleRollups: 0,
@@ -402,6 +403,7 @@ export class SynaluxStorage extends SupabaseStorage {
       debugLog("[SynaluxStorage] getHealthStats failed: " + (e instanceof Error ? e.message : String(e)));
       return {
         missingEmbeddings: 0,
+        unrepairableEmbeddings: 0,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],
         staleRollups: 0,
