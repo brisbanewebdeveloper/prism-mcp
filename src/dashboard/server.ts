@@ -77,13 +77,23 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  * the Node.js event loop. Blocking during startup prevents the MCP
  * stdio transport from responding to the initialize handshake in time.
  */
-async function killPortHolder(port: number): Promise<void> {
+function isPortLookupToolUnavailable(err: NodeJS.ErrnoException): boolean {
+  const code = String(err.code ?? "");
+  return (
+    code === "127" ||
+    code === "ENOENT" ||
+    /not found|not recognized|ENOENT/i.test(err.message)
+  );
+}
+
+export async function killPortHolder(port: number): Promise<void> {
   return new Promise((resolve) => {
     exec(`lsof -ti tcp:${port}`, { encoding: "utf-8" }, (err, stdout) => {
       if (err) {
-        const errorCode = (err as NodeJS.ErrnoException).code;
+        const lookupError = err as NodeJS.ErrnoException;
+        const errorCode = lookupError.code;
         const isNoMatch = String(errorCode) === "1";
-        if (!isNoMatch) {
+        if (!isNoMatch && !isPortLookupToolUnavailable(lookupError)) {
           console.error(
             `[Dashboard] killPortHolder: could not check port ${port} (lsof may not be installed) — skipping.`
           );
@@ -1593,4 +1603,3 @@ self.addEventListener('message', (e) => {
     }
   }, 60 * 60 * 1000);
 }
-
