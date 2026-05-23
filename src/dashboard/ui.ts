@@ -3496,20 +3496,29 @@ function handleSkillUpload(input) {
 // ─── AI Providers Settings (v4.4) ────────────────────────────────────
 // text_provider  → governs generateText()  (gemini | openai | anthropic)
 // embedding_provider → governs generateEmbedding() (auto | gemini | openai)
+function shouldShowOpenAIEmbeddingFields(textProvider, embeddingProvider) {
+    return embeddingProvider === 'openai' ||
+        (embeddingProvider === 'auto' && textProvider === 'openai');
+}
+function refreshOpenAIEmbeddingFields(textProvider, embeddingProvider) {
+    document.getElementById('embed-fields-openai').style.display =
+        shouldShowOpenAIEmbeddingFields(textProvider, embeddingProvider) ? '' : 'none';
+}
 // Called when the TEXT provider dropdown changes.
 function onTextProviderChange(value) {
+    var embedVal = document.getElementById('select-embedding-provider').value;
     document.getElementById('provider-fields-gemini').style.display = value === 'gemini' ? '' : 'none';
     document.getElementById('provider-fields-openai').style.display = value === 'openai' ? '' : 'none';
     document.getElementById('provider-fields-anthropic').style.display = value === 'anthropic' ? '' : 'none';
+    refreshOpenAIEmbeddingFields(value, embedVal);
     // Refresh the Anthropic warning — its visibility depends on both dropdowns
-    refreshAnthropicWarning(value, document.getElementById('select-embedding-provider').value);
+    refreshAnthropicWarning(value, embedVal);
     saveBootSetting('text_provider', value);
 }
 // Called when the EMBEDDING provider dropdown changes.
 function onEmbeddingProviderChange(value) {
     var textVal = document.getElementById('select-text-provider').value;
-    // Show the OpenAI embedding model field only when embedding=openai
-    document.getElementById('embed-fields-openai').style.display = value === 'openai' ? '' : 'none';
+    refreshOpenAIEmbeddingFields(textVal, value);
     refreshAnthropicWarning(textVal, value);
     saveBootSetting('embedding_provider', value);
 }
@@ -3546,7 +3555,7 @@ function loadAiProviderSettings() {
                     embedSel = document.getElementById('select-embedding-provider');
                     if (embedSel)
                         embedSel.value = embedProvider;
-                    document.getElementById('embed-fields-openai').style.display = embedProvider === 'openai' ? '' : 'none';
+                    refreshOpenAIEmbeddingFields(textProvider, embedProvider);
                     refreshAnthropicWarning(textProvider, embedProvider);
                     gKey = document.getElementById('input-google-api-key');
                     if (gKey)

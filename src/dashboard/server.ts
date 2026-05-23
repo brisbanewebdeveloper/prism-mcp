@@ -48,6 +48,23 @@ import {
 
 const PORT = PRISM_DASHBOARD_PORT;
 
+const DASHBOARD_SETTABLE_KEYS = new Set<string>([
+  "PRISM_STORAGE",
+  "text_provider", "embedding_provider", "embedding_model",
+  "openai_base_url", "openai_model", "openai_embedding_model",
+  "PRISM_ENABLE_HIVEMIND", "PRISM_DARK_FACTORY_ENABLED",
+  "PRISM_TASK_ROUTER_ENABLED", "PRISM_SCHOLAR_ENABLED",
+  "PRISM_HDC_ENABLED", "PRISM_ACTR_ENABLED",
+  "PRISM_GRAPH_PRUNING_ENABLED",
+]);
+
+export function isDashboardSettingKeyAllowed(key: string): boolean {
+  return DASHBOARD_SETTABLE_KEYS.has(key) ||
+    key.startsWith("skill:") ||
+    key.startsWith("ttl:") ||
+    key.startsWith("autoload:");
+}
+
 /** Read HTTP request body as string (Buffer-based to avoid GC thrash on large imports) */
 /** SECURITY: 10MB limit prevents memory exhaustion from oversized POST payloads. */
 const MAX_BODY_BYTES = parseInt(process.env.PRISM_MAX_REQUEST_BYTES ?? String(10 * 1024 * 1024), 10);
@@ -752,18 +769,7 @@ return false;}
           if (parsed.key && parsed.value !== undefined) {
             // SECURITY: Allowlist of dashboard-settable keys to prevent
             // credential overwrite (SUPABASE_KEY, STRIPE_SECRET_KEY, etc.)
-            const SETTABLE_KEYS = new Set([
-              "PRISM_STORAGE",
-              "embedding_provider", "embedding_model",
-              "PRISM_ENABLE_HIVEMIND", "PRISM_DARK_FACTORY_ENABLED",
-              "PRISM_TASK_ROUTER_ENABLED", "PRISM_SCHOLAR_ENABLED",
-              "PRISM_HDC_ENABLED", "PRISM_ACTR_ENABLED",
-              "PRISM_GRAPH_PRUNING_ENABLED",
-            ]);
-            const isSkillKey = parsed.key.startsWith("skill:");
-            const isTTLKey = parsed.key.startsWith("ttl:");
-            const isAutoloadKey = parsed.key.startsWith("autoload:");
-            if (!SETTABLE_KEYS.has(parsed.key) && !isSkillKey && !isTTLKey && !isAutoloadKey) {
+            if (!isDashboardSettingKeyAllowed(parsed.key)) {
               res.writeHead(403, { "Content-Type": "application/json" });
               return res.end(JSON.stringify({ error: `Setting key "${parsed.key}" is not allowed via the dashboard.` }));
             }

@@ -17,6 +17,7 @@ import * as crypto from "node:crypto";
 // ═══════════════════════════════════════════════════════════════
 
 import { sanitizeMcpOutput } from "../src/utils/sanitizer.js";
+import { isDashboardSettingKeyAllowed } from "../src/dashboard/server.js";
 
 describe("Sanitizer — prompt injection prevention", () => {
   it("strips <system> tags", () => {
@@ -156,42 +157,40 @@ describe("Backup restore — path validation", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("Dashboard — credential keys not settable", () => {
-  const SETTABLE_KEYS = new Set([
-    "PRISM_STORAGE",
-    "embedding_provider", "embedding_model",
-    "PRISM_ENABLE_HIVEMIND", "PRISM_DARK_FACTORY_ENABLED",
-    "PRISM_TASK_ROUTER_ENABLED", "PRISM_SCHOLAR_ENABLED",
-    "PRISM_HDC_ENABLED", "PRISM_ACTR_ENABLED",
-    "PRISM_GRAPH_PRUNING_ENABLED",
-  ]);
-
   it("does NOT include SUPABASE_URL", () => {
-    expect(SETTABLE_KEYS.has("SUPABASE_URL")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("SUPABASE_URL")).toBe(false);
   });
 
   it("does NOT include SUPABASE_KEY", () => {
-    expect(SETTABLE_KEYS.has("SUPABASE_KEY")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("SUPABASE_KEY")).toBe(false);
   });
 
   it("does NOT include BRAVE_API_KEY", () => {
-    expect(SETTABLE_KEYS.has("BRAVE_API_KEY")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("BRAVE_API_KEY")).toBe(false);
   });
 
   it("does NOT include GOOGLE_API_KEY", () => {
-    expect(SETTABLE_KEYS.has("GOOGLE_API_KEY")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("GOOGLE_API_KEY")).toBe(false);
   });
 
   it("does NOT include VOYAGE_API_KEY", () => {
-    expect(SETTABLE_KEYS.has("VOYAGE_API_KEY")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("VOYAGE_API_KEY")).toBe(false);
   });
 
   it("does NOT include FIRECRAWL_API_KEY", () => {
-    expect(SETTABLE_KEYS.has("FIRECRAWL_API_KEY")).toBe(false);
+    expect(isDashboardSettingKeyAllowed("FIRECRAWL_API_KEY")).toBe(false);
   });
 
   it("allows non-credential settings", () => {
-    expect(SETTABLE_KEYS.has("PRISM_STORAGE")).toBe(true);
-    expect(SETTABLE_KEYS.has("embedding_provider")).toBe(true);
+    expect(isDashboardSettingKeyAllowed("PRISM_STORAGE")).toBe(true);
+    expect(isDashboardSettingKeyAllowed("embedding_provider")).toBe(true);
+  });
+
+  it("allows non-sensitive OpenAI/Ollama provider settings", () => {
+    expect(isDashboardSettingKeyAllowed("text_provider")).toBe(true);
+    expect(isDashboardSettingKeyAllowed("openai_base_url")).toBe(true);
+    expect(isDashboardSettingKeyAllowed("openai_model")).toBe(true);
+    expect(isDashboardSettingKeyAllowed("openai_embedding_model")).toBe(true);
   });
 });
 
