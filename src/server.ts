@@ -142,6 +142,8 @@ import {
   SESSION_VIEW_IMAGE_TOOL,
   // ─── v2.2.0: Health Check tool definition ───
   SESSION_HEALTH_CHECK_TOOL,
+  // ─── Hygiene: embedding backfill (orphaned but handler-wired) ───
+  SESSION_BACKFILL_EMBEDDINGS_TOOL,
   // ─── Phase 2: GDPR Memory Deletion tool definition ───
   SESSION_FORGET_MEMORY_TOOL,
   // ─── Phase 2: GDPR Export tool definition ───
@@ -342,6 +344,7 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
     SESSION_VIEW_IMAGE_TOOL,     // session_view_image — retrieve image from vault (v2.0)
     // ─── v2.2.0: Health Check tool ───
     SESSION_HEALTH_CHECK_TOOL,   // session_health_check — brain integrity checker (v2.2.0)
+    SESSION_BACKFILL_EMBEDDINGS_TOOL,  // session_backfill_embeddings — repair NULL embeddings (handler+route already wired)
     // ─── Phase 2: GDPR Memory Deletion tool ───
     SESSION_FORGET_MEMORY_TOOL,  // session_forget_memory — GDPR-compliant memory deletion (Phase 2)
     // ─── v3.1: TTL Retention tool ───
@@ -476,6 +479,74 @@ export function notifyResourceUpdate(project: string, server: Server) {
   });
 }
 
+async function runStaleDistGuard() {
+  // Stale-dist guard. Catches the failure mode where src/ commits land but
+  // `npm run build` is skipped, so Claude Desktop runs an outdated
+  // dist/server.js (silent — tool fixes invisible in the running binary).
+  // Read-only probe; safe to run before acquireLock(). No-ops in npm
+  // installs where src/ isn't shipped alongside dist/.
+  try {
+    const { statSync, readdirSync, existsSync, readFileSync } = await import("fs");
+    const { dirname, join, basename } = await import("path");
+    const { fileURLToPath } = await import("url");
+
+    // Derive layout from package.json so we don't hardcode "src" / "server.js"
+    // / "node_modules". Falls back to sane defaults only if package.json is
+    // missing (e.g. in unusual install layouts).
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, "..");
+    let distEntry = "server.js";
+    let srcSubdir = "src";
+    const skipDirPrefixes: readonly string[] = ["."]; // dotfile dirs (.git, .cache, ...)
+    const skipDirNames = new Set<string>(["node_modules"]); // npm convention
+    try {
+      const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+      if (typeof pkg.main === "string" && pkg.main.length > 0) {
+        distEntry = basename(pkg.main);
+      }
+    } catch { /* keep fallback */ }
+    try {
+      const tsconfig = JSON.parse(readFileSync(join(repoRoot, "tsconfig.json"), "utf8"));
+      const rootDir = tsconfig?.compilerOptions?.rootDir;
+      if (typeof rootDir === "string" && rootDir.length > 0) {
+        srcSubdir = rootDir.replace(/^\.\//, "");
+      }
+    } catch { /* keep fallback */ }
+
+    const distPath = join(here, distEntry);
+    const srcDir = join(repoRoot, srcSubdir);
+    if (existsSync(distPath) && existsSync(srcDir)) {
+      const distMtime = statSync(distPath).mtimeMs;
+      const walk = (dir: string): number => {
+        let newest = 0;
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            if (skipDirNames.has(entry.name)) continue;
+            if (skipDirPrefixes.some(prefix => entry.name.startsWith(prefix))) continue;
+            newest = Math.max(newest, walk(join(dir, entry.name)));
+          } else if (entry.isFile()) {
+            newest = Math.max(newest, statSync(join(dir, entry.name)).mtimeMs);
+          }
+        }
+        return newest;
+      };
+      const srcMtime = walk(srcDir);
+      if (srcMtime > distMtime) {
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const lagDays = Math.round((srcMtime - distMtime) / msPerDay);
+        const bar = "═".repeat(72);
+        console.error(
+          `\n${bar}\n[Prism] ⚠️  STALE DIST — ${srcSubdir}/ is ${lagDays}d newer than ${distEntry}\n` +
+          `[Prism]    Running binary may be missing fixes/tools.\n` +
+          `[Prism]    Fix: cd ${repoRoot} && npm run build, then restart Claude Desktop.\n${bar}\n`
+        );
+      }
+    }
+  } catch {
+    // Never block server boot on the freshness probe.
+  }
+}
+
 export async function initializeRuntime() {
   if (runtimeInitialization) {
     await runtimeInitialization;
@@ -483,6 +554,7 @@ export async function initializeRuntime() {
   }
 
   runtimeInitialization = (async () => {
+    await runStaleDistGuard();
     acquireLock();
     await initConfigStorage();
     initTelemetry();

@@ -124,15 +124,23 @@ export async function knowledgeSearchHandler(args: unknown) {
 
   // Phase 1: Capture total start time for latency measurement
   const totalStart = performance.now();
-  const searchKeywords = query ? toKeywordArray(query) : [];
   const storage = await getStorage();
+
+  // NOTE: do NOT auto-derive keywords from the free-text query. The portal
+  // applies keywords as a hard .overlaps() AND-filter; deriving them from
+  // the query (via toKeywordArray) turns "BFCL" into keywords=['bfcl']
+  // which excludes every row whose keywords[] column doesn't contain
+  // 'bfcl' — even when the summary clearly matches "BFCL" via textSearch.
+  // Free-text search must rely on textSearch alone. Callers who want a
+  // keyword overlap filter should pass keywords explicitly via a future
+  // input-schema field, not via implicit extraction.
 
   // Phase 1: Capture storage-specific start time to isolate DB latency
   // from keyword extraction and other overhead
   const storageStart = performance.now();
   const data = await storage.searchKnowledge({
     project: project || null,
-    keywords: searchKeywords,
+    keywords: [],
     category: category || null,
     queryText: query || null,
     limit: Math.min(limit, 50),
@@ -277,6 +285,17 @@ export async function knowledgeSearchHandler(args: unknown) {
     }
   } catch (graphErr) {
     debugLog(`[knowledge_search] Graph expansion failed (non-fatal): ${graphErr instanceof Error ? graphErr.message : String(graphErr)}`);
+  }
+
+  // Machine-readable evidence snippets for direct pass-through to prism_infer
+  if (data.results && Array.isArray(data.results) && (data.results as any[]).length > 0) {
+    const evidenceSnippets = (data.results as any[]).map((r: any, i: number) => ({
+      source: `knowledge_search:${r.id ?? i}`,
+      content: (r.content ?? r.summary ?? r.text ?? "").slice(0, 1000),
+    })).filter((s: any) => s.content);
+    if (evidenceSnippets.length > 0) {
+      contentBlocks.push({ type: "text", text: JSON.stringify({ evidence_snippets: evidenceSnippets }) });
+    }
   }
 
   return { content: contentBlocks, isError: false };
@@ -709,6 +728,17 @@ export async function sessionSearchMemoryHandler(args: unknown) {
         actrCompositeMean: actrMetrics ? mean(actrMetrics.composites) : undefined,
       });
       contentBlocks.push(traceToContentBlock(trace));
+    }
+
+    // Machine-readable evidence snippets for direct pass-through to prism_infer
+    {
+      const evidenceSnippets = results.map((r: any, i: number) => ({
+        source: `session_search_memory:${r.id ?? i}`,
+        content: (r.summary ?? "").slice(0, 1000),
+      })).filter((s: any) => s.content);
+      if (evidenceSnippets.length > 0) {
+        contentBlocks.push({ type: "text", text: JSON.stringify({ evidence_snippets: evidenceSnippets }) });
+      }
     }
 
     // ── v6.0 Phase 3: 1-Hop Graph Expansion ──────────────────

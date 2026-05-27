@@ -35,6 +35,7 @@
 import { SupabaseStorage } from "./supabase.js";
 import { debugLog } from "../utils/logger.js";
 import { PRISM_SYNALUX_BASE_URL, PRISM_SYNALUX_API_KEY } from "../config.js";
+import { KnowledgeSearchRequestSchema } from "./portalContracts.js";
 import type {
   LedgerEntry,
   HandoffEntry,
@@ -46,6 +47,24 @@ import type {
   HistorySnapshot,
   HealthStats,
 } from "./interface.js";
+
+/**
+ * Resolve the knowledge_search scope without baking a policy default here.
+ * Precedence: caller-supplied value > PRISM_KNOWLEDGE_SCOPE env > undefined
+ * (lets the portal apply its own default). Unrecognised env values are
+ * ignored rather than coerced, so misconfiguration fails open to portal default.
+ */
+type KnowledgeScope = "user" | "workspace";
+function resolveKnowledgeScope(callerScope: unknown): KnowledgeScope | undefined {
+  if (callerScope === "user" || callerScope === "workspace") {
+    return callerScope;
+  }
+  const envScope = process.env.PRISM_KNOWLEDGE_SCOPE;
+  if (envScope === "user" || envScope === "workspace") {
+    return envScope;
+  }
+  return undefined;
+}
 
 interface PortalResponse {
   status: "success" | "error";
@@ -336,15 +355,19 @@ export class SynaluxStorage extends SupabaseStorage {
     role?: string | null;
     [key: string]: unknown;
   }): Promise<KnowledgeSearchResult | null> {
-    const result = await this.portalPost("/api/v1/prism/memory", {
+    const wireBody = KnowledgeSearchRequestSchema.parse({
       action: "knowledge_search",
       project: params.project ?? undefined,
       keywords: params.keywords ?? [],
       category: params.category ?? undefined,
-      queryText: params.queryText ?? undefined,
+      query: params.queryText ?? undefined,
       limit: params.limit ?? 10,
       role: params.role ?? undefined,
+      // Scope precedence: explicit caller param > PRISM_KNOWLEDGE_SCOPE env
+      // > undefined (portal decides). No hardcoded default here.
+      scope: resolveKnowledgeScope(params.scope),
     });
+    const result = await this.portalPost("/api/v1/prism/memory", wireBody as Record<string, unknown>);
     const count = typeof result.count === "number" ? result.count : 0;
     const results = Array.isArray(result.results) ? result.results : [];
     return { count, results } as KnowledgeSearchResult;
