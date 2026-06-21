@@ -1,24 +1,24 @@
 /**
  * RAM-Gated Local Model Picker
  * ─────────────────────────────────────────────────────────────
- * Pure function. Given free RAM in bytes, return the largest
- * prism-coder tag whose Q4_K_M weights + KV-cache headroom fit.
+ * Cascade: 9b (default) → 4b (verifier) → 2b (mobile) → 27b (quality).
  *
- * Thresholds reflect observed footprint on Apple Silicon with
- * 8K–32K context windows (Q4_K_M weights + KV cache + activations
- * + OS headroom). They are intentionally conservative so picking
- * a tier never OOMs the machine.
+ * The default ceiling is "9b" — NOT "27b". This means:
+ *   - 9b is the primary model for routing + general inference (Qwen3.5-9B, 100% BFCL)
+ *   - 4b is used as the grounding verifier (fast, small)
+ *   - 2b is the mobile/iPhone first gate (Qwen3.5-2B, 99.1% BFCL)
+ *   - 27b is only loaded when caller explicitly passes ceiling="27b"
+ *     or when the task requires maximum quality (complex code gen, etc.)
  *
- *   tag                 weights   need free   ctx
- *   prism-coder:32b     ~19 GB    ≥ 24 GB     32K
- *   prism-coder:14b     ~ 9 GB    ≥ 12 GB     32K
- *   prism-coder:8b      ~ 5 GB    ≥  7 GB     32K
- *   prism-coder:1b7     ~ 2 GB    ≥  3 GB      8K
+ * This saves 11GB+ RAM vs 27b and keeps response times fast.
+ *
+ *   tag                 weights   need free   ctx     role
+ *   prism-coder:27b     ~16 GB    ≥ 20 GB     32K    quality (on-demand, Qwen3.5 DeltaNet, 100% BFCL)
+ *   prism-coder:9b      ~ 5.8 GB  ≥  8 GB     32K    default router (Qwen3.5, 100% BFCL)
+ *   prism-coder:4b      ~ 3.4 GB  ≥  5 GB     32K    verifier (Qwen3.5, 100%)
+ *   prism-coder:2b      ~ 2.3 GB  ≥  3 GB      8K    mobile / iPhone (Qwen3.5, 99.1%)
  *
  * Below 3 GB free → no local pick (caller must use cloud).
- *
- * Note: thresholds use BINARY GB (1024^3) — matches what `os.freemem()`
- * reports on macOS/Linux.
  */
 
 const GB = 1024 ** 3;
@@ -35,17 +35,17 @@ export interface ModelChoice {
  * the first row whose minFreeGb fits within freeBytes.
  */
 export const MODEL_TIERS: ReadonlyArray<ModelChoice> = [
-    { tag: 'prism-coder:32b',  weightsGb: 19, minFreeGb: 24, ctxTokens: 32_768 },
-    { tag: 'prism-coder:14b',  weightsGb:  9, minFreeGb: 12, ctxTokens: 32_768 },
-    { tag: 'prism-coder:8b',   weightsGb:  5, minFreeGb:  7, ctxTokens: 32_768 },
-    { tag: 'prism-coder:1b7',  weightsGb:  2, minFreeGb:  3, ctxTokens:  8_192 },
+    { tag: 'prism-coder:27b',  weightsGb: 16, minFreeGb: 20, ctxTokens: 32_768 },
+    { tag: 'prism-coder:9b',   weightsGb:  5.8, minFreeGb:  8, ctxTokens: 32_768 },
+    { tag: 'prism-coder:4b',   weightsGb:  3.4, minFreeGb:  5, ctxTokens: 32_768 },
+    { tag: 'prism-coder:2b',   weightsGb:  2.3, minFreeGb:  3, ctxTokens:  8_192 },
 ];
 
 /**
  * True when `installed` matches `tierTag` either as a bare tag
- * (`prism-coder:32b`) or as a namespaced HuggingFace-style tag
- * (`dcostenco/prism-coder:32b`). The README documents `ollama pull
- * dcostenco/prism-coder:32b`, so Ollama's /api/tags returns the
+ * (`prism-coder:27b`) or as a namespaced HuggingFace-style tag
+ * (`dcostenco/prism-coder:27b`). The README documents `ollama pull
+ * dcostenco/prism-coder:27b`, so Ollama's /api/tags returns the
  * namespaced form — without this matcher the picker would never
  * see them and silently fall through to cloud.
  */
@@ -53,14 +53,16 @@ function tagMatches(installed: string, tierTag: string): boolean {
     return installed === tierTag || installed.endsWith(`/${tierTag}`);
 }
 
+/** Default ceiling: 9b. Pass ceiling="27b" explicitly for max quality. */
+export const DEFAULT_CEILING = "9b";
+
 /**
- * Pick the largest viable tier for the given free RAM.
- * Returns null when no tier fits (caller should go cloud-only).
+ * Pick the best viable tier for the given free RAM.
+ * Default ceiling is 9b — use ceiling="27b" only for complex tasks.
  *
  * @param freeBytes  Result of os.freemem() — binary bytes
- * @param ceiling    Optional cap (e.g. "14b" to forbid 32B even if RAM allows)
- * @param available  Optional whitelist — only consider tags in this set. Accepts
- *                   bare (`prism-coder:32b`) or namespaced (`dcostenco/prism-coder:32b`).
+ * @param ceiling    Cap tier. Default "9b". Pass "27b" for complex tasks.
+ * @param available  Optional whitelist of installed Ollama tags.
  */
 export function pickLocalModel(
     freeBytes: number,
@@ -69,9 +71,8 @@ export function pickLocalModel(
 ): ModelChoice | null {
     if (!Number.isFinite(freeBytes) || freeBytes <= 0) return null;
 
-    const ceilingIdx = ceiling
-        ? MODEL_TIERS.findIndex(t => t.tag.endsWith(ceiling) || t.tag === ceiling)
-        : 0;
+    const effectiveCeiling = ceiling || DEFAULT_CEILING;
+    const ceilingIdx = MODEL_TIERS.findIndex(t => t.tag.endsWith(`:${effectiveCeiling}`));
     const startIdx = ceilingIdx >= 0 ? ceilingIdx : 0;
 
     for (let i = startIdx; i < MODEL_TIERS.length; i++) {
@@ -91,7 +92,7 @@ export function pickLocalModel(
 
 /**
  * Resolve a tier tag to the actual Ollama name installed locally.
- * If `installed` contains a namespaced match (e.g. `dcostenco/prism-coder:32b`),
+ * If `installed` contains a namespaced match (e.g. `dcostenco/prism-coder:27b`),
  * the namespaced form is returned so Ollama's /api/generate finds it.
  * Falls back to the bare tag when only the bare form is present.
  */

@@ -45,6 +45,7 @@ const ES6_PATTERNS = [
 // but used the wrong number of backslashes.
 const LONE_ESCAPE_QUOTE = /\\''[^']/;   // \'' followed by non-quote char
 const LONE_CLOSE_QUOTE  = /[^\\]'\\'/;  // non-backslash ' then \'
+const TRIPLE_SINGLE_QUOTE = /'''/;      // rendered inline JS string break
 
 lines.forEach((raw, i) => {
   const lineNum = i + 1;
@@ -84,6 +85,12 @@ lines.forEach((raw, i) => {
   if (LONE_CLOSE_QUOTE.test(trimmed)) {
     console.error(`[dashboard-es5] Line ${lineNum}: Quote-escape trap — \\' at close of inline string produces ' not \\' in served HTML.`);
     console.error(`  Hint: use this.dataset.id or ensure \\\\' (double-backslash) for literal backslash in output.`);
+    console.error(`  ${raw}`);
+    errors++;
+  }
+  if (TRIPLE_SINGLE_QUOTE.test(trimmed)) {
+    console.error(`[dashboard-es5] Line ${lineNum}: Quote-escape trap — triple single quote breaks the served inline script.`);
+    console.error(`  Hint: use double-quoted HTML attributes when concatenating values inside single-quoted JS strings.`);
     console.error(`  ${raw}`);
     errors++;
   }

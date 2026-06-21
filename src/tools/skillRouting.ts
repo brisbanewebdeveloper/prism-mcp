@@ -24,11 +24,19 @@ export interface UserLocalPolicy {
   key_prefix: string;
 }
 
+export interface SkillEntry {
+  name: string;
+  priority: number;
+  protected?: boolean;
+}
+
 export interface SkillRoutingTable {
   version: number;
-  universal: string[];
+  universal: (string | SkillEntry)[];
   /** project-name substring → list of skill names */
   projects: Record<string, string[]>;
+  /** regex pattern → list of skill names. Matched against user prompt. */
+  prompt_keywords?: Record<string, string[]>;
   /**
    * User-local skill policy. Disabled by default — user must explicitly
    * request local skill loading (user_local=true on session_load_context,
@@ -43,7 +51,11 @@ export interface SkillRoutingTable {
 // Minimal fallback when synalux is unreachable.
 const OFFLINE_FALLBACK: SkillRoutingTable = {
   version: 1,
-  universal: ['bcba_ai_assistant'],
+  universal: [
+    { name: 'prime-directive', priority: 0, protected: true },
+    { name: 'evidence-first-protocol', priority: 1, protected: true },
+    { name: 'bcba_ai_assistant', priority: 20 },
+  ],
   projects: {},
   user_local: { enabled: false, key_prefix: 'user_skill:' },
 };
@@ -56,7 +68,7 @@ let inflight: Promise<SkillRoutingTable> | null = null;
 
 async function fetchOnce(): Promise<SkillRoutingTable> {
   try {
-    const res = await fetch(`${SYNALUX_BASE}/api/v1/skills/routing`, {
+    const res = await fetch(`${SYNALUX_BASE}/.well-known/prism/skills-routing.json`, {
       headers: { Accept: 'application/json' },
       // Routing is on every session_load_context, must not block long.
       signal: AbortSignal.timeout(2_500),
@@ -78,8 +90,15 @@ async function fetchOnce(): Promise<SkillRoutingTable> {
   }
 }
 
+export interface ResolvedSkill {
+  name: string;
+  priority: number;
+  protected: boolean;
+}
+
 export interface ResolvedSkills {
   names: string[];
+  skills: ResolvedSkill[];
   user_local: UserLocalPolicy;
 }
 
@@ -89,6 +108,13 @@ export interface ResolvedSkills {
  * skills. Also returns the user_local policy so callers know whether to
  * load user_skill:* entries from local SQLite.
  */
+function normalizeEntry(entry: string | SkillEntry, defaultPriority: number): ResolvedSkill {
+  if (typeof entry === 'string') {
+    return { name: entry, priority: defaultPriority, protected: false };
+  }
+  return { name: entry.name, priority: entry.priority ?? defaultPriority, protected: entry.protected ?? false };
+}
+
 export async function resolveSkillsForProject(project: string): Promise<ResolvedSkills> {
   const now = Date.now();
   if (!cached || now - cached.fetchedAt > CACHE_TTL_MS) {
@@ -101,17 +127,80 @@ export async function resolveSkillsForProject(project: string): Promise<Resolved
     await inflight;
   }
   const table = cached!.table;
-  const out = new Set<string>(table.universal);
-  const projectLower = project.toLowerCase();
-  for (const [pattern, skills] of Object.entries(table.projects)) {
-    if (projectLower.includes(pattern)) {
-      for (const s of skills) out.add(s);
+  const seen = new Set<string>();
+  const skills: ResolvedSkill[] = [];
+
+  for (let i = 0; i < table.universal.length; i++) {
+    const entry = normalizeEntry(table.universal[i], i);
+    if (!seen.has(entry.name)) {
+      seen.add(entry.name);
+      skills.push(entry);
     }
   }
+
+  const projectLower = project.toLowerCase();
+  let projectPriority = 100;
+  for (const [pattern, projectSkills] of Object.entries(table.projects)) {
+    if (projectLower.includes(pattern)) {
+      for (const s of projectSkills) {
+        if (!seen.has(s)) {
+          seen.add(s);
+          skills.push({ name: s, priority: projectPriority++, protected: false });
+        }
+      }
+    }
+  }
+
+  skills.sort((a, b) => a.priority - b.priority);
+
   return {
-    names: Array.from(out),
+    names: skills.map(s => s.name),
+    skills,
     user_local: table.user_local ?? OFFLINE_FALLBACK.user_local,
   };
+}
+
+/**
+ * Resolve skills based on user prompt keywords. Matches prompt text
+ * against the routing table's prompt_keywords regex patterns.
+ * Returns deduplicated skill names (excluding any already in baseSkills).
+ */
+export async function resolveSkillsForPrompt(
+  prompt: string,
+  baseSkills: string[] = [],
+): Promise<string[]> {
+  const now = Date.now();
+  if (!cached || now - cached.fetchedAt > CACHE_TTL_MS) {
+    if (!inflight) {
+      inflight = fetchOnce().then((table) => {
+        cached = { table, fetchedAt: Date.now() };
+        return table;
+      }).finally(() => { inflight = null; });
+    }
+    await inflight;
+  }
+  const table = cached!.table;
+  if (!table.prompt_keywords) return [];
+
+  const existing = new Set(baseSkills);
+  const matched: string[] = [];
+
+  for (const [pattern, skills] of Object.entries(table.prompt_keywords)) {
+    try {
+      const re = new RegExp(pattern, 'i');
+      if (re.test(prompt)) {
+        for (const s of skills) {
+          if (!existing.has(s)) {
+            existing.add(s);
+            matched.push(s);
+          }
+        }
+      }
+    } catch {
+      // Invalid regex in routing table — skip silently
+    }
+  }
+  return matched;
 }
 
 /** Force a re-fetch on the next call. Exposed for tests + admin tooling. */

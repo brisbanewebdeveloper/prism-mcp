@@ -1,145 +1,26 @@
-# 🧠 Prism Coder
+# Prism Coder
 
-🌐 **Read in your language:** 🇬🇧 English · [🇪🇸 Español](docs/i18n/README_es.md) · [🇫🇷 Français](docs/i18n/README_fr.md) · [🇵🇹 Português](docs/i18n/README_pt.md) · [🇷🇴 Română](docs/i18n/README_ro.md) · [🇺🇦 Українська](docs/i18n/README_uk.md) · [🇷🇺 Русский](docs/i18n/README_ru.md) · [🇩🇪 Deutsch](docs/i18n/README_de.md) · [🇯🇵 日本語](docs/i18n/README_ja.md) · [🇰🇷 한국어](docs/i18n/README_ko.md) · [🇨🇳 中文](docs/i18n/README_zh.md) · [🇸🇦 العربية](docs/i18n/README_ar.md)
+**Give your AI agent memory that lasts.** Persistent sessions, knowledge graphs, and offline tool-routing — fully local and free.
 
-**Persistent memory + tool-calling intelligence for AI agents.** *(formerly Prism MCP)*
-
-A Model Context Protocol server that gives Claude, Cursor, and other AI tools a Mind Palace — long-term memory that survives across sessions, with semantic search, cognitive routing, a visual dashboard, and the `prism-coder:1b7` / `prism-coder:8b` / `prism-coder:14b` / `prism-coder:32b` LLM fleet for offline tool-calling.
-
-[![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm%20%E2%80%94%20prism-mcp-server)](https://www.npmjs.com/package/prism-mcp-server)
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/synalux-ai.synalux?label=VS%20Code&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=synalux-ai.synalux)
-[![Website](https://img.shields.io/badge/website-synalux.ai%2Fprism--mcp-6B4FBB)](https://synalux.ai/prism-mcp)
+[![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
-[![Smithery](https://img.shields.io/badge/Smithery-listed-6B4FBB)](https://smithery.ai/server/@dcostenco/prism-mcp)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Models on HuggingFace](https://img.shields.io/badge/🤗-prism--coder-yellow)](https://huggingface.co/dcostenco)
 
-> **Renamed in v14.0.0:** the project is now **Prism Coder** to cover both the Mind Palace memory server *and* the `prism-coder:1b7` / `prism-coder:8b` / `prism-coder:14b` / `prism-coder:32b` LLM fleet on HuggingFace + Ollama. The npm package stays `prism-mcp-server` so existing install URLs and `mcp.json` entries keep working — the `prism-coder` binary has been the canonical entry point since v12.
+<p align="center">
+  <img src="docs/v11_hivemind_multi_agent_dashboard.jpg" alt="Prism Coder — Mind Palace Dashboard with Knowledge Graph and Multi-Agent Hivemind" width="700" />
+</p>
 
----
+Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claude, Cursor, and other AI tools long-term memory that survives across sessions. It ships with the open-weight `prism-coder` model fleet (2B–27B) for fast, offline tool-routing — no cloud required.
 
-## What Prism Coder does
-
-### 💾 Your AI remembers across sessions
-Every conversation feeds the Mind Palace. Next session, your AI agent loads the right context automatically — no re-explaining.
-
-### 🔍 Semantic search over your history
-Ask "what did I decide about the auth flow last month?" and get the answer with citations. Vector search + keyword + graph traversal.
-
-### 🧬 Cognitive routing
-Different memory types live in different stores: episodic (what happened), semantic (what's true), procedural (how to do X). The router picks where to store and where to retrieve.
-
-### 🔄 Proactive session drift detection *(new in v15)*
-Your AI agent can now detect when it has drifted from your original goals — mid-session, automatically — and self-correct before you notice the problem.
-
-Three direct Prism calls:
-1. **`session_save_ledger`** — snapshot current state
-2. **`session_cognitive_route`** — compare current work against original goals, returns `on_track / minor_drift / major_drift`
-3. **`session_compact_ledger`** — if drifted, compress and reload only what matters
-
-When major drift is detected, the alert routes to the **Synalux portal** so it's visible across sessions and devices — not just in the current conversation.
-
-**Real example it caught:** A training session promised BFCL ≥90% for three AI models. The agent spent 3 hours debugging audio bugs instead. The drift check surfaced: "Training goal unmet. Layer3 corpus missing from all training sets. 0 BFCL scores measured." The session immediately re-aligned.
-
-No scripts. No cron. No hooks. Three tool calls, Prism handles the rest.
-
-### 🛡 Local-first — security + speed
-Free tier runs entirely on your machine — SQLite, local embedding model, no API keys, no cloud. Paid tier adds cloud sync via Synalux portal.
-
-**Why local models matter:**
-
-| | Cloud LLM | Local `prism-coder` |
-|--|---|---|
-| Tool-call latency | 200ms–3s | **~1.6s (1.7B) / ~1.1s (14B)** |
-| API key required | Yes | **No** |
-| Data sent externally | Every prompt | **Nothing** |
-| Works offline | ❌ | ✅ |
-| Cost at scale | $0.002–0.06/call | **$0** |
-| HIPAA | Requires BAA | **On-prem = no BAA** |
-
-Install in one command — no config, no keys, no vendor agreements:
-```bash
-ollama pull dcostenco/prism-coder:1b7   # 2.2 GB · ~1.6s · any machine
-ollama pull dcostenco/prism-coder:8b    # 4.7 GB · ~0.8s · Mac M1+ / iPhone 8GB
-ollama pull dcostenco/prism-coder:14b   # 8.4 GB · ~1.1s · Mac M2+ / iPad Pro 16GB
-ollama pull dcostenco/prism-coder:32b   # 16 GB  · ~0.8s · Mac M2 Ultra+ (30B-A3B MoE)
-```
-
-Prism MCP detects both the namespaced (`dcostenco/prism-coder:14b`) and bare (`prism-coder:14b`) Ollama tag forms automatically — nothing else to configure. If you want the bare tags as aliases for direct `ollama run prism-coder:14b` use, run:
-
-```bash
-prism register-models           # aliases */prism-coder:* → prism-coder:* via `ollama cp`
-prism register-models --dry-run # preview what would be aliased
-```
-
-### Cascade architecture
-
-Two cascades operate independently depending on the deployment context:
-
-**Desktop / server cascade** (quality-first, used in Prism MCP + Synalux portal):
-```
-prism-coder:14b ─── correct? ──YES──▶  serve  (99% of traffic, ~1.1s)
-  │ NO
-prism-coder:32b ─── correct? ──YES──▶  serve  (~1% of traffic, ~0.8s)
-  │ NO
-Claude Opus 4.7 ──────────────────────▶  serve  (0% in practice, cloud)
-```
-
-**Mobile / offline cascade** (availability-first, used in Prism AAC iOS):
-```
-prism-coder:14b (~1.1s) — iPad Pro 16GB  →  prism-coder:8b (~0.8s) — iPhone/iPad 8GB
-  →  prism-coder:1.7b (~1.6s) — any device, always fits
-```
-
-**Code generation cascade** (used in Prism Coder IDE + Agent Mode):
-```
-prism-ide:14b ─── quality OK? ──YES──▶  serve  (~1.1s, 22/22 TypeScript eval)
-  │ NO (complex / multi-file)
-prism-ide:32b ─── quality OK? ──YES──▶  serve  (~0.8s MoE, deep reasoning)
-  │ NO
-Claude Sonnet 4 ──────────────────────▶  serve  (cloud fallback)
-```
-
-The routing cascade validates each response against the 6 known tool names and escalates on empty, truncated, or hallucinated tool calls. The code generation cascade escalates on incomplete or syntactically invalid output.
-
-**Routing accuracy** ([102-case Prism eval](tests/benchmarks/prism-routing-100/README.md), v36/v7 system prompt, 3-seed mean, May 2026):
-
-| Model | Accuracy | Cost/req | Latency | Runs on | AAC | Edge cases |
-|---|---|---|---|---|---|---|
-| Claude Sonnet 4 | **99%** | ~$0.01 | 3.2s | Cloud | 100% | 83% |
-| **prism-coder:32b** v7 | **100.0%** | **$0** | 0.8s | Mac 24GB+ (MoE) | **100%** | **100%** |
-| **prism-coder:8b** v36 | **100.0%** | **$0** | **0.8s** | iPhone/iPad 8GB | **100%** | **100%** |
-| **prism-coder:14b** v36 | **100.0%** | **$0** | **1.1s** | Mac 24GB+ / iPad Pro 16GB | **100%** | **100%** |
-| Claude Opus 4.7 | **98.3%** | ~$0.05 | 3.0s | Cloud | 100% | 83% |
-| **prism-coder:1.7b** v42 | **100.0%** | **$0** | 1.6s | Any device | **100%** | **100%** |
-| **14B→32B cascade** | **100.0%** | **~$0** | ~1.1s¹ | Mac 24GB+ | **100%** | **100%** |
-
-¹ ~99% of requests served by 14B at 1.1s; 32B for the ~1% 14B misses.
-
-**Why this matters for a life-critical AAC app**: a child in a hospital without WiFi, a nonverbal adult on an airplane, or a family on a budget gets Claude-grade routing accuracy with zero cloud dependency — and the AAC path (expressing pain, asking for help) routes correctly **100% of the time across all tiers and all seeds tested**.
-
-**What it does NOT mean**: these scores measure routing precision on a narrow 6-tool taxonomy, not general intelligence. Claude outperforms these models on everything outside this task. The value is **offline reliability at zero cost**, not replacing Claude.
-
-> **The prompt engineering breakthrough**: Q4_K_M quantized models confuse semantically similar tool names when routing rules use plain keyword lists. Two structural fixes eliminated all confusion: (1) replacing `-> plain text` with `-> respond directly (no tool)`, and (2) adding category labels (`CONVERSATION RECALL:` / `SAVED KNOWLEDGE:`) as semantic anchors stronger than keyword matching. Combined effect: 14B went from 87% → 100% on the 102-case Prism eval (v36/v7 system prompt, 3-seed mean).
-
-### ⚡ Zero-search retrieval
-Holographic Reduced Representations (HRR) for instant similarity lookups without an index. ~5ms over 100K memories.
-
-### 🌐 Multi-agent Hivemind
-Multiple AI agents share the same Mind Palace. Each agent has a role (dev / qa / pm / etc.) and sees scoped context. Heartbeat + roster for coordination.
+**No account needed. No API keys. Runs on your machine.**  
+A paid subscription adds cloud sync, higher model tiers, and team features through the [Synalux portal](https://synalux.ai).
 
 ---
 
-## Get started
+## Quickstart
 
-```bash
-# Install globally
-npm install -g prism-mcp-server
-
-# Or use npx (no install)
-npx prism-mcp-server
-```
-
-Add to Claude Desktop / Cursor config:
+The free tier needs no account, no API key, and no cloud. Add the server to your MCP client:
 
 ```json
 {
@@ -152,422 +33,599 @@ Add to Claude Desktop / Cursor config:
 }
 ```
 
-That's it. Open Claude / Cursor and your AI now has memory.
+Open Claude Desktop or Cursor and your agent now has memory backed by a local SQLite database (`~/.prism-mcp/data.db`).
 
-More setup details in [`docs/SETUP_GEMINI.md`](docs/SETUP_GEMINI.md).
+**Optional — local model fleet** for offline tool-routing. Pull whichever fits your hardware:
+
+```bash
+ollama pull dcostenco/prism-coder:2b    # 2.3 GB · mobile / lightweight (99.1% routing accuracy)
+ollama pull dcostenco/prism-coder:4b    # 3.4 GB · verifier (100% accuracy)
+ollama pull dcostenco/prism-coder:9b    # 5.8 GB · default router (100% accuracy, Qwen3.5)
+ollama pull dcostenco/prism-coder:27b   # 16 GB  · complex tasks (100% accuracy)
+```
+
+Prism detects both the namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`) Ollama tags automatically.
 
 ---
 
-## How AI agents use it
+## What it does
 
-| Tool | What it does |
-|---|---|
-| `session_load_context` | Recover prior session's state on boot |
-| `session_save_ledger` | Append immutable session log entry |
-| `session_save_handoff` | Save live state for the next session |
-| `knowledge_search` | Semantic + keyword search over all memories |
-| `query_memory_natural` | Natural-language Q&A over your Mind Palace |
-| `extract_entities` | Pull people / projects / decisions from text |
-| `session_synthesize_edges` | Auto-link related memories into a graph |
+Your AI agent forgets everything between sessions. Prism fixes that — and adds verification, drift detection, and multi-agent coordination on top.
 
-(35+ tools total — full TypeScript signatures in `src/tools/`. Architecture overview in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
+### Mind Palace — persistent memory that survives across sessions
 
-<details>
-<summary>🔄 How Prism handles context compaction and context loss</summary>
+Every conversation feeds a persistent store. The next session loads the right context automatically — no re-explaining.
 
-The LLM context window is treated as ephemeral scratch space. All durable state lives in Prism's persistent store (SQLite / Supabase). Context compaction is a non-event.
+<p align="center">
+  <img src="docs/mind-palace-dashboard.png" alt="Mind Palace Dashboard — project state, neural graph, pending TODOs" width="700" />
+</p>
 
-**Boot protocol** — every session (including post-compaction) begins with a mandatory `session_load_context` call, enforced via `CLAUDE.md`. The agent is fully oriented before writing a single byte of response.
+The dashboard shows your current project state, pending TODOs, intent health, and a neural knowledge graph — all built automatically from your agent sessions.
 
-**Two persistent stores:**
-- `session_save_ledger` — immutable append-only work log (decisions, files changed, summaries)
-- `session_save_handoff` — versioned live-state snapshot (current task, TODOs, open context)
+### Knowledge Graph — semantic + keyword + graph search
 
-**Ledger compaction** (`session_compact_ledger`) — when a project exceeds a threshold (default: 50 entries), Prism summarizes old entries via LLM into a rollup row, soft-archives originals, and links them via `spawned_from` graph edges. Runs on a 12-hour background scheduler.
+Ask "what did I decide about the auth flow last month?" and get an answer with citations, combining vector similarity, full-text search, and graph traversal.
 
-→ Full details: [`docs/COMPACTION.md`](docs/COMPACTION.md)
+<p align="center">
+  <img src="docs/knowledge-graph.jpg" alt="Knowledge Graph — 190 keywords, 47 edges, 12 projects visualized" width="500" />
+</p>
 
-</details>
+### Session History — immutable audit trail
+
+Every session is logged with files changed, decisions made, and TODOs. Search, filter, and replay any past session.
+
+<p align="center">
+  <img src="docs/session-ledger.jpg" alt="Session Ledger — 93 sessions, 847 decisions logged across 12 projects" width="700" />
+</p>
+
+### Inference Metrics — see where your tokens go
+
+Every `prism_infer` call tracks which model handled it (local Ollama vs cloud) and how many tokens were consumed. When you save a session, Prism shows a summary:
+
+```
+📊 Inference Metrics (this session):
+  Total calls: 12 — Local: 10 (83%) | Cloud: 2 (17%)
+  Tokens: 8,420 in + 3,150 out = 11,570 total
+  Avg latency: 1,240ms
+  By model:
+    prism-coder:27b: 6 calls, 7,200 tokens, avg 1,800ms
+    prism-coder:9b: 4 calls, 2,870 tokens, avg 620ms
+    synalux-27b: 2 calls, 1,500 tokens, avg 1,100ms
+```
+
+Local calls use actual Ollama token counts (`prompt_eval_count` / `eval_count` from Ollama); cloud calls use char/4 estimates. Metrics are tracked locally — no portal dependency, no env vars, works offline. Per-call data is also forwarded to the Synalux portal as best-effort analytics (independent of the display).
+
+### Session Drift Detection
+
+Long agent sessions can wander from their original goal. `session_detect_drift` compares current work against the stated goal and returns `on_track / minor_drift / major_drift` so the agent can self-correct.
+
+### Behavioral Verification — catch bad edits before they happen
+
+AI agents apply patterns from checklists without understanding the real-world impact. The `verify_behavior` tool challenges the agent with a scenario it must answer **before** editing — forcing it to think through what the end user will experience.
+
+```
+Agent: "I'll revert this kitchen display change"
+Prism: "⚠️ Scenario: A cook sees a 3-item ticket. One item is voided.
+        What should the cook see after the void?"
+Agent: "The ticket stays visible with the remaining 2 items."
+Prism: "Correct — your revert would hide the ticket entirely."
+```
+
+17 built-in domains (billing, auth, ordering, clinical, HR, and more). Custom domains per workspace on Enterprise. No hooks needed — works in any MCP client.
+
+### Time Travel
+
+Roll back to any previous session state. Compare diffs between versions. Restore a known-good state with one click.
+
+<p align="center">
+  <img src="docs/time-travel-timeline.jpg" alt="Time Travel — version timeline with diff view and one-click restore" width="500" />
+</p>
+
+### Cognitive Routing
+
+Three memory types, automatically sorted: **episodic** (what happened — session logs, decisions), **semantic** (what's true — facts, architecture), and **procedural** (how to do X — workflows, patterns). When you search, the router picks the right store instead of dumping everything.
+
+### Multi-Agent Hivemind
+
+Coordinate multiple AI agents working on the same project. Each agent has its own session, but they share memory through the knowledge graph. The Hivemind Radar shows real-time agent status, tasks, and activity.
+
+<p align="center">
+  <img src="docs/hivemind-radar.jpg" alt="Hivemind Radar — 5 agents with real-time status, tasks, and activity feed" width="500" />
+</p>
+
+### Neural Search
+
+Search across all memories with highlighted results, knowledge graph editing, and memory density metrics.
+
+<p align="center">
+  <img src="docs/v6_cognitive_load_dashboard.jpg" alt="Neural Search with Knowledge Graph Editor and Memory Density" width="500" />
+</p>
+
+---
+
+## Local-first and privacy
+
+The free tier runs entirely on your machine. Paid tiers add cloud sync through the Synalux portal, which is what enables cross-device memory and team sharing.
+
+| | Local tier (free) | Cloud tier (paid) |
+|---|---|---|
+| Memory storage | Local SQLite | Synalux portal (Supabase-backed) |
+| Inference | Local Ollama models | Local models + cloud fallback |
+| API keys required | None | Synalux subscription key |
+| Web search / scrape | Not included | Via Synalux portal (provider keys server-side) |
+| What leaves your machine | Nothing | Memory text + file paths + search queries, sent to the portal over TLS (PHI-redacted before transit) |
+| Works offline | ✅ | Local features yes; sync/cloud no |
+
+**Handling sensitive data.** All cloud writes pass through automatic redaction (SSNs, dates of birth, medical record numbers, phone numbers, emails, and clinical identifiers are stripped before transit). For regulated workloads, run the **local tier** for full air-gap, or use **Enterprise** which includes a HIPAA Business Associate Agreement.
 
 ---
 
 ## Models
 
-Prism Coder inference cascades through fine-tuned models first, with Claude as a quality-gate fallback. Models route through the Synalux router (authentication + subscription required). Cascade: Cloud (OpenRouter) → Ollama local → Claude fallback.
+The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on BFCL function-calling and 100% on an internal 15-problem coding eval at $0 inference cost.
 
-| Model | Ollama tag | Where | Tier | Latency |
-|---|---|---|---|---|
-| **prism-coder:1.7b** | `prism-coder:1b7` (v42) | On-device (Mac/local) · iOS via llama.cpp | Free | ~1.6s |
-| **prism-coder:8b** | `prism-coder:8b` (v36) | On-device iPhone/iPad 8GB+ · local Mac | Free | ~0.8s |
-| **prism-coder:14b** | `prism-coder:14b` (v36) | On-device Mac 24GB+ · iPad Pro · Cloud A100 | Standard+ | ~1.1s |
-| **prism-coder:32b** | `prism-coder:32b` (v7 MoE) | Cloud (OpenRouter) A100 80GB via Synalux | Pro/Enterprise | ~0.8s |
+`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Claude via the Synalux portal.
 
-Models use the Synalux SFT corpus (AAC + Prism MCP tool taxonomy + clinical workflows). **Internal quality gate: ≥ 90% on the Prism 102-case eval before production promotion.**
+| Model | Ollama tag | Size | [BFCL](https://gorilla.cs.berkeley.edu/blogs/12_bfcl_v3_multi_turn.html) Accuracy | Role | Tier |
+|---|---|---|---|---|---|
+| Qwen3.5-4B Q3_K_M | `prism-coder:2b` | 2.3 GB | 99.1% × 3 seeds | iPhone / mobile first gate | Free |
+| Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.4 GB | 100% × 3 seeds | Verifier | Free |
+| Qwen3.5-9B (LoRA) | `prism-coder:9b` | 5.8 GB | 100% × 3 seeds | Default router | Standard+ |
+| Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16 GB | 100% × 3 seeds | Quality tier (DeltaNet, 28.5 tok/s) | Advanced+ |
 
-> **Training note**: Base Qwen3 models are strong tool-routers out of the box. Heavy fine-tuning regresses tool-vs-plain-text decisions; light-touch polish recipes (small corpus, balanced tool/plain-text split) are the published path. Production adapter selection and retrain methodology are managed in the Synalux portal.
+Weights: [huggingface.co/dcostenco](https://huggingface.co/dcostenco) (public GGUF). Latency depends on model size and hardware — see [Benchmarks](#benchmarks) to measure it on your own machine rather than trusting a printed number.
 
-**Per-category breakdown — [Prism 102-case eval](tests/benchmarks/prism-routing-100/README.md) (3-seed mean, v36/v7 system prompt, May 2026):**
+### Cascade
 
-| Model | Overall | Load ctx | Save | Srch mem | Handoff | Compact | Know srch | AAC | Translate | No-tool | Info | Edge | Avg lat | Inv |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **prism-coder:32b** v7 | **100.0%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | **100%** | 0.8s | 0 |
-| **prism-coder:8b** v36 | **100.0%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | **100%** | 0.8s | 0 |
-| **prism-coder:14b** v36 | **100.0%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | **100%** | 1.1s | 0 |
-| **Claude Opus 4.7** | **98.3%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 83% | 3.0s | 0 |
-| **prism-coder:1.7b** v42 | **100.0%** | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | **100%** | 1.6s | 0 |
+```
+query → prism-coder:9b (local router, default)
+      → prism-coder:4b (grounding verifier)
+      → prism-coder:2b (iPhone / mobile, auto-selected by RAM)
+      → prism-coder:27b (complex tasks, on demand)
+      → cloud fallback (paid tiers, for max quality)
+```
 
-> **Methodology**: 102-case pool across 12 categories. Scores are 3-seed mean (seeds 2027/2028/2029, zero variance across all seeds). All fine-tuned models use the Qwen3 nothink template with keyword-trigger routing prompts and `-> respond directly (no tool)` for the no-tool class. Full runner: [`tests/benchmarks/prism-routing-100/benchmark.py`](tests/benchmarks/prism-routing-100/benchmark.py) · Cascade runner: [`tests/benchmarks/cascade-14b-32b-opus/cascade_eval.py`](tests/benchmarks/cascade-14b-32b-opus/cascade_eval.py).
->
-> **These are NOT general-purpose LLM benchmarks.** This eval measures routing precision on 6 specific MCP tools. The prism-coder models are specialists trained on this exact task — they match or exceed Claude on routing while Claude dominates on general reasoning, coding, and open-domain QA. The value is **offline reliability at zero cost**, not replacing cloud AI.
+### Multi-Layer Verification
 
-**iOS deployment:** On-device inference via **llama.cpp Swift SPM**. Auto-selects by device RAM: 14B on iPad Pro 16GB (100% routing), 8B on iPhone/iPad 8GB (100%, OOM fallback to 1.7B at 100%). CoreML not viable — coremltools doesn't support Qwen3 attention ops. Integration: `LLMEngine.swift` → `prismNativeBridge.askAI()` → token stream. WiFi fallback: Mac Ollama (`OLLAMA_HOST=0.0.0.0`).
+Every tool-grounded answer on paid tiers passes through deterministic L3 routing rules and an NLI grounding verifier before reaching the user. Free-tier users get the deterministic gates (L1, L3-Tool, L3-Tier0) without the model-based NLI check.
 
-### Benchmarks — run them yourself
+| Layer | What | Model | Cost |
+|---|---|---|---|
+| **L1** | Crisis/medical safety gate | None (regex) | 0 ms |
+| **L3-Tool** | Tool name remap + false-positive rejection | None (deterministic) | 0 ms |
+| **L3-Tier0** | Integer grounding (set membership) | None (deterministic) | 0 ms |
+| **L3-Tier2** | NLI verifier (claim → ENTAILED/NEUTRAL/CONTRADICTED) | prism-coder:2b | ~200 ms |
+| **L4** | Hallucination judge (opt-out for clinical) | prism-coder:4b | ~500 ms |
 
-All benchmarks are open-source. Reproduce every number in this README:
+Fail-closed on the verified path: when the grounding verifier runs (Standard tier and up), timeout, ambiguity, or missing evidence yields a refusal, not pass-through. Free-tier users get the deterministic L1/L3-Tool gates but not the NLI verifier.
+
+---
+
+## Benchmarks
+
+**Reproduce every number yourself.** All evals are open-source and self-contained:
 
 ```bash
-git clone https://github.com/dcostenco/prism-coder
-cd prism-coder
+git clone https://github.com/dcostenco/prism-coder && cd prism-coder
 pip install anthropic requests
-
-# Per-model solo eval (102 cases, 3 seeds)
-python3 tests/benchmarks/prism-routing-100/benchmark.py --models 14b 8b 32b 1b7 opus
-
-# Cascade eval — 14B → 32B → Opus (Claude Opus as etalon)
-export ANTHROPIC_API_KEY=sk-ant-...
-ollama pull dcostenco/prism-coder:14b dcostenco/prism-coder:32b
-python3 tests/benchmarks/cascade-14b-32b-opus/cascade_eval.py
+python3 tests/benchmarks/prism-routing-100/benchmark.py --models 2b 4b 9b 27b
 ```
 
-**Not a general function-calling benchmark.** This measures routing precision on 6 specific MCP tools. We don't claim to beat Claude on general capabilities. We match or exceed Claude on the ONE task that matters for offline AAC: correct tool routing, every time, under 2 seconds, with zero cloud.
+**Routing eval (115 cases, 12 categories, 3-seed mean).** Routing accuracy includes the deterministic L3 correction layer — the same rules that run in production. On this narrow tool-routing task all fleet models achieve near-perfect accuracy. Be honest with yourself about what that means: the eval is **near-saturated** for this taxonomy — it measures whether the right one of a small set of MCP tools is selected, not general capability. The useful takeaway is **offline routing reliability at zero cost**, not that a 2.3 GB model rivals a frontier model in general.
 
-| Benchmark | Source | What it measures |
+| Model | Routing accuracy | Notes |
 |---|---|---|
-| Per-model BFCL | [`tests/benchmarks/prism-routing-100/`](tests/benchmarks/prism-routing-100/) | Solo accuracy per model, 12 categories |
-| Cascade vs Opus | [`tests/benchmarks/cascade-14b-32b-opus/`](tests/benchmarks/cascade-14b-32b-opus/) | Tier distribution, Opus engagement rate, cascade accuracy |
+| prism-coder:2b (Q3_K_M) | 99.1% × 3 seeds | 1 failure: regex→knowledge_search |
+| prism-coder:4b / 9b / 27b | 100% × 3 seeds | Perfect on all 115 cases |
+| Claude (frontier, same eval) | ~98% | Stronger everywhere outside this narrow task |
 
-### Models on HuggingFace
+**Memory uplift (LoCoMo-Plus, self-published).** A separate long-context dialogue benchmark ([dcostenco/Locomo-Plus](https://github.com/dcostenco/Locomo-Plus)) measures how much structured memory helps a base model retain multi-day context. Results show large gains when a model is paired with Prism memory versus running raw. Note this benchmark is authored, run, and LLM-judged by this project — treat it as a reproducible demonstration, not an independent third-party result, and run it yourself with the commands in that repo.
 
-| Model | HuggingFace | Solo BFCL | Cascade role | Size |
-|---|---|---|---|---|
-| prism-coder:32b | [dcostenco/prism-coder-32b](https://huggingface.co/dcostenco/prism-coder-32b) | **100.0%** routing (v7 MoE) | Tier 2 (catches ~1% 14B misses) | 16 GB |
-| prism-coder:8b | [dcostenco/prism-coder-8b](https://huggingface.co/dcostenco/prism-coder-8b) | **100.0%** routing (v36) | Mobile tier | 4.7 GB |
-| prism-coder:14b | [dcostenco/prism-coder-14b](https://huggingface.co/dcostenco/prism-coder-14b) | **100.0%** routing (v36) | Tier 1 (serves ~99% of traffic) | 8.4 GB |
-| prism-coder:1.7b | [dcostenco/prism-coder-1.7b](https://huggingface.co/dcostenco/prism-coder-1.7b) | **100.0%** routing (v42) | On-device / always-fits fallback | 1.1 GB |
-| prism-ide:14b | [dcostenco/prism-ide](https://huggingface.co/dcostenco/prism-ide) | **22/22** TypeScript eval (v1) | Code generation tier 1 (~1.1s) | 8.4 GB |
-| prism-ide:32b | [dcostenco/prism-ide](https://huggingface.co/dcostenco/prism-ide) | Complex code + multi-file (v3) | Code generation tier 2 (~0.8s MoE) | 16 GB |
+### Code Generation Quality (27B vs Claude Opus)
 
-## Self-hosted / Local AI (Enterprise)
+Three progressively harder Python tasks run through `prism_infer(mode:"code", think:true)` on the local 27B and compared with Claude Opus. Both produce correct, production-quality code. The 27B is slightly more verbose (docstrings, examples); Opus is slightly tighter (`__slots__`, early-exit DFS). On routine coding the 27B at $0 replaces cloud calls entirely.
 
-Run the full Prism model stack on your own hardware — zero cloud, zero latency, full data sovereignty.
+| Task | Local 27B | Claude Opus | Verdict |
+|------|-----------|-------------|---------|
+| Fibonacci with memoization | `@lru_cache`, ValueError on negative, docstring | Nested `_fib` to keep cache private | Both correct, equivalent |
+| LRU Cache (OrderedDict, O(1)) | `Any` keys, isinstance capacity check, `__repr__` | `Hashable` key type (more precise), same ops | Both correct, Opus marginally tighter |
+| Trie with autocomplete | `.lower()` normalization, collect+sort+slice | `__slots__` on TrieNode, early-exit DFS at limit | Both correct, Opus slightly more optimized |
 
-**Requirements:** Mac M2 Pro+ (48GB recommended) or Linux with NVIDIA GPU · [Ollama](https://ollama.com)
+<details>
+<summary>Local 27B output — Trie with autocomplete (hardest task)</summary>
 
-```bash
-# On-device tier — 1.1 GB (any machine, iPhone) — 100% routing
-ollama pull dcostenco/prism-coder:1b7
+```python
+class TrieNode:
+    def __init__(self):
+        self.children: dict[str, 'TrieNode'] = {}
+        self.is_end_of_word: bool = False
 
-# Mobile tier — 4.7 GB (iPhone/iPad 8GB, Mac M1+) — 100% routing
-ollama pull dcostenco/prism-coder:8b
+class Trie:
+    def __init__(self):
+        self.root: TrieNode = TrieNode()
 
-# Standard tier — 8.4 GB (Mac 24GB+, iPad Pro 16GB) — 100% routing
-ollama pull dcostenco/prism-coder:14b
+    def insert(self, word: str) -> None:
+        node = self.root
+        for char in word.lower():
+            if char not in node.children:
+                node.children[char] = TrieNode()
+            node = node.children[char]
+        node.is_end_of_word = True
 
-# Reasoning tier — 16 GB (Mac M2 Ultra+, 30B-A3B MoE) — 100% routing
-ollama pull dcostenco/prism-coder:32b
+    def search(self, word: str) -> bool:
+        node = self._get_node(word.lower())
+        return node is not None and node.is_end_of_word
+
+    def starts_with(self, prefix: str) -> bool:
+        return self._get_node(prefix.lower()) is not None
+
+    def autocomplete(self, prefix: str, limit: int = 5) -> list[str]:
+        node = self._get_node(prefix.lower())
+        if node is None:
+            return []
+        results: list[str] = []
+        self._collect_words(node, prefix.lower(), results)
+        results.sort()
+        return results[:limit]
+
+    def _get_node(self, key: str) -> 'TrieNode | None':
+        node = self.root
+        for char in key:
+            if char not in node.children:
+                return None
+            node = node.children[char]
+        return node
+
+    def _collect_words(self, node: TrieNode, prefix: str, results: list[str]) -> None:
+        if node.is_end_of_word:
+            results.append(prefix)
+        for char, child in sorted(node.children.items()):
+            self._collect_words(child, prefix + char, results)
 ```
 
-Set `LOCAL_LLM_URL=http://localhost:11434` in your portal config. Routing is automatic:
+</details>
 
-**Desktop/server**: 14B → 32B → Claude Opus fallback · **Mobile/offline**: 14B → 8B → 1.7B
+| Metric | Local 27B | Cloud (Opus) |
+|--------|-----------|-------------|
+| Latency (Trie task) | ~30s | ~8s |
+| Cost | $0 | ~$0.05 |
+| Think mode | Enabled (stripped before serving) | N/A |
+| Quality gate | Passed (no escalation needed) | N/A |
 
-iOS/mobile on same WiFi: `OLLAMA_HOST=0.0.0.0 ollama serve` on the Mac, then point `LOCAL_LLM_URL` at the Mac's IP.  
-Routing accuracy (May 2026, v36/v7 system prompt, 3-seed mean): 32B v7 = **100.0%** · 8B v36 = **100.0%** · 14B v36 = **100.0%** · 1.7B v42 = **100.0%**  
-Cascade (14B→32B): **100.0%** · Opus solo: 98.3% · Opus engaged: **0% of requests** → [Full results](tests/benchmarks/cascade-14b-32b-opus/README.md)
+### Cloud Escalation in Practice (`cloud_fallback: true`)
+
+The same three tasks with `cloud_fallback: true` — the quality gate decides whether local output is good enough or needs cloud escalation.
+
+| Task | used_cloud | Quality Gate | Latency | What happened |
+|------|:----------:|-------------|---------|---------------|
+| Fibonacci (simple) | **no** | Passed | 11s | 27B served directly, $0 |
+| LRU Cache (medium) | **no** | Passed | 21s | 27B served directly, $0 |
+| Trie (hard) | **yes** | `loop_detected` | 55s | 27B looped → gate caught it → escalated to cloud 27B |
+
+The quality gate detected repeated sentences (≥3 of the same sentence in ≥6 total) in the 27B's Trie output and escalated automatically. The cloud fallback returned clean code. On a second run of the same prompt, the 27B produced clean output without escalation — the loop is stochastic, not systematic.
+
+**Takeaway:** for ~80–90% of coding tasks, the 27B handles everything locally at $0. The quality gate + cloud escalation exists as a safety net for the remaining cases where the local model loops, truncates, or produces empty output. Paid tiers get automatic escalation; free tier gets the local result with a warning.
+
+---
+
+## Why Prism Coder
+
+### vs AI coding assistants
+
+These tables are the maintainer's assessment as of June 2026. Verify claims that matter to you — products change fast.
+
+| Feature | Prism Coder | GitHub Copilot | Cursor | Windsurf | Amazon Q | Devin |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Local inference (open-weight) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Works fully offline | ✅ (free tier) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Persistent cross-session memory | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session drift detection | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| L3 grounding verifier | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Behavioral verification (pre-edit) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| MCP server (tools + memory) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Web IDE | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| VS Code extension | ✅ | ✅ | — | — | ✅ | ❌ |
+| Flat-rate team pricing | ✅ | ❌ (per-seat) | ❌ (per-seat) | ❌ | ❌ | ❌ |
+| HIPAA BAA available | ✅ (Enterprise) | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+### vs local AI / memory tools
+
+| Feature | Prism Coder | Ollama | LM Studio | Mem0 | Zep |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Local inference cascade | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Cloud fallback | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Persistent cross-session memory | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Knowledge ingestion (MCP + webhook) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Cognitive routing (3-store) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session drift detection | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Native MCP server | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Web IDE + VS Code extension | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+### Pricing — flat-rate, not per-seat
+
+| | **Prism Coder** | GitHub Copilot | Cursor | Amazon Q |
+|---|:---:|:---:|:---:|:---:|
+| **Individual** | **$19/mo** | $10/mo | $20/mo | $19/mo |
+| **Team (5 devs)** | **$49/mo flat** | $95/mo | $200/mo | $95/mo |
+| **Enterprise (25 devs)** | **$99/mo flat** | $195/mo | $1,000/mo | Custom |
 
 ---
 
 ## Plans
 
-| Plan | Cloud model | Daily limit | On-device |
-|---|---|---|---|
-| **Free** | — | unlimited local | prism-coder:1.7b (100%) + 8b (100%) + 14b (100%) |
-| **Standard $19/mo** | Claude Sonnet 4 | 200 req | + cloud fallback |
-| **Pro $49/mo** | prism-coder:32b | 2,000 req | + reasoning tier |
-| **Enterprise $99/mo** | prism-coder:32b priority | unlimited | + HIPAA BAA + custom fine-tuning |
+All on-device models are free to run locally via Ollama on every tier. A subscription gates **cloud** features, higher model ceilings, and increased limits. Local model ceilings are advisory — on-device models run on your Ollama regardless of plan; the ceiling gates cloud inference and `prism_infer` routing.
 
-All on-device models are **free for every tier** — no subscription needed for local inference. Offline translation (1,261 phrases × 20 languages) included in all plans.
+| | **Free** | **Standard** $19/mo | **Advanced** $49/mo | **Enterprise** $99/mo |
+|---|---|---|---|---|
+| Seats | 1 | 1 | up to 5 | up to 25 |
+| Local model ceiling | up to 4b | up to 9b | up to 27b | up to 27b |
+| Daily cloud inference | -- | 200 | 2,000 | 100,000 |
+| Cloud Coder (Web IDE) | -- | 100/day | 1,000/day | 100,000/day |
+| Cloud search | -- | 50/day | 500/day | 100,000/day |
+| Max output tokens | 512 | 1,024 | 2,048 | 4,096 |
+| Cloud fallback | -- | Claude Opus 4.7 | Claude Opus 4.7 | Priority + Opus 4.7 |
+| Grounding verifier (fact-check AI output) | -- | ✅ | ✅ | ✅ |
+| Memory sync (cloud) | -- | ✅ | ✅ | ✅ |
+| Knowledge / session memory | limited | unlimited | unlimited | unlimited |
+| Analytics dashboard | -- | ✅ | ✅ | ✅ |
+| HIPAA BAA | -- | -- | -- | ✅ |
 
-[Subscribe →](https://synalux.ai/pricing)
+14-day free trial on paid plans. 25+ seats: [contact sales](https://synalux.ai/support)
 
 ---
 
-## What you can build with it
+## How agents use it
 
-- **Persistent coding assistant** that remembers your codebase, your decisions, your team's conventions
-- **Research agent** that builds knowledge over time — Auto-Scholar pipeline ingests papers / docs and synthesizes
-- **Clinical scribe** that retains patient context across visits (HIPAA-compliant cloud + local)
-- **Customer support agent** that learns from every ticket
-- **Writing assistant** that knows your voice, your prior drafts, and what you've already published
+Prism exposes 40+ MCP tools. The core memory loop:
+
+| Tool | What it does |
+|---|---|
+| `session_load_context` | Recover the prior session's state on boot |
+| `session_save_ledger` | Append an immutable session log entry |
+| `session_save_handoff` | Save live state for the next session |
+| `knowledge_search` | Semantic + keyword search over all memories |
+| `query_memory_natural` | Natural-language Q&A over the memory store |
+| `session_detect_drift` | Detect when a session has drifted from its goal |
+| `verify_behavior` | Pre-edit scenario challenge — catch bad changes before they happen |
+| `knowledge_ingest` | Teach Prism a codebase or document |
+| `prism_infer` | Local-first inference (route/chat/code modes, thinking, cloud escalation) |
+| `inference_metrics` | Session delegation stats on demand (call count, tokens, local/cloud split) |
+
+### `prism_infer` — local-first inference with cloud escalation
+
+```typescript
+prism_infer({
+    prompt: "Write a binary search in Python",
+    mode: "code",        // "route" | "chat" | "code"
+    think: true,          // enable <think> reasoning (default: true for chat/code)
+    model_ceiling: "27b", // use the quality tier
+})
+// → 27B generates code locally ($0), with thinking for quality
+// → If quality gate fails + paid tier → auto-escalate to Claude
+```
+
+| Mode | Think | Model | Use case |
+|------|-------|-------|----------|
+| `route` | Off (fast) | 9B default | MCP tool routing |
+| `chat` | On | 27B preferred | Conversation, reasoning |
+| `code` | On | 27B preferred | Code generation, debugging |
+
+Full TypeScript signatures live in [`src/tools/`](src/tools/); architecture in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+### `inference_metrics` — see your local-model usage on demand
+
+Call `inference_metrics` anytime mid-session to see how many `prism_infer` calls ran locally vs cloud, with actual token counts:
+
+```
+📊 Inference Metrics — local-model delegation (this session):
+  Total calls: 5 — Local: 5 (100%) | Cloud: 0 (0%)
+  Tokens: 1,240 in + 380 out = 1,620 total
+  Avg latency: 420ms
+  By model:
+    prism-coder:27b: 3 calls, 1,100 tokens, avg 520ms
+    prism-coder:9b: 2 calls, 520 tokens, avg 270ms
+```
+
+The same block also appears automatically in `session_save_ledger` and `session_save_handoff` responses at session end.
+
+**Note:** This tracks `prism_infer` delegation only — not your host model's (Claude's) own token spend. For that, use Claude Code's `/cost` command.
+
+### Local-model delegation (opt-in)
+
+By default, your AI agent (Claude, Cursor, etc.) handles everything itself. You can optionally enable delegation so the agent offloads cheap, verifiable sub-tasks to local Ollama models at $0:
+
+```bash
+# Enable via Prism config
+prism config set delegation_enabled true
+```
+
+When enabled, the agent's task router may delegate qualifying work — bulk classification, field extraction, mechanical formatting — to `prism_infer` instead of using cloud tokens. The agent always verifies the result and redoes it itself if quality is degraded.
+
+**Guardrails:**
+- **Off by default** — enforced in code, not just convention
+- **Never delegates:** code/text that ships to the user, security/safety logic, planning/reasoning, anything where a silent quality drop isn't obvious
+- **Always verifies:** checks `quality_gate_failed` and `used_cloud` before trusting local output
+
+<details>
+<summary>How Prism survives context compaction</summary>
+
+The LLM context window is treated as ephemeral scratch space; durable state lives in the persistent store (SQLite locally, the portal in the cloud). Every session begins with a mandatory `session_load_context` call, so the agent is oriented before it writes a response. When a project exceeds a threshold (default 50 entries), `session_compact_ledger` summarizes old entries into a rollup, soft-archives the originals, and links them in the graph. See [`docs/COMPACTION.md`](docs/COMPACTION.md)
+</details>
+
+---
+
+## CLI
+
+```bash
+prism load <project>      # load session context
+prism save                # save ledger + handoff
+prism search <query>      # search code across repos (exact / regex / symbol / semantic)
+prism review <files...>   # AI code review — security, performance, style
+prism scan <files...>     # security scan — secrets, licenses, Dockerfile
+prism push                # push local SQLite to the cloud backend
+prism register-models     # alias dcostenco/prism-coder:* -> prism-coder:*
+```
+
+### `prism search` — semantic code search
+
+<p align="center">
+  <img src="docs/scm_search_cli.jpg" alt="prism search — semantic code search with relevance scores" width="500" />
+</p>
+
+### `prism review` — AI code review with HIPAA checks
+
+<p align="center">
+  <img src="docs/scm_review_cli.jpg" alt="prism review — AI code review with security and HIPAA findings" width="400" />
+</p>
+
+### `prism scan` — security scanner for secrets, Dockerfiles, licenses
+
+<p align="center">
+  <img src="docs/scm_scan_cli.jpg" alt="prism scan — security scan finding secrets and container issues" width="400" />
+</p>
 
 ---
 
 ## Companions
 
-### 🌐 Website & Docs
+Prism works alongside these tools — use whichever fits your workflow.
 
-**[synalux.ai/prism-mcp](https://synalux.ai/prism-mcp)** — full documentation, dashboard, subscription plans, and model downloads.
+### Web IDE — Prism Coder
 
-### 💻 Web IDE — Synalux Coder
+A browser-based IDE at [synalux.ai/coder](https://synalux.ai/coder). Import any GitHub repo and get:
 
-Use Prism Coder directly in your browser — no install required. Local-first IDE with the prism-coder agent built in. Connects to GitHub repos, Synalux Mail, Drive, and Source for cross-product workflows.
+- **Monaco editor** with multi-tab, split view, syntax highlighting, and VS Code keybindings
+- **In-browser Node.js** via WebContainer (your code runs in the browser sandbox, not on a server)
+- **Integrated terminal** — WebContainer shell in-browser; optional server PTY via WebSocket when connected to a dev server
+- **AI Agent Mode** — describe a task and the agent creates files, runs type-checks, and verifies
+- **Source control** — commit, branch, push/pull, stash, blame, tag management
+- **Live Share** — real-time collaborative editing with session links
+- **Node.js debugger** via Chrome DevTools Protocol
+- **Tasks runner** (VS Code `tasks.json` compatible), **Problems panel** (Monaco diagnostics)
+- **12-language i18n** — full UI localization
 
-**[synalux.ai/coder](https://synalux.ai/coder)** · also reachable at **[synalux.ai/prism-ide](https://synalux.ai/prism-ide)**
+<p align="center">
+  <img src="docs/screenshots/agent-mode.png" alt="Prism Coder IDE — Agent Mode creating a component with auto-fix and type-checking" width="500" />
+</p>
 
-| Feature | Detail |
-|---|---|
-| Agent | prism-coder:7b offline · Claude Sonnet 4 (Standard+) · Claude Opus 4 (Enterprise) |
-| Integrations | GitHub repos, Synalux Mail, Drive, Source — same OAuth, no separate accounts |
-| Compliance | Audit log on every turn · PHI redaction · air-gapped offline mode (HIPAA) |
+<p align="center">
+  <img src="docs/screenshots/collaboration.png" alt="Prism Coder IDE — Live Share with team members and real-time cursor tracking" width="500" />
+</p>
 
-### 🧩 VS Code Extension — Synalux
+Standard+ plans get cloud AI and higher rate limits. Free tier works with local Ollama. Code execution uses the in-browser WebContainer by default; Live Share and the optional PTY terminal connect to external servers when explicitly enabled.
 
-Memory-augmented AI inside VS Code, powered by Prism. 20 multimodal tools, multi-agent orchestration, 12-language support. Works offline (Ollama) or cloud (OpenRouter). HIPAA-compliant healthcare workflows.
+### VS Code Extension — Synalux
 
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/synalux-ai.synalux?label=VS%20Marketplace&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=synalux-ai.synalux)
+Memory-augmented AI inside VS Code with clinical practice management features. Install from the marketplace:
 
 ```bash
-# Install from terminal
 code --install-extension synalux-ai.synalux
 ```
 
-Or open VS Code → Extensions (⇧⌘X) → search **"Synalux"** → Install.
+[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/synalux-ai.synalux?label=VS%20Marketplace&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=synalux-ai.synalux)
 
-### 📦 npm / npx
+AI chat, voice input, SOAP note generator, team collaboration, and video calls — all inside VS Code. Routes through local Ollama by default; cloud on paid tiers.
 
-```bash
-# Run without installing (always latest version)
-npx prism-mcp-server
+<details>
+<summary>Feature details</summary>
 
-# Or install globally
-npm install -g prism-mcp-server
-prism load my-project
-```
+- **AI**: Chat participant (`@synalux`), multi-agent pipeline, voice input, model switching, 10 tones
+- **Clinical**: SOAP note generator, role-based access, document signing, patient board
+- **Collaboration**: Team chat, DMs, video calls, customer board, visual builder, DevContainers
+- **Privacy**: Local Ollama by default. `preferLocal=true` tries local first. Enterprise BAA available.
+</details>
 
-Package: [`prism-mcp-server` on npm](https://www.npmjs.com/package/prism-mcp-server)
+### Prism AAC
 
-### PrismAAC
+Communication app for non-speaking users, powered by the on-device prism-coder fleet for phrase prediction. macOS / iOS / web.
 
-AAC communication app for non-speaking users. Powered by Prism's spreading-activation phrase ranking + on-device 7B model. macOS / iOS / Android via web. → [github.com/dcostenco/prism-aac](https://github.com/dcostenco/prism-aac)
+See [github.com/dcostenco/prism-aac](https://github.com/dcostenco/prism-aac)
 
 ---
 
-## 🆕 Prism as Foundation (v14.0.0)
+## Git Hooks (Portable)
 
-As of v14.0.0, Prism's algorithm exports are a **stable public contract** under SemVer. External systems can port `actrActivation.ts` (ACT-R cognitive decay), `spreadingActivation.ts` (the 0.7 similarity + 0.3 activation hybrid score), `routerExperience.ts` (experience bias with `MIN_SAMPLES=5` cold-start gate), `compactionHandler.ts` (the 25KB prompt-budget cap), and `graphMetrics.ts` (warning ratios) with citations and pin a Prism version.
+Pre-commit and pre-push security hooks that work with any editor, any AI tool, and direct CLI. No Claude Code dependency.
 
-### Reference consumers
+```bash
+# Install in all repos (one-time)
+bash synalux-private/scripts/install-git-hooks.sh
 
-| Consumer | What it uses from Prism |
-|---|---|
-| [Audit hooks framework](https://github.com/dcostenco/prism-coder/blob/main/docs/WOW_FEATURES.md#7-the-recipe-combining-all-of-the-above) | ACT-R decay (`d=0.25` lesson rate), spreading activation hybrid score (0.7/0.3), experience bias (`MIN_SAMPLES=5`, `MAX_BIAS_CAP=0.15`), graph-metrics warning ratios (0.20 / 0.30 / 0.40), compaction's 25KB prompt-budget. **327 tests pin every constant** — CI catches divergence automatically. |
-| [PrismAAC](https://github.com/dcostenco/prism-aac) | Spreading-activation phrase ranking (recency × frequency × per-user history). Caregiver corrections auto-harvest into the personalization corpus via the audit-hooks postflight harvester. The on-device 7B model + this algorithm stack is what makes PrismAAC defensible. |
-| Synalux portal | Tier-aware model routing using experience bias on prior outcomes per fingerprint. HIPAA-compliant clinical scribe with on-device-first privacy guarantees. |
+# Or install manually in a single repo
+cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+```
+
+| Hook | What it checks | Mode |
+|------|----------------|------|
+| `pre-commit` | Dead code, orphan services, scaffold code, missing auth | `PRECOMMIT_MODE=advisory\|block\|off` |
+| `pre-push` | 19-rule security audit (SSRF, SQL injection, secrets, IDOR, etc.) | `PREPUSH_MODE=advisory\|block\|off` |
+
+Default mode is `advisory` (warn but allow). Set `*_MODE=block` for hard enforcement. Hooks look for full audit scripts in the repo first (`hooks/lib/`), then `~/.claude/hooks/` fallback, then minimal inline checks.
+
+---
+
+## Self-hosting (Enterprise)
+
+Run the full model stack on your own hardware — no cloud, full data sovereignty.
+
+**Requirements:** Mac M2 Pro+ (48 GB recommended) or Linux + NVIDIA GPU, plus [Ollama](https://ollama.com).
+
+```bash
+ollama pull dcostenco/prism-coder:9b       # default router
+export LOCAL_LLM_URL=http://localhost:11434
+```
+
+Routing is automatic: `9b → 4b → cloud fallback` on desktop/server, `2b → cloud fallback` on mobile/iPhone. For iOS or another machine on the same network, run `OLLAMA_HOST=0.0.0.0 ollama serve` and point `LOCAL_LLM_URL` at the host's IP.
+
+---
+
+## Configuration reference
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PRISM_STORAGE` | `local` / `synalux` / `supabase` / `auto` | `auto` |
+| `PRISM_SYNALUX_API_KEY` | Paid-tier portal key (`synalux_sk_...`) | -- (local if unset) |
+| `LOCAL_LLM_URL` | Ollama endpoint | `http://localhost:11434` |
+| `PRISM_FORCE_LOCAL` | Force local SQLite regardless of credentials | `false` |
+| `TELEMETRY_WRITE_TOKEN` | Portal analytics token (optional — metrics display works without it) | -- |
+
+With no variables set, Prism runs fully local. Set `PRISM_SYNALUX_API_KEY` (and leave `PRISM_STORAGE=auto`) to use the cloud backend.
+
+---
 
 ## Testing
 
 ```bash
-npm test                           # 1,815 test cases across 71 files (vitest)
-npm test -- --coverage             # coverage report
-python3 tests/benchmarks/prism-routing-100/benchmark.py --models 1b7 14b 32b
+npm test                 # full suite (vitest) — 95 files, 2841 tests
+npm test -- --coverage   # coverage report
 ```
 
-**Pinned in CI** — 327 tests enforce every constant: ACT-R decay `d=0.25`, spreading-activation hybrid score `0.7/0.3`, experience bias `MIN_SAMPLES=5` / `MAX_BIAS_CAP=0.15`, graph-metrics warning ratios `0.20 / 0.30 / 0.40`, compaction's 25KB prompt-budget. CI catches divergence automatically.
-
-**Coverage areas**:
-- HRR (Holographic Reduced Representations) edge cases + performance
-- Encrypted sync corruption recovery
-- BCBA skill integration
-- Deep storage tier
-- Dashboard rendering
-- Routing benchmarks (102-case Prism eval) — see `tests/benchmarks/prism-routing-100/`
-
-## Migration
-
-### Local SQLite → Synalux portal
-
-If you've been running Prism on the free tier and want to move historical session data into the paid-tier portal, use the migration script:
-
-```bash
-# dry run first — prints what would be migrated, hits no network
-node scripts/migrate-local-to-portal.mjs --dry-run
-
-# real run — pushes ledger + handoff entries through POST /api/v1/prism/memory
-PRISM_SYNALUX_API_KEY=synalux_sk_... \
-  node scripts/migrate-local-to-portal.mjs
-
-# scope to one project
-node scripts/migrate-local-to-portal.mjs --project=my-project
-
-# include scholar entries (excluded by default — usually large + low-value)
-node scripts/migrate-local-to-portal.mjs --include-scholar
-```
-
-**What it does**: reads `~/.prism-mcp/data.db` via `@libsql/client` (already a runtime dep — no extra install), exchanges the refresh token for a JWT (cached + auto-refreshed before expiry), and POSTs each ledger entry and handoff to the portal. Failures are logged with the source row id; successes are counted at the end.
-
-**Credentials**: `PRISM_SYNALUX_API_KEY` from env. If unset, the script also checks `~/prism/.env` for `PRISM_SYNALUX_API_KEY=...` as a convenience for dev workflows.
-
-**Idempotency**: handoffs are written with the portal's CRDT merge (last-write-wins per project+role); ledger entries are append-only and de-duped server-side by `(project, conversation_id, summary)`. Re-running on the same DB is safe.
-
-**One-shot only**: this script is a migration tool, not a sync daemon. Once you've moved, set `PRISM_STORAGE=synalux` (or leave it on `auto` and let the resolver pick synalux when credentials are present) and the MCP server writes directly to the portal going forward.
-
-## Production Infrastructure
-
-### Architecture
-
-```
-  CLIENTS
-  ┌─────────────────────┐  ┌─────────────────────────────┐
-  │  prism-aac (iOS/web)│  │  Claude Code · Cursor · IDE │
-  │  Vercel             │  │  MCP config → Railway URL   │
-  └──────────┬──────────┘  └─────────────┬───────────────┘
-             │ inference                  │ memory
-             ▼                            ▼
-  ┌──────────────────────┐  ┌─────────────────────────────┐
-  │  SYNALUX ROUTER      │  │  prism-mcp SERVER           │
-  │  Vercel              │  │                             │
-  │  • JWT auth          │  │  Primary   — Railway        │
-  │  • tier enforcement  │  │  Standby   — Fly.io         │
-  │  • complexity route  │  │  Fallback  — Supabase REST  │
-  │  • proxy to cloud    │  │  auto-failover chain        │
-  └──────────┬───────────┘  └─────────────┬───────────────┘
-             │                            │
-             ▼                            ▼
-  ┌──────────────────────────────┐  ┌─────────────────────────────┐
-  │  OPENROUTER / LOCAL          │  │  SUPABASE                   │
-  │                              │  │  session ledgers            │
-  │  Cloud: Claude Sonnet 4      │  │  knowledge graph            │
-  │  Routing: prism-coder        │  │  handoffs & todos           │
-  │   :32b(100%) :14b(100%)      │  │                             │
-  │   :8b(100%)  :1b7(100%)      │  │  source of truth            │
-  │  Code:    prism-ide          │  │                             │
-  │   :14b · :32b                │  │                             │
-  └──────────────────────────────┘  └─────────────────────────────┘
-```
-
-### Service Routing
-
-**LLM Backends**
-
-| Surface | Primary | Fallback | Local |
-|---|---|---|---|
-| AI Chat (free) | Gemini 2.5 Flash (direct API) | Claude Haiku 3.5 | prism-coder:14b via Ollama |
-| AI Chat (paid) | Claude Sonnet 4 (OpenRouter) | Claude Haiku 3.5 | prism-coder:14b via Ollama |
-| Prism Coder (tool-calling) | Claude Haiku 3.5 (OpenRouter) | — | prism-coder:14b via Ollama |
-| Prism AAC | Local prism-coder:14b | Gemini 2.5 Flash / Claude | prism-coder:8b / :1b7 |
-
-**Web Search**
-
-| Surface | Primary | Fallback |
-|---|---|---|
-| AI Chat `@search` | Firecrawl | — |
-| Prism MCP agents (cloud) | Firecrawl | — |
-| Prism MCP server (local) | Firecrawl (via MCP tools) | — |
-| Clinical research | PubMed + ERIC + Semantic Scholar | DuckDuckGo |
-
-**TTS (Text-to-Speech)**
-
-| Tier | Engine | Offline |
-|---|---|---|
-| 1 | Inworld TTS-2 (cloud) | — |
-| 1.5 | Kokoro-82M neural (WASM) | en/es/fr/pt/ja/zh |
-| 2 | OS Web Speech API | all |
-| 3 | WASM espeak-ng | all |
-
-**Other Services**
-
-| Service | Provider | Purpose |
-|---|---|---|
-| Payments | Stripe | Subscriptions, checkout |
-| Email | Resend | Transactional (invites, shares) |
-| Video | LiveKit | Telehealth, case conferences |
-| SMS | Twilio | Emergency alerts, caregiver notifications |
-| Translation | Offline dictionary (1,261 × 20 langs) | AAC, Watch |
-
-## Synalux Inference Router
-
-All Prism AAC model inference is protected behind Synalux as a mandatory router. Models are **never accessible directly** — all traffic goes through Synalux for auth, billing, and rate limiting.
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  CLIENT LAYER                                            │
-│  prism-aac (iOS/web)         │   Synalux Portal          │
-└──────────────┬───────────────────────────────────────────┘
-               │ POST /api/v1/prism-aac/inference
-               │ Authorization: Bearer <user-JWT>
-               ▼
-┌──────────────────────────────────────────────────────────┐
-│  SYNALUX ROUTER                                          │
-│  1. Verify JWT (no anonymous access)                     │
-│  2. Check subscription tier                              │
-│  3. Enforce rate limit (per-tier daily cap)               │
-│  4. Route to model tier by complexity                    │
-│  5. Proxy → OpenRouter / Gemini (key never exposed)      │
-│  6. Log → aac_inference_log (audit trail)                │
-└──────────┬───────────────────────────────┬───────────────┘
-           │                               │
-           ▼                               ▼
-  ┌────────────────────┐      ┌──────────────────────┐
-  │  LOCAL (Ollama)    │      │  CLOUD (OpenRouter)  │
-  │  prism-coder:14b   │      │  Claude Sonnet 4     │
-  │  prism-coder:8b    │      │  Claude Haiku 3.5    │
-  │  prism-coder:1b7   │      │  Gemini 2.5 Flash    │
-  │  free, offline     │      │  paid tiers          │
-  └────────────────────┘      └──────────────────────┘
-
-On-device (free, offline):
-  prism-coder:1b7 GGUF Q4_K_M (1.1 GB) → any Apple device
-  prism-coder:8b  GGUF Q4_K_M (4.7 GB) → iPhone/iPad 8 GB+
-  prism-coder:14b GGUF Q4_K_M (8.4 GB) → Mac/iPad Pro 16 GB+
-
-HuggingFace: dcostenco/prism-coder-{14b,8b,32b,1.7b} (public GGUF weights)
-```
-
-| Plan | Cloud model | Daily limit | On-device |
-|---|---|---|---|
-| **Free** | — | unlimited local | prism-coder:1.7b (100%) + 8b (100%) + 14b (100%) |
-| **Standard $19/mo** | Claude Sonnet 4 | 200 req | + cloud fallback |
-| **Pro $49/mo** | prism-coder:32b | 2,000 req | + reasoning tier |
-| **Enterprise $99/mo** | prism-coder:32b priority | unlimited | + HIPAA BAA + custom fine-tuning |
-
-All on-device models are **free for every tier** — no subscription needed for local inference. Offline translation (1,261 phrases × 20 languages) included in all plans.
-
-[Subscribe →](https://synalux.ai/pricing)
-
-See [`docs/WOW_FEATURES.md`](docs/WOW_FEATURES.md) for the algorithm catalogue. Release notes in [`docs/releases/v14.0.0-prism-as-foundation.md`](docs/releases/v14.0.0-prism-as-foundation.md).
+Coverage spans HRR retrieval, knowledge ingestion, the inference cascade and grounding verifier, inference metrics, telemetry allowlist, delegation gate, compaction, the model picker, and storage round-trips.
 
 ---
 
-<details>
-<summary>📚 Architecture, cognitive systems, and full feature catalog</summary>
+## Migration: local to cloud
 
-**Detailed docs in this repo:**
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture, memory routing, HRR
-- [`docs/COMPACTION.md`](docs/COMPACTION.md) — how Prism handles LLM context compaction and ledger compaction
-- [`docs/SETUP_GEMINI.md`](docs/SETUP_GEMINI.md) — Gemini configuration
-- [`docs/self-improving-agent.md`](docs/self-improving-agent.md) — adversarial eval / anti-sycophancy
-- [`docs/rfcs/`](docs/rfcs/) — design RFCs
-- [`docs/releases/`](docs/releases/) — per-version release notes
-- [`CHANGELOG.md`](CHANGELOG.md) — version history (v12.5 Unified Billing, v11.6 Hivemind, v11.5.1 Auto-Scholar, etc.)
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor guide
+To move free-tier history into the paid portal:
 
-**The original 1933-line README is preserved in git history.** To browse the prior version (full feature catalog, Cognitive Architecture v7.8, Autonomous Cognitive OS v9.0, HRR Zero-Search, Adversarial Evaluation walkthroughs, Universal Import patterns, competitive analysis vs LangMem/MemGPT/Letta/Zep, v12.5 Unified Billing details, v11.6 Hivemind, v11.5.1 Auto-Scholar): `git show HEAD~1:README.md`.
+```bash
+node scripts/migrate-local-to-portal.mjs --dry-run        # preview, no network
+PRISM_SYNALUX_API_KEY=synalux_sk_... \
+  node scripts/migrate-local-to-portal.mjs                # push ledger + handoffs
+```
 
-</details>
+It reads `~/.prism-mcp/data.db` and POSTs entries to the portal. Ledger entries are append-only and de-duped server-side; handoffs use last-write-wins per project. Re-running on the same DB is safe. This is a one-shot migration, not a sync daemon — after it, set `PRISM_STORAGE=synalux` (or leave it on `auto`).
 
 ---
 
 ## License
 
-[AGPL-3.0](LICENSE) — Open source. Same license as Prism AAC. Commercial use via Synalux subscription for hosted/managed deployment.
+| Product | License |
+|---|---|
+| **prism-mcp-server** (this repo) | [AGPL-3.0](LICENSE) |
+| **VS Code extension** (synalux-ai.synalux) | BSL-1.1 |
+| **Web IDE** (synalux.ai/coder) | Synalux Terms of Service |
+| **Prism AAC** | AGPL-3.0 |
+
+The AGPL-3.0 license covers the MCP server and its source code. The VS Code extension and Web IDE are separate products with their own licenses. Commercial hosted/managed deployment of the MCP server is available via the Synalux subscription.

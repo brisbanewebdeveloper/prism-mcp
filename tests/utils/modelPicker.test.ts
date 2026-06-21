@@ -4,25 +4,29 @@ import { pickLocalModel, MODEL_TIERS, fmtGb, resolveOllamaName } from "../../src
 const GB = 1024 ** 3;
 
 describe("pickLocalModel", () => {
-    it("picks 32B when ≥24 GB free", () => {
+    it("default ceiling is 9b — picks 9B even with 30GB free", () => {
         const choice = pickLocalModel(30 * GB);
-        expect(choice?.tag).toBe("prism-coder:32b");
+        expect(choice?.tag).toBe("prism-coder:9b");
     });
 
-    it("picks 14B when 12–23 GB free", () => {
-        expect(pickLocalModel(12 * GB)?.tag).toBe("prism-coder:14b");
-        expect(pickLocalModel(20 * GB)?.tag).toBe("prism-coder:14b");
-        expect(pickLocalModel(23 * GB)?.tag).toBe("prism-coder:14b");
+    it("picks 27B only with explicit ceiling='27b'", () => {
+        expect(pickLocalModel(30 * GB, "27b")?.tag).toBe("prism-coder:27b");
     });
 
-    it("picks 8B when 7–11 GB free", () => {
-        expect(pickLocalModel(7 * GB)?.tag).toBe("prism-coder:8b");
-        expect(pickLocalModel(11 * GB)?.tag).toBe("prism-coder:8b");
+    it("picks 9B when 8–23 GB free", () => {
+        expect(pickLocalModel(12 * GB)?.tag).toBe("prism-coder:9b");
+        expect(pickLocalModel(20 * GB)?.tag).toBe("prism-coder:9b");
     });
 
-    it("picks 1.7B when 3–6 GB free", () => {
-        expect(pickLocalModel(3 * GB)?.tag).toBe("prism-coder:1b7");
-        expect(pickLocalModel(6 * GB)?.tag).toBe("prism-coder:1b7");
+    it("picks 4B when 5–7 GB free (9B needs 8GB)", () => {
+        expect(pickLocalModel(5 * GB)?.tag).toBe("prism-coder:4b");
+        expect(pickLocalModel(6 * GB)?.tag).toBe("prism-coder:4b");
+        expect(pickLocalModel(7 * GB)?.tag).toBe("prism-coder:4b");
+    });
+
+    it("picks 2B (Qwen3.5-4B Q3_K_M) when 3–4.9 GB free", () => {
+        expect(pickLocalModel(3 * GB)?.tag).toBe("prism-coder:2b");
+        expect(pickLocalModel(4 * GB)?.tag).toBe("prism-coder:2b");
     });
 
     it("returns null below 3 GB free", () => {
@@ -32,24 +36,24 @@ describe("pickLocalModel", () => {
         expect(pickLocalModel(Number.NaN)).toBeNull();
     });
 
-    it("honors ceiling — '14b' forbids 32B even on a 64 GB box", () => {
-        const choice = pickLocalModel(64 * GB, "14b");
-        expect(choice?.tag).toBe("prism-coder:14b");
+    it("honors ceiling — '9b' forbids 27B even on a 64 GB box", () => {
+        const choice = pickLocalModel(64 * GB, "9b");
+        expect(choice?.tag).toBe("prism-coder:9b");
     });
 
-    it("ceiling '8b' on 30 GB still picks 8B", () => {
-        expect(pickLocalModel(30 * GB, "8b")?.tag).toBe("prism-coder:8b");
+    it("ceiling '4b' on 30 GB picks 4B", () => {
+        expect(pickLocalModel(30 * GB, "4b")?.tag).toBe("prism-coder:4b");
     });
 
-    it("ceiling '1b7' on 64 GB picks 1.7B", () => {
-        expect(pickLocalModel(64 * GB, "1b7")?.tag).toBe("prism-coder:1b7");
+    it("ceiling '2b' on 64 GB picks 2B", () => {
+        expect(pickLocalModel(64 * GB, "2b")?.tag).toBe("prism-coder:2b");
     });
 
     it("respects `available` whitelist — skips tiers not pulled", () => {
-        // 30 GB free would normally pick 32B, but if only 14B is installed:
-        const available = new Set(["prism-coder:14b", "prism-coder:8b"]);
+        // 30 GB free would normally pick 27B, but if only 9B is installed:
+        const available = new Set(["prism-coder:9b", "prism-coder:4b"]);
         const choice = pickLocalModel(30 * GB, undefined, available);
-        expect(choice?.tag).toBe("prism-coder:14b");
+        expect(choice?.tag).toBe("prism-coder:9b");
     });
 
     it("returns null when nothing in `available` matches", () => {
@@ -57,25 +61,26 @@ describe("pickLocalModel", () => {
         expect(pickLocalModel(30 * GB, undefined, available)).toBeNull();
     });
 
-    it("accepts namespaced HuggingFace-style tags (dcostenco/prism-coder:32b)", () => {
-        // README documents `ollama pull dcostenco/prism-coder:32b`, so /api/tags
-        // returns the namespaced form. The picker must accept it.
+    it("accepts namespaced HuggingFace-style tags (dcostenco/prism-coder:27b)", () => {
         const available = new Set([
-            "dcostenco/prism-coder:32b",
-            "dcostenco/prism-coder:14b",
+            "dcostenco/prism-coder:27b",
+            "dcostenco/prism-coder:9b",
         ]);
-        expect(pickLocalModel(30 * GB, undefined, available)?.tag).toBe("prism-coder:32b");
-        expect(pickLocalModel(15 * GB, undefined, available)?.tag).toBe("prism-coder:14b");
+        // Default ceiling=9b, so 30GB picks 9b not 27b
+        expect(pickLocalModel(30 * GB, undefined, available)?.tag).toBe("prism-coder:9b");
+        // Explicit ceiling=27b allows 27b
+        expect(pickLocalModel(30 * GB, "27b", available)?.tag).toBe("prism-coder:27b");
+        expect(pickLocalModel(15 * GB, undefined, available)?.tag).toBe("prism-coder:9b");
     });
 
     it("mixes bare and namespaced tags in the same `available` set", () => {
         const available = new Set([
-            "prism-coder:14b",                  // bare
-            "dcostenco/prism-coder:8b",         // namespaced
+            "prism-coder:9b",                  // bare
+            "prism-coder:4b",                       // stock model
             "someuser/llama3:8b",               // unrelated namespaced
         ]);
-        expect(pickLocalModel(30 * GB, undefined, available)?.tag).toBe("prism-coder:14b");
-        expect(pickLocalModel(10 * GB, undefined, available)?.tag).toBe("prism-coder:8b");
+        expect(pickLocalModel(30 * GB, undefined, available)?.tag).toBe("prism-coder:9b");
+        expect(pickLocalModel(5 * GB, undefined, available)?.tag).toBe("prism-coder:4b");
     });
 
     it("MODEL_TIERS is ordered largest → smallest", () => {
@@ -87,23 +92,23 @@ describe("pickLocalModel", () => {
 
 describe("resolveOllamaName", () => {
     it("returns the bare tag when bare is installed", () => {
-        const installed = new Set(["prism-coder:32b", "prism-coder:14b"]);
-        expect(resolveOllamaName("prism-coder:32b", installed)).toBe("prism-coder:32b");
+        const installed = new Set(["prism-coder:27b", "prism-coder:9b"]);
+        expect(resolveOllamaName("prism-coder:27b", installed)).toBe("prism-coder:27b");
     });
 
     it("returns the namespaced tag when only namespaced is installed", () => {
-        const installed = new Set(["dcostenco/prism-coder:32b"]);
-        expect(resolveOllamaName("prism-coder:32b", installed)).toBe("dcostenco/prism-coder:32b");
+        const installed = new Set(["dcostenco/prism-coder:27b"]);
+        expect(resolveOllamaName("prism-coder:27b", installed)).toBe("dcostenco/prism-coder:27b");
     });
 
     it("prefers bare over namespaced when both are present", () => {
-        const installed = new Set(["prism-coder:32b", "dcostenco/prism-coder:32b"]);
-        expect(resolveOllamaName("prism-coder:32b", installed)).toBe("prism-coder:32b");
+        const installed = new Set(["prism-coder:27b", "dcostenco/prism-coder:27b"]);
+        expect(resolveOllamaName("prism-coder:27b", installed)).toBe("prism-coder:27b");
     });
 
     it("returns the input tag when nothing matches (let Ollama 404)", () => {
         const installed = new Set(["llama3:8b"]);
-        expect(resolveOllamaName("prism-coder:32b", installed)).toBe("prism-coder:32b");
+        expect(resolveOllamaName("prism-coder:27b", installed)).toBe("prism-coder:27b");
     });
 });
 

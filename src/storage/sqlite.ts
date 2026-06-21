@@ -1373,6 +1373,33 @@ export class SqliteStorage implements StorageBackend {
     };
   }
 
+  async patchHandoff(project: string, userId: string, data: Record<string, unknown>): Promise<void> {
+    const ALLOWED_COLUMNS = new Set([
+      'embedding', 'embedding_compressed', 'embedding_format', 'embedding_turbo_radius',
+    ]);
+    const sets: string[] = [];
+    const args: InValue[] = [];
+
+    for (const [key, value] of Object.entries(data)) {
+      if (!ALLOWED_COLUMNS.has(key)) {
+        throw new Error(`[SqliteStorage] patchHandoff: rejected unknown column "${key}".`);
+      }
+      if (key === "embedding") {
+        sets.push(`${key} = vector(?)`);
+        args.push((typeof value === "string" ? value : JSON.stringify(value)) as InValue);
+      } else {
+        sets.push(`${key} = ?`);
+        args.push((typeof value === "object" && value !== null ? JSON.stringify(value) : value) as InValue);
+      }
+    }
+    if (sets.length === 0) return;
+    args.push(project, userId);
+    await this.db.execute({
+      sql: `UPDATE session_handoffs SET ${sets.join(", ")} WHERE project = ? AND user_id = ?`,
+      args,
+    });
+  }
+
   async deleteHandoff(project: string, userId: string): Promise<void> {
     await this.db.execute({
       sql: "DELETE FROM session_handoffs WHERE project = ? AND user_id = ?",
@@ -1445,7 +1472,7 @@ export class SqliteStorage implements StorageBackend {
             FROM session_ledger
             WHERE project = ? AND user_id = ? AND role = ?
               AND event_type = 'correction'
-              AND importance >= 3
+              AND importance >= 0
               AND deleted_at IS NULL
               AND archived_at IS NULL
             ORDER BY importance DESC
@@ -2745,10 +2772,12 @@ export class SqliteStorage implements StorageBackend {
             SET importance = MAX(0, importance - 1)
             WHERE project = ? AND user_id = ?
               AND importance > 0
+              AND importance < 10
               AND event_type != 'session'
               AND created_at < datetime('now', '-' || ? || ' days')
+              AND (last_accessed_at IS NULL OR last_accessed_at < datetime('now', '-' || ? || ' days'))
               AND deleted_at IS NULL`,
-      args: [project, userId, decayDays],
+      args: [project, userId, decayDays, decayDays],
     });
     const decayed = result.rowsAffected || 0;
     if (decayed > 0) {

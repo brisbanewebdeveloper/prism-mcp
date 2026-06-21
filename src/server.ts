@@ -92,6 +92,7 @@ import { getSyncBus } from "./sync/factory.js";
 import type { SyncEvent } from "./sync/index.js";
 import { startDashboardServer } from "./dashboard/server.js";
 import { acquireLock, registerShutdownHandlers } from "./lifecycle.js";
+import { verifyBehaviorHandler } from "./tools/behavioralVerifierHandler.js";
 
 // ─── v2.3.6 FIX: Use Storage Abstraction for Prompts/Resources ───
 // CRITICAL FIX: Previously imported supabaseRpc/supabaseGet directly,
@@ -104,6 +105,8 @@ import { getSettingSync, initConfigStorage } from "./storage/configStorage.js";
 import { sanitizeMcpOutput } from "./utils/sanitizer.js";
 import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
+import { ddInfo, ddError as ddLogError } from "./utils/ddLogger.js";
+import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
 
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
 
@@ -160,6 +163,12 @@ import {
   SESSION_COGNITIVE_ROUTE_TOOL,
   // v7.1: Task Router
   SESSION_TASK_ROUTE_TOOL,
+  // Session Drift Detection
+  SESSION_DETECT_DRIFT_TOOL,
+  isSessionDetectDriftArgs,
+  // Behavioral Verifier
+  VERIFY_BEHAVIOR_TOOL,
+  isVerifyBehaviorArgs,
   // v12: Developer Onboarding & Enterprise Observability
   ONBOARDING_WIZARD_TOOL,
   EXTRACT_ENTITIES_TOOL,
@@ -167,6 +176,10 @@ import {
   BACKUP_DATABASE_TOOL,
   CONFIGURE_NOTIFICATIONS_TOOL,
   QUERY_MEMORY_NATURAL_TOOL,
+  // v15.5: Knowledge Ingestion
+  KNOWLEDGE_INGEST_TOOL,
+  // v19.2: Inference Metrics
+  INFERENCE_METRICS_TOOL,
 
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -214,6 +227,8 @@ import {
   agentListTeamHandler,
   // v7.1: Task Router
   sessionTaskRouteHandler,
+  // Session Drift Detection
+  sessionDetectDriftHandler,
   // v7.3: Dark Factory Pipeline tools
   SESSION_START_PIPELINE_TOOL,
   SESSION_CHECK_PIPELINE_STATUS_TOOL,
@@ -228,6 +243,8 @@ import {
   backupDatabaseHandler,
   configureNotificationsHandler,
   queryMemoryNaturalHandler,
+  // v15.5: Knowledge Ingestion handler
+  knowledgeIngestHandler,
   // v15.4: prism_infer — local-first inference (RAM-gated cascade)
   PRISM_INFER_TOOL,
   prismInferHandler,
@@ -363,6 +380,8 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
     SESSION_BACKFILL_LINKS_TOOL,   // session_backfill_links — retroactive graph edge creation
     SESSION_SYNTHESIZE_EDGES_TOOL, // session_synthesize_edges — inferred semantic graph enrichment
     SESSION_COGNITIVE_ROUTE_TOOL,  // session_cognitive_route — HDC policy-gated concept routing (v6.5)
+    SESSION_DETECT_DRIFT_TOOL,     // session_detect_drift — semantic goal drift detection (synalux)
+    VERIFY_BEHAVIOR_TOOL,          // verify_behavior — behavioral verification via Synalux portal
     // ─── v6.1: Storage Hygiene tool ───
     MAINTENANCE_VACUUM_TOOL,       // maintenance_vacuum — reclaim SQLite disk space post-purge
     // ─── v12.1: Developer Onboarding & Framework Bridge ───
@@ -373,6 +392,10 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
     BACKUP_DATABASE_TOOL,          // backup_database — scheduled SQLite backup/restore
     CONFIGURE_NOTIFICATIONS_TOOL,  // configure_notifications — webhook/Slack/email alerts
     QUERY_MEMORY_NATURAL_TOOL,     // query_memory_natural — NL → structured memory search
+    // ─── v15.5: Knowledge Ingestion ───
+    KNOWLEDGE_INGEST_TOOL,         // knowledge_ingest — chunk code, gen Q&A, store in graph
+    // ─── v19.2: Inference Metrics ───
+    INFERENCE_METRICS_TOOL,          // inference_metrics — read-only session delegation stats
   ];
 }
 
@@ -1158,6 +1181,7 @@ export function createServer() {
     // through await chains — including fire-and-forget workers launched
     // within the handler body (e.g. imageCaptioner, embeddings backfill).
     return otelContext.with(trace.setSpan(otelContext.active(), rootSpan), async () => {
+      const _ddStart = Date.now();
       try {
         if (!args) {
           throw new Error("No arguments provided");
@@ -1351,6 +1375,16 @@ export function createServer() {
             if (getSettingSync("task_router_enabled", String(PRISM_TASK_ROUTER_ENABLED_ENV)) !== "true") throw new Error("Task router not enabled. Enable it in the dashboard or set PRISM_TASK_ROUTER_ENABLED=true.");
             result = await sessionTaskRouteHandler(args); break;
 
+          // ─── Session Drift Detection ───
+
+          case "session_detect_drift":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            result = await sessionDetectDriftHandler(args); break;
+
+          case "verify_behavior":
+            if (!isVerifyBehaviorArgs(args)) throw new Error("file_path and change_summary required.");
+            result = await verifyBehaviorHandler(args); break;
+
           // ─── v7.3: Dark Factory Pipeline Tools ───
 
           case "session_start_pipeline":
@@ -1396,6 +1430,13 @@ export function createServer() {
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
             result = await queryMemoryNaturalHandler(args); break;
 
+          case "knowledge_ingest":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
+            result = await knowledgeIngestHandler(args); break;
+
+          case "inference_metrics":
+            result = await inferenceMetricsHandler(); break;
+
           default:
             result = {
               content: [{ type: "text", text: `Unknown tool: ${name}` }],
@@ -1404,6 +1445,7 @@ export function createServer() {
         }
 
         rootSpan.setStatus({ code: SpanStatusCode.OK });
+        ddInfo("mcp.tool.success", { tool: name, project: (args as Record<string, unknown>)?.project, durationMs: Date.now() - _ddStart });
 
         // ═══ v5.3: Hivemind Watchdog Alert Injection (Telepathy) ═══
         // CRITICAL: Append alerts DIRECTLY to tool response content
@@ -1450,6 +1492,7 @@ export function createServer() {
 
       } catch (error) {
         console.error(`Error in tool handler: ${error instanceof Error ? error.message : String(error)}`);
+        ddLogError("mcp.tool.error", error instanceof Error ? error : undefined, { tool: name, project: (args as Record<string, unknown>)?.project, durationMs: Date.now() - _ddStart });
         rootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
         rootSpan.setStatus({
           code: SpanStatusCode.ERROR,

@@ -110,6 +110,19 @@ export {
   queryMemoryNaturalHandler,
 } from "./v12Handlers.js";
 
+// ── Session Drift Detection ──
+export { SESSION_DETECT_DRIFT_TOOL, isSessionDetectDriftArgs } from "./sessionMemoryDefinitions.js";
+export { sessionDetectDriftHandler } from "./sessionDriftHandler.js";
+export { VERIFY_BEHAVIOR_TOOL, isVerifyBehaviorArgs } from "./sessionMemoryDefinitions.js";
+export { verifyBehaviorHandler } from "./behavioralVerifierHandler.js";
+
+// ── Knowledge Ingestion (v15.5 — Open Interface) ──
+// Chunks source code, generates Q&A via Claude Haiku, stores in knowledge graph.
+// Three entry points: MCP tool, REST API, GitHub webhook.
+export { KNOWLEDGE_INGEST_TOOL } from "./ingestDefinitions.js";
+export { INFERENCE_METRICS_TOOL } from "./sessionMemoryDefinitions.js";
+export { knowledgeIngestHandler, handleGitHubWebhook, ingestKnowledge, isIngestArgs } from "./ingestHandler.js";
+
 // ── v15.4: prism_infer — local-first inference (RAM-gated cascade) ──
 // Always available. Saves caller's cloud tokens by routing to local
 // prism-coder via Ollama. Falls through to synalux portal only when

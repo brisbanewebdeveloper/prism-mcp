@@ -13,6 +13,9 @@ import { getStorage } from "../storage/index.js";
 import { debugLog } from "../utils/logger.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { performWebSearchRaw } from "../utils/braveApi.js";
 import { performGoogleSearch } from "../utils/googleSearchApi.js";
 import { getTracer } from "../utils/telemetry.js";
@@ -76,20 +79,87 @@ async function hivemindBroadcast(topic: string, articleCount: number): Promise<v
 async function selectTopic(): Promise<string> {
   const topics = PRISM_SCHOLAR_TOPICS;
   if (!topics || topics.length === 0) return "";
-  const randomPick = topics[Math.floor(Math.random() * topics.length)];
-  if (!PRISM_ENABLE_HIVEMIND) return randomPick;
+
+  // Filter out topics already researched in the last 24h
+  const uncovered: string[] = [];
+  for (const t of topics) {
+    if (!(await hasRecentResearch(t, SCHOLAR_PROJECT, PRISM_USER_ID, 24))) {
+      uncovered.push(t);
+    }
+  }
+  if (uncovered.length === 0) {
+    debugLog("[WebScholar] All topics researched in last 24h — sleeping until tomorrow");
+    return "";
+  }
+
+  const pick = uncovered[Math.floor(Math.random() * uncovered.length)];
+  if (!PRISM_ENABLE_HIVEMIND) return pick;
   try {
     const storage = await getStorage();
     const allAgents = await storage.getAllAgents(PRISM_USER_ID);
     const activeTasks = allAgents
       .filter(a => a.role !== SCHOLAR_ROLE && a.status === "active" && a.current_task)
       .map(a => a.current_task!.toLowerCase());
-    if (activeTasks.length === 0) return randomPick;
+    if (activeTasks.length === 0) return pick;
     const taskText = activeTasks.join(" ");
-    const matched = topics.filter(t => taskText.includes(t.toLowerCase()));
+    const matched = uncovered.filter(t => taskText.includes(t.toLowerCase()));
     if (matched.length > 0) return matched[Math.floor(Math.random() * matched.length)];
   } catch {}
-  return randomPick;
+  return pick;
+}
+
+// ─── Dedup + Cross-Process Lock ─────────────────────────────
+
+async function hasRecentResearch(topic: string, project: string, userId: string, windowHours: number = 24): Promise<boolean> {
+  try {
+    const storage = await getStorage();
+    const entries = await storage.getLedgerEntries({
+      project,
+      user_id: userId,
+      event_type: "learning",
+      limit: 20,
+    }) as Array<{ summary?: string; created_at?: string }>;
+    const cutoff = new Date(Date.now() - windowHours * 3600_000).toISOString();
+    return entries.some(
+      e => (e.created_at ?? "") > cutoff && (e.summary ?? "").startsWith(`Research: ${topic}\n`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+const LOCK_PATH = join(homedir(), ".prism-mcp", "scholar.lock");
+const LOCK_STALE_MS = 10 * 60_000;
+
+function acquireFileLock(): boolean {
+  try {
+    const lockDir = dirname(LOCK_PATH);
+    if (!existsSync(lockDir)) mkdirSync(lockDir, { recursive: true });
+
+    if (existsSync(LOCK_PATH)) {
+      const stat = statSync(LOCK_PATH);
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs < LOCK_STALE_MS) return false;
+      unlinkSync(LOCK_PATH);
+    }
+    // wx = exclusive create — throws EEXIST if another process won the race
+    writeFileSync(LOCK_PATH, `${process.pid}\n${new Date().toISOString()}`, { flag: "wx" });
+    return true;
+  } catch (err: any) {
+    if (err?.code === "EEXIST") return false;
+    return false;
+  }
+}
+
+function releaseFileLock(): void {
+  try {
+    if (!existsSync(LOCK_PATH)) return;
+    const content = readFileSync(LOCK_PATH, "utf-8");
+    const lockPid = parseInt(content.split("\n")[0], 10);
+    if (lockPid === process.pid) {
+      unlinkSync(LOCK_PATH);
+    }
+  } catch {}
 }
 
 // ─── Core Pipeline ───────────────────────────────────────────
@@ -98,13 +168,19 @@ let isRunning = false;
 
 export async function runWebScholar(overrideTopic?: string, overrideProject?: string): Promise<string> {
   if (isRunning) {
-    debugLog("[WebScholar] Skipped: already running");
+    debugLog("[WebScholar] Skipped: already running in this process");
     return "Skipped: already running";
   }
+
+  if (!acquireFileLock()) {
+    debugLog("[WebScholar] Skipped: another instance holds the lock");
+    return "Skipped: another instance is running";
+  }
+
   isRunning = true;
   const tracer = getTracer();
   const span = tracer.startSpan("background.web_scholar");
-  
+
   try {
     const useGoogle = !!(GOOGLE_SEARCH_API_KEY && GOOGLE_SEARCH_CX);
     const useBraveFirecrawl = !useGoogle && !!(BRAVE_API_KEY && FIRECRAWL_API_KEY);
@@ -112,10 +188,16 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
 
     const topic = overrideTopic || await selectTopic();
     const project = overrideProject || SCHOLAR_PROJECT;
-    
+
     if (!topic) {
       span.setAttribute("scholar.skipped_reason", "no_topics");
       return "No topics configured";
+    }
+
+    if (await hasRecentResearch(topic, project, PRISM_USER_ID)) {
+      debugLog(`[WebScholar] Skipped: "${topic}" already researched in last 24h`);
+      span.setAttribute("scholar.skipped_reason", "dedup");
+      return `Skipped: "${topic}" already researched recently`;
     }
 
     debugLog(`[WebScholar] 🧠 Starting research on: "${topic}"`);
@@ -171,11 +253,11 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
     await storage.saveLedger({
       id: randomUUID(),
       project: project,
-      conversation_id: "scholar-" + Date.now(),
+      conversation_id: `scholar-${randomUUID().slice(0, 8)}`,
       user_id: PRISM_USER_ID,
       role: "scholar",
       summary: `Research: ${topic}\n\n${summary}`,
-      keywords: [topic, "research"],
+      keywords: [topic, "research", "auto-scholar"],
       event_type: "learning",
       importance: 7,
       created_at: new Date().toISOString()
@@ -189,6 +271,7 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
     return `Error: ${err}`;
   } finally {
     await hivemindIdle();
+    releaseFileLock();
     isRunning = false;
     span.end();
   }
@@ -238,44 +321,3 @@ async function searchSemanticScholar(query: string, count: number): Promise<stri
   }
 }
 
-let watcherInterval: ReturnType<typeof setInterval> | null = null;
-
-export async function startScholarWatcher(): Promise<void> {
-  if (watcherInterval) return;
-  debugLog("[WebScholar] Starting bridge watcher (polling for research_tasks)");
-  
-  watcherInterval = setInterval(async () => {
-    try {
-      const storage = await getStorage();
-      const pending = await storage.listPendingResearchTasks();
-      
-      for (const task of pending) {
-        debugLog(`[WebScholar] Bridge pickup: Task ${task.id} (topic: ${task.topic})`);
-        
-        await storage.updateResearchTask(task.id, { status: 'RUNNING' });
-        
-        try {
-          const result = await runWebScholar(task.topic, task.project);
-          await storage.updateResearchTask(task.id, { 
-            status: 'COMPLETED',
-            result_summary: result.slice(0, 1000) // snippet
-          });
-        } catch (err: any) {
-          await storage.updateResearchTask(task.id, { 
-            status: 'FAILED',
-            error_message: err.message || String(err)
-          });
-        }
-      }
-    } catch (err) {
-      debugLog(`[WebScholar] Bridge poll failed: ${err}`);
-    }
-  }, 10_000); // Poll every 10 seconds
-}
-
-export function stopScholarWatcher(): void {
-  if (watcherInterval) {
-    clearInterval(watcherInterval);
-    watcherInterval = null;
-  }
-}

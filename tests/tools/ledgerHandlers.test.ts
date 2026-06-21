@@ -138,6 +138,11 @@ vi.mock("../../src/utils/cognitiveMemory.js", () => ({
   recordMemoryAccess: vi.fn(),
 }));
 
+vi.mock("../../src/utils/inferenceMetrics.js", () => ({
+  formatInferenceMetrics: vi.fn(() => ""),
+  resetInferenceMetrics: vi.fn(),
+}));
+
 vi.mock("../../src/tools/commonHelpers.js", () => ({
   redactSettings: vi.fn((s: Record<string, string>) => s),
   toMarkdown: vi.fn(() => "# Markdown Export"),

@@ -3,6 +3,7 @@ import * as nodePath from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
+import { scanAndRedactPHI } from "../utils/phiGuard.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
 /**
@@ -97,9 +98,11 @@ type ResourceUpdateNotifier = (project: string) => void;
  * Zero-latency (pure regex, no API calls). Runs on every save.
  */
 export function sanitizeMemoryInput(text: string): string {
-  return text
+  const stripped = text
     .replace(/<\/?(?:system|user_input|instruction|anti_pattern|desired_pattern|assistant|tool_call|prism_memory)[^>]*>/gi, '')
     .trim();
+  // HIPAA: redact PHI before storage — SSN, DOB, MRN, patient names, etc.
+  return scanAndRedactPHI(stripped).redacted;
 }
 
 /** Sanitize each string in an array (for decisions[], todos[], etc.) */
@@ -134,6 +137,7 @@ import {
   createFailedEmbeddingState,
   createReadyEmbeddingState,
 } from "../utils/ledgerEmbedding.js";
+import { formatInferenceMetrics, resetInferenceMetrics } from "../utils/inferenceMetrics.js";
 
 function getEmbeddingProviderOrNull(context: string) {
   try {
@@ -157,7 +161,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   const conversation_id = args.conversation_id;
   const summary = sanitizeMemoryInput(args.summary);
   const todos = args.todos ? sanitizeArray(args.todos) : undefined;
-  const files_changed = args.files_changed;
+  const files_changed = args.files_changed ? sanitizeArray(args.files_changed) : undefined;
   const decisions = args.decisions ? sanitizeArray(args.decisions) : undefined;
   const role = args.role;
   const embeddingText = buildLedgerEmbeddingText(summary, decisions);
@@ -209,6 +213,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     keywords,
     role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
   });
+
 
   // ─── Fire-and-forget embedding generation ───
   const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_ledger") : null;
@@ -321,6 +326,8 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     debugLog(`[session_save_ledger] Background decay failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   });
 
+  const metricsBlock = formatInferenceMetrics();
+
   return {
     content: [{
       type: "text",
@@ -330,6 +337,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         (files_changed?.length ? `Files changed: ${files_changed.length}\n` : "") +
         (decisions?.length ? `Decisions: ${decisions.length}\n` : "") +
         (embeddingProvider ? `📊 Embedding generation queued for semantic search.` : "") +
+        metricsBlock +
         resolverNote,
     }],
     isError: false,
@@ -544,6 +552,44 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
     );
   }
 
+  // ─── Fire-and-forget embedding generation (enables semantic search on handoffs) ───
+  if (data.status === "created" || data.status === "updated") {
+    const embeddingText = [
+      last_summary || "",
+      key_context || "",
+      ...(open_todos || []),
+    ].filter(Boolean).join("\n");
+
+    if (embeddingText.trim()) {
+      getLLMProvider().generateEmbedding(embeddingText)
+        .then(async (embedding) => {
+          const patchData: Record<string, unknown> = {
+            embedding: JSON.stringify(embedding),
+          };
+
+          try {
+            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
+            const compressor = getDefaultCompressor();
+            const compressed = compressor.compress(embedding);
+            const buf = serialize(compressed);
+
+            patchData.embedding_compressed = buf.toString("base64");
+            patchData.embedding_format = `turbo${compressor.bits}`;
+            patchData.embedding_turbo_radius = compressed.radius;
+            debugLog(`[session_save_handoff] TurboQuant compressed: ${buf.length} bytes`);
+          } catch (turboErr: any) {
+            console.error(`[session_save_handoff] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
+          }
+
+          await storage.patchHandoff(project, PRISM_USER_ID, patchData);
+          debugLog(`[session_save_handoff] Embedding saved for project "${project}"`);
+        })
+        .catch((err) => {
+          console.error(`[session_save_handoff] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }
+  }
+
   // ─── Trigger resource subscription notification ───
   if (notifyResourceUpdate && (data.status === "created" || data.status === "updated")) {
     try {
@@ -664,11 +710,14 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
     );
   }
 
+  const metricsBlock = formatInferenceMetrics();
+
   // Build response text based on whether a CRDT merge occurred
   const responseText = isMerged
     ? `🔄 Auto-merged conflict for "${project}" (v${expected_version} → v${newVersion})\n` +
       `Strategy: ${JSON.stringify(mergeStrategy)}\n` +
       (last_summary ? `Summary: ${last_summary}\n` : "") +
+      metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`
     : `✅ Handoff ${data.status || "saved"} for project "${project}" ` +
@@ -676,6 +725,8 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
       (last_summary ? `Last summary: ${last_summary}\n` : "") +
       (open_todos?.length ? `Open TODOs: ${open_todos.length} items\n` : "") +
       (active_branch ? `Active branch: ${active_branch}\n` : "") +
+      `📊 Embedding generation queued for semantic search.\n` +
+      metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`;
 
@@ -692,6 +743,8 @@ export async function sessionLoadContextHandler(args: unknown) {
   if (!isSessionLoadContextArgs(args)) {
     throw new Error("Invalid arguments for session_load_context");
   }
+
+  resetInferenceMetrics();
 
   const { project, level = "standard", role } = args;
   const maxTokens = (args as any).max_tokens as number | undefined
@@ -939,11 +992,15 @@ export async function sessionLoadContextHandler(args: unknown) {
         const eff = computeEffectiveImportance(s.importance, s.last_accessed_at, s.created_at, Boolean(s.is_rollup));
         impStr = ` [Imp: ${eff}]`;
       }
-      return `  [${s.session_date?.split("T")[0]}]${impStr} ${s.summary}`;
+      const dateStr = (s.session_date || s.created_at || s.date || "unknown").split("T")[0];
+      return `  [${dateStr}]${impStr} ${s.summary}`;
     }).join("\n") + `\n`;
   }
   if (d.session_history?.length) {
-    formattedContext += `\n📂 Session History (${d.session_history.length} entries):\n` + d.session_history.map((s: any) => `  [${s.session_date?.split("T")[0]}] ${s.summary}`).join("\n") + `\n`;
+    formattedContext += `\n📂 Session History (${d.session_history.length} entries):\n` + d.session_history.map((s: any) => {
+      const dateStr = (s.session_date || s.created_at || s.date || "unknown").split("T")[0];
+      return `  [${dateStr}] ${s.summary}`;
+    }).join("\n") + `\n`;
   }
   if (d.recent_validations?.length) {
     formattedContext += `\n🔬 Recent Validations:\n` + d.recent_validations.map((v: any) => {
@@ -977,39 +1034,49 @@ export async function sessionLoadContextHandler(args: unknown) {
   }
 
   // ─── Project-Aware Skill Injection ──────────────────────────
-  // Routing (WHICH skills + user_local policy): Synalux /api/v1/skills/routing.
-  // Content (WHAT):
-  //   Platform skills  → Synalux /api/v1/skills/content (DB first, filesystem fallback)
-  //                      → local SQLite skill:<name> (free tier / offline fallback)
-  //   User-local skills → local SQLite user_skill:<name>
-  //                       ONLY when user_local.enabled=true in routing table
-  //                       OR session_load_context called with user_local=true.
-  //                       Users CANNOT write to the platform skill: namespace.
+  // Skills are priority-sorted and cap-aware. Protected skills always load
+  // (they bypass the cap check). This prevents the silent-truncation bug
+  // where important behavioral skills were dropped because large low-priority
+  // skills consumed the budget first.
   const { resolveSkillsForProject } = await import("./skillRouting.js");
   const resolved = await resolveSkillsForProject(project);
-  const skillsToLoad = resolved.names;
+  const sortedSkills = resolved.skills;
   const userLocalPolicy = resolved.user_local;
 
-  // Paid tier: batch-fetch platform skill content from Synalux in one request.
   let synaluxContent: Record<string, string> = {};
   if (SYNALUX_CONFIGURED && storage && typeof (storage as unknown as { fetchSkillContent?: unknown }).fetchSkillContent === "function") {
-    const missing = skillsToLoad.filter(n => !loadedSkills.includes(n));
+    const missing = sortedSkills.map(s => s.name).filter(n => !loadedSkills.includes(n));
     synaluxContent = await (storage as unknown as { fetchSkillContent: (n: string[]) => Promise<Record<string,string>> })
       .fetchSkillContent(missing).catch(() => ({}));
     debugLog(`[session_load_context] Synalux skill content fetched: ${Object.keys(synaluxContent).join(", ") || "none"}`);
   }
 
-  for (const skillName of skillsToLoad) {
-    if (loadedSkills.includes(skillName)) continue;
-    // Synalux (paid) → platform fallback skill:<name> (free/offline). Never user_skill:.
-    const content = synaluxContent[skillName] || await getSetting(`skill:${skillName}`, "");
-    if (content && content.trim()) {
-      const source = synaluxContent[skillName] ? "synalux" : "local-platform";
-      skillBlock += `\n\n[📜 SKILL: ${skillName}]\n${content.trim()}`;
-      loadedSkills.push(skillName);
+  const SKILL_BLOCK_CAP = 40_000;
+  const skippedSkills: string[] = [];
+  for (const entry of sortedSkills) {
+    if (loadedSkills.includes(entry.name)) continue;
+    const content = synaluxContent[entry.name] || await getSetting(`skill:${entry.name}`, "");
+    if (!content || !content.trim()) continue;
+    const trimmed = content.trim();
+
+    if (entry.protected) {
+      skillBlock += `\n\n[📜 SKILL: ${entry.name}]\n${trimmed}`;
+      loadedSkills.push(entry.name);
       skillLoaded = true;
-      debugLog(`[session_load_context] Skill "${skillName}" loaded (${source}) for project="${project}"`);
+      debugLog(`[session_load_context] Skill "${entry.name}" loaded (protected, p${entry.priority}) [${skillBlock.length} chars]`);
+      continue;
     }
+
+    if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP) {
+      skippedSkills.push(entry.name);
+      debugLog(`[session_load_context] Skill "${entry.name}" skipped — would exceed cap (${skillBlock.length}+${trimmed.length} > ${SKILL_BLOCK_CAP})`);
+      continue;
+    }
+    const source = synaluxContent[entry.name] ? "synalux" : "local-platform";
+    skillBlock += `\n\n[📜 SKILL: ${entry.name}]\n${trimmed}`;
+    loadedSkills.push(entry.name);
+    skillLoaded = true;
+    debugLog(`[session_load_context] Skill "${entry.name}" loaded (${source}, p${entry.priority}) [${skillBlock.length}/${SKILL_BLOCK_CAP} chars]`);
   }
 
   // ─── User-Local Skills ──────────────────────────────────────
@@ -1021,9 +1088,12 @@ export async function sessionLoadContextHandler(args: unknown) {
     const allSettings = await storage.getAllSettings?.() || {};
     for (const [k, v] of Object.entries(allSettings)) {
       if (!k.startsWith(prefix) || !v) continue;
+      if (skillBlock.length >= SKILL_BLOCK_CAP) break;
       const skillName = k.replace(prefix, "");
       if (loadedSkills.includes(skillName)) continue;
-      skillBlock += `\n\n[📜 USER SKILL: ${skillName}]\n${(v as string).trim()}`;
+      const trimmed = (v as string).trim();
+      if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP && loadedSkills.length > 0) continue;
+      skillBlock += `\n\n[📜 USER SKILL: ${skillName}]\n${trimmed}`;
       loadedSkills.push(skillName);
       skillLoaded = true;
       debugLog(`[session_load_context] User-local skill "${skillName}" loaded`);
@@ -1033,19 +1103,29 @@ export async function sessionLoadContextHandler(args: unknown) {
   // ─── Memory-Based Skill Discovery ──────────────────────────
   // If recent handoff/ledger mentions a platform skill name, auto-load it.
   // Only scans platform skill: keys — user_skill: discovery is not automatic.
-  if (formattedContext.length > 0) {
+  if (formattedContext.length > 0 && skillBlock.length < SKILL_BLOCK_CAP) {
     const contextText = formattedContext.toLowerCase();
     const allSkillKeys = await storage.getAllSettings?.() || {};
     for (const [k, v] of Object.entries(allSkillKeys)) {
       if (!k.startsWith("skill:") || !v) continue;
+      if (skillBlock.length >= SKILL_BLOCK_CAP) break;
       const skillName = k.replace("skill:", "");
       if (loadedSkills.includes(skillName)) continue;
       if (contextText.includes(skillName.replace(/-/g, " ")) || contextText.includes(skillName)) {
-        skillBlock += `\n\n[📜 CONTEXT SKILL: ${skillName}]\n${v}`;
+        const trimmed = (v as string).trim();
+        if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP && loadedSkills.length > 0) {
+          skippedSkills.push(skillName);
+          continue;
+        }
+        skillBlock += `\n\n[📜 CONTEXT SKILL: ${skillName}]\n${trimmed}`;
         loadedSkills.push(skillName);
         debugLog(`[session_load_context] Context-triggered skill "${skillName}"`);
       }
     }
+  }
+
+  if (skippedSkills.length > 0) {
+    skillBlock += `\n\n[⚠️ ${skippedSkills.length} skills TRUNCATED by ${SKILL_BLOCK_CAP}-char cap — NOT loaded: ${skippedSkills.join(", ")}. These rules are NOT in your context. Do not claim to follow them.]`;
   }
 
   // ─── Agent Greeting Block ────────────────────────────────────
@@ -1094,16 +1174,18 @@ export async function sessionLoadContextHandler(args: unknown) {
   // Build the response object before v4.0 augmentations
   // SECURITY: Wrap output in boundary tags to prevent context confusion.
   // The LLM sees <prism_memory context="historical"> and knows this is data, not instructions.
-  let responseText = `${MEMORY_BOUNDARY_PREFIX}📋 Session context for "${project}" (${level}):\n\n${formattedContext.trim()}${splitBrainWarning}${driftReport}${briefingBlock}${sdmRecallBlock}${greetingBlock}${visualMemoryBlock}${skillBlock}${versionNote}`;
-
-  // ─── v4.0: Behavioral Warnings Injection ───────────────────
-  // If loadContext returned behavioral_warnings, add them to the
-  // formatted output so the agent sees them prominently.
+  // ─── v19.1: Behavioral Warnings — BEFORE skills (protected from truncation) ───
+  // Corrections must surface prominently. Placed before skillBlock so the
+  // skill budget cannot push them out. Capped at 2,000 chars.
   const behavWarnings = (data as any)?.behavioral_warnings as Array<{summary: string; importance: number}> | undefined;
+  let behavBlock = '';
   if (behavWarnings && behavWarnings.length > 0) {
-    responseText += `\n\n[⚠️ BEHAVIORAL WARNINGS]\n` +
+    const rawBlock = `\n\n[⚠️ BEHAVIORAL WARNINGS — DO NOT IGNORE]\n` +
       behavWarnings.map(w => `- ${w.summary} (importance: ${w.importance})`).join("\n");
+    behavBlock = [...rawBlock].slice(0, 2000).join('');
   }
+
+  let responseText = `${MEMORY_BOUNDARY_PREFIX}📋 Session context for "${project}" (${level}):\n\n${formattedContext.trim()}${splitBrainWarning}${driftReport}${briefingBlock}${sdmRecallBlock}${greetingBlock}${visualMemoryBlock}${behavBlock}${skillBlock}${versionNote}`;
 
   // ─── v9.4.7: ABA Precision Protocol (foundational) ────────
   // Injected into EVERY session load so the agent always operates
@@ -1712,7 +1794,8 @@ export async function sessionExportMemoryHandler(args: unknown) {
 
       // Serialize
       const ext = format === "markdown" ? "md" : format === "vault" ? "zip" : "json";
-      const filename = `prism-export-${project}-${dateSuffix}.${ext}`;
+      const safeProject = project.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filename = `prism-export-${safeProject}-${dateSuffix}.${ext}`;
       const outputPath = join(output_dir, filename);
 
       let content: string | Buffer;

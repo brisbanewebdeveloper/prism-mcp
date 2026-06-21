@@ -23,6 +23,7 @@ import {
 } from "./sessionMemoryDefinitions.js";
 
 import { getStorage } from "../storage/index.js";
+import { getSetting } from "../storage/configStorage.js";
 import { getExperienceBias } from "./routerExperience.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { callLocalLlm } from "../utils/localLlm.js";
@@ -319,6 +320,26 @@ export async function sessionTaskRouteHandler(
     };
   }
 
+  // Delegation opt-in gate: if delegation_enabled is not "true", always route to host.
+  // This enforces the prism-infer-delegation skill's "off by default" rule in code.
+  const delegationEnabled = await getSetting("delegation_enabled", "false");
+  if (delegationEnabled !== "true") {
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          target: "host",
+          confidence: 1.0,
+          complexity_score: 5,
+          rationale: "Delegation is off (default). Enable with: configure_notifications({setting: 'delegation_enabled', value: 'true'}) or via the Prism dashboard.",
+          recommended_tool: null,
+          delegation_enabled: false,
+        }),
+      }],
+      isError: false,
+    };
+  }
+
   const result = computeRoute(args);
 
   // v7.2.0: Experience-based bias adjustment
@@ -361,7 +382,7 @@ export async function sessionTaskRouteHandler(
 
   // ── v9.x: Local LLM second-opinion for low-confidence cases ──────────────
   // When confidence is below the threshold AND local LLM is enabled,
-  // ask prism-coder:7b to break the tie. This is purely additive — if the
+  // ask prism-coder:9b to break the tie. This is purely additive — if the
   // LLM call fails or times out, the original heuristic result is returned.
   if (
     PRISM_LOCAL_LLM_ENABLED &&
@@ -398,7 +419,7 @@ export async function sessionTaskRouteHandler(
 // ─── Local LLM Route Classifier ──────────────────────────────
 
 /**
- * Ask prism-coder:7b to classify a task description as "claw" or "host".
+ * Ask prism-coder:9b to classify a task description as "claw" or "host".
  * Returns the string or null if the model is unavailable / response unparseable.
  * Called only when heuristic confidence is below the threshold.
  */

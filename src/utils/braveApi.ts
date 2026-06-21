@@ -39,6 +39,15 @@ import {
   type GoogleSearchCredential,
   type GoogleSearchCredentialSelectionStrategy,
 } from "../config.js";
+import {
+  SYNALUX_SEARCH_AVAILABLE,
+  synaluxWebSearch,
+  synaluxWebSearchRaw,
+  synaluxLocalSearch,
+  synaluxLocalSearchRaw,
+  synaluxBraveAnswers,
+} from "./synaluxSearch.js";
+import { debugLog } from "./logger.js";
 
 // ─── TypeScript Interfaces for Brave API Responses ────────────
 // These types match the shape of Brave's JSON responses so we get
@@ -207,6 +216,18 @@ export async function performBraveAnswers(
   query: string,
   model: string = "brave"
 ) {
+  if (SYNALUX_SEARCH_AVAILABLE) {
+    try {
+      return await synaluxBraveAnswers(query, model);
+    } catch (err) {
+      debugLog(
+        `[braveApi] Synalux answers failed, falling back to Brave: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   if (!BRAVE_ANSWERS_API_KEY) {
     throw new Error("BRAVE_ANSWERS_API_KEY is not configured");
   }
@@ -309,11 +330,56 @@ export async function performWebSearchRawWithCredentials(
   );
 }
 
+async function performBraveWebSearchRaw(
+  query: string,
+  count: number = 10,
+  offset: number = 0
+): Promise<string> {
+  const url = new URL("https://api.search.brave.com/res/v1/web/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", Math.min(count, 20).toString());
+  url.searchParams.set("offset", offset.toString());
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "Accept-Encoding": "gzip",
+      "X-Subscription-Token": BRAVE_API_KEY!,
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Brave API error: ${response.status} ${response.statusText
+      }\n${await response.text()}`
+    );
+  }
+
+  return await response.text();
+}
+
 export async function performWebSearchRaw(
   query: string,
   count: number = 10,
   offset: number = 0
 ): Promise<string> {
+  if (SYNALUX_SEARCH_AVAILABLE) {
+    if (offset === 0) {
+      try {
+        return await synaluxWebSearchRaw(query, count);
+      } catch (err) {
+        debugLog(
+          `[braveApi] Synalux search failed, falling back to Brave: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+
+    return performBraveWebSearchRaw(query, count, offset);
+  }
+
   return performWebSearchRawWithCredentials(query, count, offset);
 }
 
@@ -323,6 +389,18 @@ export async function performWebSearch(
   count: number = 10,
   offset: number = 0
 ) {
+  if (SYNALUX_SEARCH_AVAILABLE && offset === 0) {
+    try {
+      return await synaluxWebSearch(query, count);
+    } catch (err) {
+      debugLog(
+        `[braveApi] Synalux search failed, falling back to Brave: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   const textData = await performWebSearchRaw(query, count, offset);
   const data = JSON.parse(textData) as BraveWeb;
 
@@ -401,6 +479,18 @@ export async function performLocalSearchRaw(
   query: string,
   count: number = 5
 ): Promise<string> {
+  if (SYNALUX_SEARCH_AVAILABLE) {
+    try {
+      return await synaluxLocalSearchRaw(query, count);
+    } catch (err) {
+      debugLog(
+        `[braveApi] Synalux local search raw failed, falling back to Brave: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   // Initial search to get location IDs
   const webUrl = new URL("https://api.search.brave.com/res/v1/web/search");
   webUrl.searchParams.set("q", query);
@@ -472,6 +562,18 @@ export async function performLocalSearchRaw(
 
 // Local search API call with poi details
 export async function performLocalSearch(query: string, count: number = 5) {
+  if (SYNALUX_SEARCH_AVAILABLE) {
+    try {
+      return await synaluxLocalSearch(query, count);
+    } catch (err) {
+      debugLog(
+        `[braveApi] Synalux local search failed, falling back to Brave: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   const rawData = await performLocalSearchRaw(query, count);
   const parsed = JSON.parse(rawData) as {
     source: "local" | "web_fallback";
