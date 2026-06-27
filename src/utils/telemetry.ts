@@ -65,6 +65,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SEMRESATTRS_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { getSettingSync } from "../storage/configStorage.js";
+import { sanitizeForLog } from "./logger.js";
 
 // ─── Module-level singleton ───────────────────────────────────────────────────
 // Null when OTel is disabled or before initTelemetry() is called.
@@ -188,11 +189,11 @@ export function initTelemetry(): void {
 
     console.error(
       `[Telemetry] OpenTelemetry initialized. ` +
-      `Service: "${serviceName}", Endpoint: "${endpoint}"`
+      `Service: "${sanitizeForLog(serviceName)}", Endpoint: "${sanitizeForLog(endpoint)}"`
     );
   } catch (err) {
     // OTel init errors must NEVER crash the server. Log and continue.
-    console.error(`[Telemetry] Failed to initialize OTel (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[Telemetry] Failed to initialize OTel (non-fatal): ${sanitizeForLog(err instanceof Error ? err.message : String(err))}`);
     _provider = null; // Clean state so getTracer() returns no-op
   }
 }
@@ -242,6 +243,6 @@ export async function shutdownTelemetry(): Promise<void> {
     console.error("[Telemetry] Flushed remaining spans and shut down.");
   } catch (err) {
     // Log but don't rethrow — shutdown errors must not prevent DB cleanup.
-    console.error(`[Telemetry] Error during shutdown (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[Telemetry] Error during shutdown (non-fatal): ${sanitizeForLog(err instanceof Error ? err.message : String(err))}`);
   }
 }

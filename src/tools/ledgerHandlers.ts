@@ -1712,12 +1712,76 @@ export async function sessionExportMemoryHandler(args: unknown) {
   const { output_dir, format = "json" } = args;
   const requestedProject = (args as { project?: string }).project;
 
-  // Validate output directory
+  // Validate output directory — path traversal confinement (v4.3 security)
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  const defaultExportDir = join(homeDir, ".prism-mcp", "exports");
+
+  if (!existsSync(defaultExportDir)) {
+    fs.mkdirSync(defaultExportDir, { recursive: true });
+  }
+
   if (!existsSync(output_dir)) {
     return {
       content: [{
         type: "text",
         text: `Error: output_dir does not exist: "${output_dir}". Please create it first.`,
+      }],
+      isError: true,
+    };
+  }
+
+  const resolvedDir = fs.realpathSync(output_dir);
+  const allowedRoots: string[] = [defaultExportDir, process.cwd()];
+
+  const tmpExportDir = join(os.tmpdir(), ".prism-mcp", "exports");
+  if (!existsSync(tmpExportDir)) {
+    fs.mkdirSync(tmpExportDir, { recursive: true, mode: 0o700 });
+  }
+  allowedRoots.push(fs.realpathSync(tmpExportDir));
+
+  if (process.env.PRISM_EXPORT_ROOT) {
+    const exportRoot = process.env.PRISM_EXPORT_ROOT;
+    if (existsSync(exportRoot)) {
+      allowedRoots.push(fs.realpathSync(exportRoot));
+    }
+  }
+
+  const sensitiveRoots = [
+    join(homeDir, ".ssh"),
+    join(homeDir, ".gnupg"),
+    "/etc",
+    "/var",
+    "/etc/cron.d",
+    "/etc/cron.daily",
+    "/etc/sudoers.d",
+  ].map(p => existsSync(p) ? fs.realpathSync(p) : p);
+
+  const isAllowedRoot = (dir: string) => allowedRoots.some((root) => {
+    const resolvedRoot = existsSync(root) ? fs.realpathSync(root) : root;
+    return dir === resolvedRoot || dir.startsWith(resolvedRoot + sep);
+  });
+
+  for (const sensitive of sensitiveRoots) {
+    if (resolvedDir === sensitive || resolvedDir.startsWith(sensitive + sep)) {
+      if (!isAllowedRoot(resolvedDir)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Error: output_dir resolves to a sensitive system directory ("${resolvedDir}"). Export denied.`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  }
+
+  if (!isAllowedRoot(resolvedDir)) {
+    return {
+      content: [{
+        type: "text",
+        text: `Error: output_dir "${resolvedDir}" is outside allowed export roots. ` +
+          `Allowed: ${allowedRoots.join(", ")}. ` +
+          `Set PRISM_EXPORT_ROOT env var to add a custom root.`,
       }],
       isError: true,
     };
@@ -1795,7 +1859,8 @@ export async function sessionExportMemoryHandler(args: unknown) {
       // Serialize
       const ext = format === "markdown" ? "md" : format === "vault" ? "zip" : "json";
       const safeProject = project.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const filename = `prism-export-${safeProject}-${dateSuffix}.${ext}`;
+      const token = randomUUID().slice(0, 8);
+      const filename = `prism-export-${safeProject}-${dateSuffix}-${token}.${ext}`;
       const outputPath = join(output_dir, filename);
 
       let content: string | Buffer;
@@ -1808,13 +1873,22 @@ export async function sessionExportMemoryHandler(args: unknown) {
         content = JSON.stringify(exportPayload, null, 2);
       }
 
-      if (format === "vault") {
-        await writeFile(outputPath, content as Buffer);
-      } else {
-        await writeFile(outputPath, content as string, "utf-8");
+      let finalPath = outputPath;
+      try {
+        await writeFile(finalPath, content, { flag: "wx" });
+      } catch (e: any) {
+        if (e?.code === "EEXIST") {
+          const dot = filename.lastIndexOf(".");
+          const stem = dot > 0 ? filename.slice(0, dot) : filename;
+          const extPart = dot > 0 ? filename.slice(dot) : "";
+          finalPath = join(output_dir, `${stem}-${randomUUID()}${extPart}`);
+          await writeFile(finalPath, content, { flag: "wx" });
+        } else {
+          throw e;
+        }
       }
-      exportedFiles.push(outputPath);
-      debugLog(`[session_export_memory] Wrote ${content.length} bytes to ${outputPath}`);
+      exportedFiles.push(finalPath);
+      debugLog(`[session_export_memory] Wrote ${content.length} bytes to ${finalPath}`);
     }
 
     const plural = exportedFiles.length > 1 ? "files" : "file";

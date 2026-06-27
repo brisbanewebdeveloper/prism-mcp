@@ -31,14 +31,10 @@ import * as fs from "fs";
 import * as nodePath from "path";
 import { getLLMProvider } from "./llm/factory.js";
 import { getStorage } from "../storage/index.js";
-import { debugLog } from "./logger.js";
+import { debugLog, sanitizeForLog } from "./logger.js";
 import { PRISM_USER_ID } from "../config.js";
 import { getTracer } from "./telemetry.js";
 import { SpanStatusCode, context as otelContext, trace } from "@opentelemetry/api";
-import {
-  createFailedEmbeddingState,
-  createReadyEmbeddingState,
-} from "./ledgerEmbedding.js";
 
 // ─── Size Caps ────────────────────────────────────────────────────────────────
 
@@ -112,7 +108,7 @@ export function fireCaptionAsync(
           code: SpanStatusCode.ERROR,
           message: err instanceof Error ? err.message : String(err),
         });
-        console.error(`[ImageCaptioner] Failed for [${imageId}]: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`[ImageCaptioner] Failed for [${sanitizeForLog(imageId)}]: ${sanitizeForLog(err instanceof Error ? err.message : String(err))}`);
       })
       .finally(() => {
         // Always end the span — even on VLM failure — to flush the BatchSpanProcessor.
@@ -162,8 +158,8 @@ async function captionImageAsync(
     const limitMB = (maxBytes / 1024 / 1024).toFixed(0);
     const actualMB = (fileSizeBytes / 1024 / 1024).toFixed(1);
     console.warn(
-      `[ImageCaptioner] Image [${imageId}] is ${actualMB}MB, exceeding ` +
-      `the ${textProvider} VLM limit (${limitMB}MB). Captioning skipped. ` +
+      `[ImageCaptioner] Image [${sanitizeForLog(imageId)}] is ${sanitizeForLog(actualMB)}MB, exceeding ` +
+      `the ${sanitizeForLog(textProvider)} VLM limit (${limitMB}MB). Captioning skipped. ` +
       (textProvider === "anthropic"
         ? "Switch Embedding Provider to Gemini/OpenAI to caption larger images."
         : "Consider resizing the image.")
@@ -185,27 +181,65 @@ async function captionImageAsync(
 
   debugLog(`[ImageCaptioner] Caption generated for [${imageId}]: "${caption.slice(0, 80)}…"`);
 
+  // ── Step 3b: OCR (optional, second VLM call) ────────────────────────────
+  // Caption answers "what's the image about"; OCR answers "what does it
+  // literally say". Persisted separately so users can search whiteboards /
+  // handwritten notes / document screenshots by their actual contents,
+  // not just the high-level caption. Best-effort — OCR failure NEVER
+  // sinks the caption pipeline.
+  let ocrText = "";
+  if (typeof llm.extractImageText === "function") {
+    try {
+      ocrText = await llm.extractImageText(imageBase64, mimeType);
+      if (ocrText) {
+        debugLog(
+          `[ImageCaptioner] OCR extracted ${ocrText.length} chars for [${imageId}]: ` +
+          `"${ocrText.slice(0, 60).replace(/\n/g, ' ')}…"`,
+        );
+      } else {
+        debugLog(`[ImageCaptioner] OCR returned no text for [${imageId}].`);
+      }
+    } catch (ocrErr) {
+      // Don't poison the caption pipeline. The caption already succeeded;
+      // OCR is additive value. Surface as warn (not error) so it's grep-able
+      // but doesn't trip alerting on transient VLM blips.
+      console.warn(
+        `[ImageCaptioner] OCR failed for [${sanitizeForLog(imageId)}] (non-fatal): ` +
+        `${sanitizeForLog(ocrErr instanceof Error ? ocrErr.message : String(ocrErr))}`,
+      );
+    }
+  }
+
   // ── Step 4: Patch handoff visual_memory entry ─────────────────────────
-  await updateHandoffCaption(project, imageId, caption, vaultPath);
+  await updateHandoffCaption(project, imageId, caption, vaultPath, ocrText);
 
   // ── Step 5: Persist as ledger entry (makes caption semantically searchable)
   // NOTE: The ledger schema has no generic metadata column, so we embed the
   // image context directly in the summary string for LLM-readable references.
+  // OCR text (when present) is appended so semantic search hits on either
+  // the caption ("diagram of the auth flow") or the literal text in the
+  // image ("OAuth2 PKCE handler"). Keyword tag `image_ocr` lets callers
+  // filter for entries that have OCR content specifically.
   const storage = await getStorage();
-  const savedLedger = await storage.saveLedger({
+  const summaryParts: string[] = [
+    `[Visual Memory: ${imageId}]`,
+    `Path: ${vaultPath}`,
+    `User description: ${userContext}`,
+    `VLM Caption: ${caption}`,
+  ];
+  const keywords = [`image:${imageId}`, "visual_memory", "image_caption"];
+  if (ocrText) {
+    summaryParts.push(`OCR Text:\n${ocrText}`);
+    keywords.push("image_ocr");
+  }
+  await storage.saveLedger({
     project,
     conversation_id: "vlm-captioner",
     user_id: PRISM_USER_ID,
     event_type: "learning",
-    summary:
-      `[Visual Memory: ${imageId}]\n` +
-      `Path: ${vaultPath}\n` +
-      `User description: ${userContext}\n` +
-      `VLM Caption: ${caption}`,
-    keywords: [`image:${imageId}`, "visual_memory", "image_caption"],
+    summary: summaryParts.join("\n"),
+    keywords,
   });
-  const savedEntry = Array.isArray(savedLedger) ? savedLedger[0] : savedLedger;
-  const entryId = (savedEntry as { id?: string } | null)?.id;
 
   // ── Step 6: Backfill embeddings (makes caption findable via vector search)
   // ── Step 6: Embed the caption inline ────────────────────────────────
@@ -213,29 +247,29 @@ async function captionImageAsync(
   // to avoid a circular import (imageCaptioner ↔ sessionMemoryHandlers).
   // We already have getLLMProvider() in scope, so the embed cost is near-zero.
   try {
-    const embedText =
-      `[Visual Memory: ${imageId}] Description: ${userContext}. Caption: ${caption}`;
+    const embedText = ocrText
+      ? `[Visual Memory: ${imageId}] Description: ${userContext}. Caption: ${caption}. OCR: ${ocrText}`
+      : `[Visual Memory: ${imageId}] Description: ${userContext}. Caption: ${caption}`;
     const embedding = await llm.generateEmbedding(embedText);
 
-    if (entryId) {
-      const attemptedAt = new Date().toISOString();
-      await storage.patchLedger(entryId, {
-        embedding: JSON.stringify(embedding),
-        ...createReadyEmbeddingState(attemptedAt),
-      });
-      debugLog(`[ImageCaptioner] Caption embedded for ledger entry [${entryId}].`);
+    // Find the ledger entry we just saved and patch its embedding
+    const allEntries = await storage.getLedgerEntries({
+      project,
+      conversation_id: "vlm-captioner",
+    }) as Array<{ id?: string; created_at?: string }>;
+
+    // Sort descending and take the most recent (the one we just inserted)
+    const latest = allEntries.sort((a, b) =>
+      new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
+    )[0];
+
+    if (latest?.id) {
+      await storage.patchLedger(latest.id, { embedding: JSON.stringify(embedding) });
+      debugLog(`[ImageCaptioner] Caption embedded for ledger entry [${latest.id}].`);
     }
   } catch (embedErr) {
     // Non-fatal: caption still persists in the ledger as plain text and
     // will be picked up by the next project-wide backfill sweep.
-    if (entryId) {
-      const attemptedAt = new Date().toISOString();
-      try {
-        await storage.patchLedger(entryId, createFailedEmbeddingState(embedErr, 1, attemptedAt));
-      } catch (patchErr: unknown) {
-        debugLog(`[ImageCaptioner] Failed to persist retry state for [${entryId}]: ${patchErr instanceof Error ? patchErr.message : String(patchErr)}`);
-      }
-    }
     debugLog(`[ImageCaptioner] Embedding failed (will surface in next backfill): ${embedErr}`);
   }
 
@@ -257,6 +291,7 @@ async function updateHandoffCaption(
   imageId: string,
   caption: string,
   vaultPath: string,
+  ocrText: string = "",
 ): Promise<void> {
   const storage = await getStorage();
 
@@ -277,10 +312,17 @@ async function updateHandoffCaption(
       return;
     }
 
-    // Mutate the entry in-memory, then save back
+    // Mutate the entry in-memory, then save back. Only set ocr_text when
+    // it's non-empty — otherwise the empty string would shadow a previous
+    // OCR pass (e.g. if a user re-captioned the same image after a model
+    // change).
     entry.caption = caption;
     entry.caption_path = vaultPath;
     entry.caption_at = new Date().toISOString();
+    if (ocrText) {
+      entry.ocr_text = ocrText;
+      entry.ocr_at = new Date().toISOString();
+    }
 
     const handoffUpdate = {
       project,
@@ -306,7 +348,7 @@ async function updateHandoffCaption(
   }
 
   console.warn(
-    `[ImageCaptioner] Could not patch handoff for [${imageId}] after 2 attempts. ` +
+    `[ImageCaptioner] Could not patch handoff for [${sanitizeForLog(imageId)}] after 2 attempts. ` +
     `Caption is still saved in the ledger and will surface via semantic search.`
   );
 }

@@ -3,6 +3,8 @@ import { resolve, dirname } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
 
+const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 // We use a small, dedicated DB just for configuration settings.
 // This solves the chicken-and-egg problem: we need to know WHICH
 // storage backend to boot *before* we can use that backend.
@@ -25,7 +27,7 @@ let initialized = false;
 // (e.g. ReadResourceRequestSchema) can read settings synchronously
 // without opening an additional SQLite round-trip and stalling the
 // MCP stdio handshake (which causes a black-screen on startup).
-let settingsCache: Record<string, string> | null = null;
+let settingsCache: Record<string, string> | null = null; // assigned as Object.create(null) below
 
 function getClient() {
   if (!configClient) {
@@ -58,9 +60,11 @@ export async function initConfigStorage() {
 
     // Preload all rows into the cache so subsequent reads are zero-cost.
     const rs = await client.execute("SELECT key, value FROM system_settings");
-    settingsCache = {};
+    settingsCache = Object.create(null) as Record<string, string>;
+    const cache = settingsCache;
     for (const row of rs.rows) {
-      settingsCache[row.key as string] = row.value as string;
+      const k = row.key as string;
+      if (!PROTO_KEYS.has(k)) cache[k] = row.value as string;
     }
   } catch (err) {
     // Graceful degradation: if the DB can't be opened (e.g. read-only
@@ -68,7 +72,7 @@ export async function initConfigStorage() {
     // getSettingSync() will return defaults; getSetting()/setSetting()
     // will attempt to re-open the DB on first call.
     console.error(`[configStorage] Failed to initialize (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    settingsCache = {};
+    settingsCache = Object.create(null);
   }
 
   initialized = true;
@@ -101,7 +105,7 @@ export async function getSetting(key: string, defaultValue = ""): Promise<string
   if (rs.rows.length > 0) {
     const value = rs.rows[0].value as string;
     // Populate cache entry for future reads.
-    if (settingsCache) settingsCache[key] = value;
+    if (settingsCache && !PROTO_KEYS.has(key)) settingsCache[key] = value;
     return value;
   }
   return defaultValue;
@@ -127,7 +131,7 @@ export async function setSetting(key: string, value: string): Promise<void> {
         args: [key, value],
       });
       // Keep the cache in sync so getSettingSync() reflects the new value immediately.
-      if (settingsCache && typeof key === "string" && !["__proto__", "constructor", "prototype"].includes(key)) {
+      if (settingsCache && typeof key === "string" && !PROTO_KEYS.has(key)) {
         settingsCache[key] = value;
       }
       return; // Success — exit
@@ -153,9 +157,10 @@ export async function getAllSettings(): Promise<Record<string, string>> {
   const client = getClient();
   const rs = await client.execute("SELECT key, value FROM system_settings");
 
-  const settings: Record<string, string> = {};
+  const settings: Record<string, string> = Object.create(null);
   for (const row of rs.rows) {
-    settings[row.key as string] = row.value as string;
+    const k = row.key as string;
+    if (!PROTO_KEYS.has(k)) settings[k] = row.value as string;
   }
   return settings;
 }

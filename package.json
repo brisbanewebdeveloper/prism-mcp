@@ -1,6 +1,6 @@
 {
   "name": "prism-mcp-server",
-  "version": "19.2.4",
+  "version": "19.2.7",
   "mcpName": "io.github.dcostenco/prism-coder",
   "description": "Prism Coder — Cognitive memory + tool-calling intelligence for AI agents. Mind Palace persistent memory (BFCL Gold Certified, 100% Tool-Call Accuracy, 114 Agent Skills, PHI Guard, Tier Enforcement, Prompt-Based Skill Routing, Zero-Search HDC/HRR retrieval, HRR Semantic Drift Detection across BCBA/Coding/AAC domains, HIPAA-hardened local-first storage, SLERP-optimized GRPO alignment) plus the prism-coder 1.7B–32B open-weights LLM fleet.",
   "module": "index.ts",
@@ -105,7 +105,7 @@
     "@types/mozilla-readability": "^0.2.1",
     "@types/turndown": "^5.0.6",
     "dotenv": "^17.4.2",
-    "tsx": "^4.19.3",
+    "tsx": "^4.22.4",
     "vitest": "^4.1.1"
   },
   "peerDependencies": {
@@ -129,9 +129,10 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@mozilla/readability": "^0.6.0",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
-    "@opentelemetry/resources": "^2.6.1",
-    "@opentelemetry/sdk-trace-node": "^2.6.1",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-trace-node": "^2.8.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@supabase/supabase-js": "^2.99.3",
     "cheerio": "^1.2.0",

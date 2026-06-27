@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [19.2.7] - 2026-06-24 — 🔒 CodeQL Security Sweep
+
+### Security
+- **24 CodeQL alerts resolved** — full sweep of GitHub Code Scanning findings across prototype pollution, log injection, TOCTOU race conditions, insecure temp files, and URL sanitization.
+- **Prototype pollution defense** — All dynamic-key objects use `Object.create(null)` + explicit `PROTO_KEYS` guards (`configStorage`, `commonHelpers`, `dashboard/server`).
+- **Log injection hardened** — Exported `sanitizeForLog()` strips C0+C1 control characters (including 8-bit CSI U+009B) and ANSI sequences. Applied to 16 call sites across 8 production files.
+- **TOCTOU file lock eliminated** — Scholar lock acquisition replaced with atomic `renameSync` pattern (POSIX atomic) + post-rename PID verification. No mutual-exclusion window.
+- **Temp file prediction eliminated** — Export filenames now include `randomUUID` token in primary name, not just collision fallback.
+- **URL substring sanitization** — DataDog URL check uses `new URL().hostname.endsWith()` instead of `.includes()`.
+- **5 intentional file-access-to-http alerts dismissed** — ingest/API modules reading files and sending to first-party endpoints (Anthropic, Supabase, Synalux).
+
+### Added
+- `sanitizeForLog` test suite — 11 assertions covering C0, C1, ANSI, newline forgery, UTF-8 preservation.
+
+### Changed
+- 98 test files, 2880 tests (up from 97/2876).
+- 17 test logger mocks updated with `sanitizeForLog` passthrough.
+- Reviewed through 4 rounds including external adversarial review.
+
+## [19.2.6] - 2026-06-22 — 📊 Analytics Stats Fix + Security Hardening
+
+### Fixed
+- **`api_analytics` now works** — Rewrote from dead `better-sqlite3` (never installed as a dependency) to `@libsql/client` (same SQLite client used by the storage layer). Tool calls are recorded to `~/.prism-mcp/data.db` with per-project and system-wide query support.
+- **`recordInvocation` wired in dispatch** — Called on both success and error paths of the MCP tool dispatch loop. Isolated with try/catch so analytics never breaks tool responses. Timer `unref()`'d to avoid holding process open.
+- **`api_analytics` scope param** — Handler now reads `scope` (matching the tool schema enum) instead of the undeclared `action` parameter.
+- **Datadog context forwarding** — Added `tool`, `project`, `success`, `durationMs` to the DD `CONTEXT_ALLOWLIST`. Tool-level analytics now reach Datadog.
+- **Analytics WAL mode** — `PRAGMA journal_mode=WAL` set during table init to prevent `SQLITE_BUSY` contention with the storage layer on the shared `data.db`.
+
+### Security
+- **Notifier DNS-rebinding TOCTOU closed** — Replaced `isAllowedUrl()` with `validateUrl()` that returns the resolved IP. New `pinnedDispatcher()` creates an undici `Agent` that forces `fetch` to connect to the pre-validated IP only — no DNS re-resolution between check and use. All 3 senders use pinned dispatchers with `dispatcher.close()` in `finally`.
+- **Supergateway bind documented** — Supergateway has no `--host` CLI flag and ignores `HOST` env; binds `0.0.0.0:8001`. Security note added documenting that the proxy enforces bearer auth and the port is container-internal on Railway/Docker. Infra-level firewall recommended for other deployments.
+
+### Added
+- 31 new tests: analytics recording/flush/query (8), handler scope alignment (4), inference_metrics (3), DD allowlist (1), dispatch isolation (2), dispatch wiring guards (4), WAL mode (1), DNS pinning + dispatcher close (5), supergateway security (3).
+
+### Changed
+- 97 test files, 2876 tests (up from 96/2845).
+- Reviewed through 6 rounds of adversarial external review.
+
+## [19.2.5] - 2026-06-22 — 🔒 Security Advisory Fixes
+
+### Security
+- **GHSA-g3wf-5xg2-c4vh (Critical)** — HTTP bridge now requires bearer token auth (`PRISM_MCP_HTTP_TOKEN`). Constant-time HMAC comparison via `timingSafeEqual`. 503 if token not configured, 401 on mismatch.
+- **GHSA-wpc9-r66q-pj2c (Medium)** — `session_export_memory` path confinement: `realpath` + allow-list, sensitive directory deny (resolves macOS `/private` symlinks), owner-only tmp subdir (mode 0700), exclusive-create write (`wx` flag) prevents symlink-following.
+- **Notifier SSRF** — All notification senders now use `redirect: "error"` and DNS resolve-then-check to reject private/internal IPs.
+
+### Added
+- 4 security regression tests for export path confinement (outside-allow-list, sensitive-dir, positive control, symlink attack).
+
+### Fixed
+- Resolved 15 of 16 Dependabot vulnerabilities (hono, undici, ws, vite, tar, protobufjs, OpenTelemetry). Remaining: 1 low (esbuild Windows dev server, not applicable).
+
+### Changed
+- 96 test files, 2845 tests (up from 95/2841).
+- Reviewed through 4 rounds of external security review.
+
 ## [19.2.4] - 2026-06-18 — 📊 `inference_metrics` Tool + Delegation Gate
 
 ### Added
