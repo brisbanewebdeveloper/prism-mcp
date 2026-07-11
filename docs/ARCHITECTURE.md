@@ -19,7 +19,7 @@
 8. [Background Services](#8-background-services)
 9. [Security & Compliance](#9-security--compliance)
 10. [Cognitive Systems](#10-cognitive-systems)
-11. [Skill Architecture](#11-skill-architecture)
+11. [Skill Architecture](#11-skill-architecture-v151)
 12. [CLI](#12-cli)
 13. [Configuration Reference](#13-configuration-reference)
 14. [Telemetry & Observability](#14-telemetry--observability)
@@ -608,7 +608,7 @@ Agent calls session_load_context()
 
 ### 11.4 Adding a Skill
 
-1. Create `synalux-private/skills/<name>/SKILL.md`
+1. Create `<skills-dir>/<name>/SKILL.md` (see `SYNALUX_SKILLS_DIR` in `scripts/sync-skills.sh`)
 2. Add to routing table in portal's `routing/route.ts`
 3. Deploy portal — Prism picks up within 60 s (content cache TTL)
 4. Free-tier / offline: run `bash scripts/sync-skills.sh`

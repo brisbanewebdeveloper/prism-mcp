@@ -60,6 +60,7 @@ vi.mock("../../../src/config.js", () => ({
   PRISM_GRAPH_PRUNE_MAX_PROJECTS_PER_SWEEP: 25,
   PRISM_ACTR_ENABLED: false,
   PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS: 90,
+  SYNALUX_CONFIGURED: false,
 }));
 
 vi.mock("../../../src/utils/logger.js", () => ({
@@ -137,6 +138,21 @@ vi.mock("../../../src/utils/cognitiveMemory.js", () => ({
   recordMemoryAccess: vi.fn(),
 }));
 
+// Session context gate — default to "pass" (null) so existing tests are unaffected.
+// Gate-blocking behaviour is tested explicitly in the "context gate" sections below.
+vi.mock("../../../src/session/sessionContext.js", () => ({
+  markContextLoaded: vi.fn(),
+  requireContextLoaded: vi.fn(() => null),
+  noteInferenceForSession: vi.fn(),
+  getSessionState: vi.fn(() => null),
+}));
+
+// Boundaries — return minimal stubs so load-context tests don't depend on exact text.
+vi.mock("../../../src/boundaries/boundaries.js", () => ({
+  BOUNDARIES_VERSION: "test",
+  BOUNDARIES_TEXT: "# BOUNDARIES STUB",
+}));
+
 vi.mock("../../../src/tools/commonHelpers.js", () => ({
   redactSettings: vi.fn((s: Record<string, string>) => s),
   toMarkdown: vi.fn(() => "# Markdown Export"),
@@ -161,6 +177,7 @@ import { getStorage } from "../../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../../src/storage/configStorage.js";
 import { resolveProject } from "../../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../../src/storage/interface.js";
+import { requireContextLoaded, markContextLoaded } from "../../../src/session/sessionContext.js";
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -460,6 +477,46 @@ describe("ledgerHandlers", () => {
       storage.saveLedger.mockRejectedValue(new Error("DB write failed"));
       await expect(sessionSaveLedgerHandler(validArgs)).rejects.toThrow("DB write failed");
     });
+
+    // --- Context gate ---
+
+    it("blocks save and returns structured error when context not loaded", async () => {
+      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+        blocked: true,
+        error: "context_not_loaded: call session_load_context first.",
+      });
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("context_not_loaded");
+      expect(storage.saveLedger).not.toHaveBeenCalled();
+    });
+
+    it("passes through to storage when context is loaded (gate returns null)", async () => {
+      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
+      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+        blocked: false,
+        warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
+      });
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      // Must NOT block — write proceeds
+      expect(result.isError).toBe(false);
+      expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+      // Warning is prepended to the success text
+      expect(result.content[0].text).toContain("[advisory] Operating boundaries updated");
+      expect(result.content[0].text).toContain("✅ Session ledger saved");
+    });
   });
 
   // ====================================================================
@@ -606,7 +663,7 @@ describe("ledgerHandlers", () => {
 
       const text = result.content[0].text as string;
       // With 100 tokens * 4 chars = 400 char budget, the 5000-char summary gets truncated
-      expect(text).toContain("truncated to fit token budget");
+      expect(text).toContain("Sections omitted to fit token budget");
     });
 
     it("includes recent sessions in formatted output", async () => {
@@ -665,6 +722,34 @@ describe("ledgerHandlers", () => {
       await expect(sessionLoadContextHandler(validArgs)).rejects.toThrow(
         "Connection timeout"
       );
+    });
+
+    // --- conversation_id / markContextLoaded ---
+
+    it("calls markContextLoaded when conversation_id is provided", async () => {
+      storage.loadContext.mockResolvedValue(null);
+
+      await sessionLoadContextHandler({ project: "test-project", conversation_id: "conv-xyz" });
+
+      expect(vi.mocked(markContextLoaded)).toHaveBeenCalledWith("conv-xyz", "test-project", "test");
+    });
+
+    it("does not call markContextLoaded when conversation_id is absent", async () => {
+      storage.loadContext.mockResolvedValue(null);
+
+      await sessionLoadContextHandler({ project: "test-project" });
+
+      expect(vi.mocked(markContextLoaded)).not.toHaveBeenCalled();
+    });
+
+    it("prepends BOUNDARIES header to every response", async () => {
+      storage.loadContext.mockResolvedValue(null);
+
+      const result = await sessionLoadContextHandler(validArgs);
+      const text = result.content[0].text as string;
+
+      expect(text).toContain("OPERATING BOUNDARIES");
+      expect(text).toContain("BOUNDARIES STUB");
     });
   });
 
@@ -841,6 +926,48 @@ describe("ledgerHandlers", () => {
       await expect(sessionSaveHandoffHandler(validArgs)).rejects.toThrow(
         "Write conflict"
       );
+    });
+
+    // --- Context gate ---
+
+    it("blocks handoff save and returns structured error when context not loaded", async () => {
+      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+        blocked: true,
+        error: "context_not_loaded: call session_load_context first.",
+      });
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("context_not_loaded");
+      expect(storage.saveHandoff).not.toHaveBeenCalled();
+    });
+
+    it("passes through to storage when context is loaded (gate returns null)", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
+      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(storage.saveHandoff).toHaveBeenCalledTimes(1);
+    });
+
+    it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
+      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+        blocked: false,
+        warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
+      });
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      // Must NOT block — write proceeds
+      expect(result.isError).toBe(false);
+      expect(storage.saveHandoff).toHaveBeenCalledTimes(1);
+      // Warning is prepended to the success text
+      expect(result.content[0].text).toContain("[advisory] Operating boundaries updated");
+      expect(result.content[0].text).toContain("✅ Handoff");
     });
   });
 
@@ -1052,6 +1179,7 @@ describe("ledgerHandlers", () => {
 
     beforeEach(async () => {
       tempDir = await mkdtemp(join(tmpdir(), "prism-handler-export-"));
+      process.env.PRISM_EXPORT_ROOT = tempDir;
       storage.listProjects.mockResolvedValue(["test-project"]);
       storage.getLedgerEntries.mockResolvedValue([
         { id: "entry-1", summary: "Session 1", importance: 3 },
@@ -1063,6 +1191,7 @@ describe("ledgerHandlers", () => {
     });
 
     afterEach(async () => {
+      delete process.env.PRISM_EXPORT_ROOT;
       await rm(tempDir, { recursive: true, force: true });
     });
 
@@ -1146,7 +1275,7 @@ describe("ledgerHandlers", () => {
 
     afterEach(async () => {
       // Clean up vault directory if created
-      const vaultDir = join(os.homedir(), ".prism-mcp", "media", "test-project");
+      const vaultDir = join(os.homedir(), ".prism-mcp", "media", "__test-img__");
       if (fs.existsSync(vaultDir)) {
         await rm(vaultDir, { recursive: true, force: true });
       }
@@ -1155,7 +1284,7 @@ describe("ledgerHandlers", () => {
 
     it("saves an image and returns success with image ID", async () => {
       const result = await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         file_path: testImagePath,
         description: "Dashboard screenshot",
       });
@@ -1168,7 +1297,7 @@ describe("ledgerHandlers", () => {
 
     it("updates handoff metadata with visual memory entry", async () => {
       await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         file_path: testImagePath,
         description: "UI mockup",
       });
@@ -1184,7 +1313,7 @@ describe("ledgerHandlers", () => {
 
     it("returns error for non-existent file", async () => {
       const result = await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         file_path: join(tempDir, "does-not-exist.png"),
         description: "Missing image",
       });
@@ -1198,7 +1327,7 @@ describe("ledgerHandlers", () => {
       fs.writeFileSync(bmpPath, Buffer.from([0x42, 0x4d]));
 
       const result = await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         file_path: bmpPath,
         description: "BMP image",
       });
@@ -1211,7 +1340,7 @@ describe("ledgerHandlers", () => {
       storage.loadContext.mockResolvedValue(null);
 
       const result = await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         file_path: testImagePath,
         description: "No context image",
       });
@@ -1224,7 +1353,7 @@ describe("ledgerHandlers", () => {
 
     it("returns error for invalid args (missing required fields)", async () => {
       const result = await sessionSaveImageHandler({
-        project: "test-project",
+        project: "__test-img__",
       });
 
       expect(result.isError).toBe(true);
@@ -1248,7 +1377,7 @@ describe("ledgerHandlers", () => {
 
     beforeEach(async () => {
       tempDir = await mkdtemp(join(tmpdir(), "prism-view-image-test-"));
-      vaultDir = join(os.homedir(), ".prism-mcp", "media", "test-project");
+      vaultDir = join(os.homedir(), ".prism-mcp", "media", "__test-img__");
       fs.mkdirSync(vaultDir, { recursive: true });
 
       // Create a test image in the vault
@@ -1281,7 +1410,7 @@ describe("ledgerHandlers", () => {
       });
 
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         image_id: "abc12345",
       });
 
@@ -1307,7 +1436,7 @@ describe("ledgerHandlers", () => {
       });
 
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         image_id: "nonexistent",
       });
 
@@ -1322,7 +1451,7 @@ describe("ledgerHandlers", () => {
       });
 
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         image_id: "any-id",
       });
 
@@ -1347,7 +1476,7 @@ describe("ledgerHandlers", () => {
       });
 
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         image_id: "abc12345",
       });
 
@@ -1371,7 +1500,7 @@ describe("ledgerHandlers", () => {
       });
 
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
         image_id: "abc12345",
       });
 
@@ -1384,7 +1513,7 @@ describe("ledgerHandlers", () => {
 
     it("returns error for invalid args (missing image_id)", async () => {
       const result = await sessionViewImageHandler({
-        project: "test-project",
+        project: "__test-img__",
       });
       expect(result.isError).toBe(true);
     });

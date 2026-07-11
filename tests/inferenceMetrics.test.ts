@@ -36,7 +36,7 @@ describe("recordInference", () => {
         recordInference({ backend: "ollama-9b", model_picked: "prism-coder:9b", used_cloud: false, latency_ms: 50, prompt_tokens: 100, completion_tokens: 50 });
         recordInference({ backend: "ollama-9b", model_picked: "prism-coder:9b", used_cloud: false, latency_ms: 60, prompt_tokens: 200, completion_tokens: 80 });
         const snap = getInferenceSnapshot();
-        expect(snap.totalPromptTokens).toBe(300);
+        expect(snap.promptTokensEvaluated).toBe(300);
         expect(snap.totalCompletionTokens).toBe(130);
         expect(snap.totalTokens).toBe(430);
     });
@@ -44,7 +44,7 @@ describe("recordInference", () => {
     it("handles undefined token counts as 0", () => {
         recordInference({ backend: "ollama-2b", model_picked: "prism-coder:2b", used_cloud: false, latency_ms: 10 });
         const snap = getInferenceSnapshot();
-        expect(snap.totalPromptTokens).toBe(0);
+        expect(snap.promptTokensEvaluated).toBe(0);
         expect(snap.totalCompletionTokens).toBe(0);
     });
 
@@ -67,7 +67,7 @@ describe("recordInference", () => {
         recordInference({ backend: "synalux", model_picked: null, used_cloud: true, latency_ms: 200, prompt_tokens: 80, completion_tokens: 40 });
         const snap = getInferenceSnapshot();
         expect(snap.byModel["prism-coder:9b"].calls).toBe(2);
-        expect(snap.byModel["prism-coder:9b"].promptTokens).toBe(250);
+        expect(snap.byModel["prism-coder:9b"].promptTokensEvaluated).toBe(250);
         expect(snap.byModel["synalux"].calls).toBe(1);
     });
 });
@@ -102,6 +102,40 @@ describe("getInferenceSnapshot", () => {
         snap1.byModel["prism-coder:9b"].calls = 999;
         const snap2 = getInferenceSnapshot();
         expect(snap2.byModel["prism-coder:9b"].calls).toBe(1);
+    });
+});
+
+describe("cloudTokensSavedEst", () => {
+    it("accumulates on local calls only", () => {
+        recordInference({ backend: "ollama-9b", model_picked: "prism-coder:9b", used_cloud: false, latency_ms: 50, prompt_tokens: 100, completion_tokens: 50 });
+        recordInference({ backend: "ollama-27b", model_picked: "prism-coder:27b", used_cloud: false, latency_ms: 80, prompt_tokens: 200, completion_tokens: 80 });
+        const snap = getInferenceSnapshot();
+        expect(snap.cloudTokensSavedEst).toBe(100 + 50 + 200 + 80);
+    });
+
+    it("does not accumulate on cloud calls", () => {
+        recordInference({ backend: "synalux", model_picked: null, used_cloud: true, latency_ms: 200, prompt_tokens: 300, completion_tokens: 100 });
+        const snap = getInferenceSnapshot();
+        expect(snap.cloudTokensSavedEst).toBe(0);
+    });
+
+    it("resets to zero on session boundary", () => {
+        recordInference({ backend: "ollama-9b", model_picked: "prism-coder:9b", used_cloud: false, latency_ms: 50, prompt_tokens: 150, completion_tokens: 70 });
+        expect(getInferenceSnapshot().cloudTokensSavedEst).toBe(220);
+        resetInferenceMetrics();
+        expect(getInferenceSnapshot().cloudTokensSavedEst).toBe(0);
+    });
+
+    it("displays in output when > 0", () => {
+        recordInference({ backend: "ollama-9b", model_picked: "prism-coder:9b", used_cloud: false, latency_ms: 50, prompt_tokens: 1000, completion_tokens: 500 });
+        const out = formatInferenceMetrics();
+        expect(out).toContain("Cloud tokens saved (est.): 1,500");
+    });
+
+    it("shows zero when only cloud calls", () => {
+        recordInference({ backend: "synalux", model_picked: null, used_cloud: true, latency_ms: 200, prompt_tokens: 100, completion_tokens: 50 });
+        const snap = getInferenceSnapshot();
+        expect(snap.cloudTokensSavedEst).toBe(0);
     });
 });
 

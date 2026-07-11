@@ -59,6 +59,7 @@ vi.mock("../../src/utils/turboquant.js", () => ({
 }));
 
 import { sessionSaveLedgerHandler } from "../../src/tools/ledgerHandlers.js";
+import { markContextLoaded } from "../../src/session/sessionContext.js";
 
 describe("sessionSaveLedgerHandler embedding queue", () => {
   beforeEach(() => {
@@ -78,6 +79,7 @@ describe("sessionSaveLedgerHandler embedding queue", () => {
   it("queues embeddings through the active provider even when GOOGLE_API_KEY is unset", async () => {
     const generateEmbedding = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
     mockGetLLMProvider.mockReturnValue({ generateEmbedding });
+    markContextLoaded("conv-1", "brain-health-test", "test");
 
     const patchCall = new Promise<[string, Record<string, unknown>]>((resolve) => {
       mockPatchLedger.mockImplementation(async (entryId: string, patch: Record<string, unknown>) => {

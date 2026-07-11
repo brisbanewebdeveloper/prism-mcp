@@ -96,6 +96,20 @@ vi.mock("../../src/utils/imageCaptioner.js", () => ({
   fireCaptionAsync: vi.fn(),
 }));
 
+// Gate is tested separately in src/tools/__tests__/ledgerHandlers.test.ts.
+// Allow all calls through here so existing handler-behavior tests stay focused.
+vi.mock("../../src/session/sessionContext.js", () => ({
+  requireContextLoaded: vi.fn(() => null),
+  markContextLoaded: vi.fn(),
+  noteInferenceForSession: vi.fn(),
+  getSessionState: vi.fn(() => null),
+}));
+
+vi.mock("../../src/boundaries/boundaries.js", () => ({
+  BOUNDARIES_VERSION: "1",
+  BOUNDARIES_TEXT: "# Operating boundaries (stub for tests)",
+}));
+
 vi.mock("../../src/sync/factory.js", () => ({
   getSyncBus: vi.fn(() => ({
     broadcastUpdate: vi.fn(),
@@ -142,6 +156,11 @@ vi.mock("../../src/utils/cognitiveMemory.js", () => ({
 vi.mock("../../src/utils/inferenceMetrics.js", () => ({
   formatInferenceMetrics: vi.fn(() => ""),
   resetInferenceMetrics: vi.fn(),
+  getInferenceSnapshot: vi.fn(() => ({
+    totalCalls: 0, localCalls: 0, cloudCalls: 0, localPct: 0, cloudPct: 0,
+    promptTokensEvaluated: 0, promptTokensSubmittedEst: 0,
+    totalCompletionTokens: 0, totalTokens: 0, avgLatencyMs: 0, byModel: {},
+  })),
 }));
 
 vi.mock("../../src/tools/commonHelpers.js", () => ({
@@ -613,7 +632,7 @@ describe("ledgerHandlers", () => {
 
       const text = result.content[0].text as string;
       // With 100 tokens * 4 chars = 400 char budget, the 5000-char summary gets truncated
-      expect(text).toContain("truncated to fit token budget");
+      expect(text).toContain("omitted to fit token budget");
     });
 
     it("includes recent sessions in formatted output", async () => {

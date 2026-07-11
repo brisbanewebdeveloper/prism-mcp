@@ -85,13 +85,17 @@ Every `prism_infer` call tracks which model handled it (local Ollama vs cloud) a
 ```
 📊 Inference Metrics (this session):
   Total calls: 12 — Local: 10 (83%) | Cloud: 2 (17%)
-  Tokens: 8,420 in + 3,150 out = 11,570 total
+  Prompt tokens: 7,840 evaluated / 8,420 submitted est.
+  Completion tokens: 3,150
+  Cloud tokens saved (est.): 11,570 — token volume handled locally instead of cloud
   Avg latency: 1,240ms
   By model:
     prism-coder:27b: 6 calls, 7,200 tokens, avg 1,800ms
     prism-coder:9b: 4 calls, 2,870 tokens, avg 620ms
     synalux-27b: 2 calls, 1,500 tokens, avg 1,100ms
 ```
+
+**Cloud tokens saved** is the honest routing metric — it accrues only when local Ollama handles a call that would otherwise have gone to Claude or the Synalux portal. A compact version appears inline after every 5th `prism_infer` call: `📊 local 10 (83%) · cloud 2 (17%) · ~11,570 tok · avg 1,240ms · 11,570 cloud tok saved`.
 
 Local calls use actual Ollama token counts (`prompt_eval_count` / `eval_count` from Ollama); cloud calls use char/4 estimates. Metrics are tracked locally — no portal dependency, no env vars, works offline. Per-call data is also forwarded to the Synalux portal as best-effort analytics (independent of the display).
 
@@ -549,7 +553,7 @@ Pre-commit and pre-push security hooks that work with any editor, any AI tool, a
 
 ```bash
 # Install in all repos (one-time)
-bash synalux-private/scripts/install-git-hooks.sh
+bash hooks/install.sh
 
 # Or install manually in a single repo
 cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
@@ -629,3 +633,5 @@ It reads `~/.prism-mcp/data.db` and POSTs entries to the portal. Ledger entries 
 | **Prism AAC** | AGPL-3.0 |
 
 The AGPL-3.0 license covers the MCP server and its source code. The VS Code extension and Web IDE are separate products with their own licenses. Commercial hosted/managed deployment of the MCP server is available via the Synalux subscription.
+
+© 2026 Synalux, LLC.

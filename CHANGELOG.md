@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
+## [19.3.1] - 2026-07-06 — Cloud Tokens Saved Metric + Gemini Host Verification
+
+### Added
+- **`cloudTokensSavedEst`** counter in `inferenceMetrics.ts` — the honest local-inference routing metric. Accumulates `submittedEst + completionTokens` for every `used_cloud=false` call. Uses `submittedEst` (not `evaluated`) to correctly count KV-cached prompts. Displayed in both compact footer (`📊 … · N cloud tok saved`) and full `inference_metrics` block. Reset on session boundary.
+- **`scripts/test-gemini-host.mjs`** — Gemini 2.5 Flash integration test for host-agnostic Arc 1 gates and Arc 2 routing. Spawns `dist/server.js` as a real subprocess over stdio JSON-RPC. 5 tests, 7 assertions: T1–T3 confirm gates are server-side (hard-block without context, pass after load, `""` hard-blocked); T4–T5 confirm Arc 2 routing instinct from tool descriptions alone without skill-file instructions. T4 is two-sided — "answered directly" fails. 7/7 across 4 independent runs.
+
+## [19.3.0] - 2026-07-06 — 🔒 Host-Agnostic Session Enforcement + CI Guard
+
+### Added
+- **`src/session/sessionContext.ts`** — Server-side LRU session registry keyed on `conversation_id`. Replaces Claude Code-only hook enforcement; gates fire from the tool handler itself so every host (Gemini, cron, auto-push) sees the same behavior.
+  - `markContextLoaded(conversationId, project, version)` — called by `session_load_context` handler after successful assembly.
+  - `requireContextLoaded(conversationId | undefined) → GateResult` — fail-closed gate returning `null` (pass) | `{blocked:true, error}` | `{blocked:false, warning}`. `undefined` → allow (opt-in for session-agnostic hosts); `""` → block (not a bypass). LRU via Map insertion order + `touch()` (O(1)). TTL enforced on every read, not just eviction.
+  - `noteInferenceForSession` — fire-and-forget telemetry; uses `sessions.get()` (not `getOrInit`) to prevent ghost stubs.
+- **`src/session/__tests__/sessionContext.test.ts`** — Unit tests for the full gate surface: `undefined → null`, `"" → block`, expired TTL, LRU cap, ghost stub prevention.
+- **`scripts/no-raw-inference.mjs`** — CI guard: scans all tracked `src/` TypeScript files for raw inference calls outside the allowlist. Exits 1 on untracked `src/` files. Uses `(?<!:)\/\/` negative lookbehind to preserve `http://` URLs while stripping comments. Individually-named allowlist entries with explicit reasons (no module-level allowlisting).
+- **CI gate** (`ci.yml`) — `no-raw-inference.mjs` wired between Build and Test steps.
+- **`conversation_id`** added to `SESSION_SAVE_HANDOFF_TOOL` and `SESSION_LOAD_CONTEXT_TOOL` schemas (was missing — caused permanent hard block for compliant clients).
+- **Operating boundaries** prepended to every `session_load_context` response for non-Claude hosts (belt + suspenders: server enforces, payload informs).
+
+### Fixed
+- **13 bugs caught across 4 adversarial review rounds** (R1–R4):
+  1. `(gate as any)` casts in `ledgerHandlers.ts` defeated TypeScript rename safety → proper discriminated-union narrowing
+  2. `SESSION_SAVE_HANDOFF_TOOL` missing `conversation_id` schema → compliant clients were permanently hard-blocked
+  3. `requireContextLoaded(undefined)` hard-blocked auto-push/resource-reader hosts → now returns `null` (allow)
+  4. `evictStale` while-loop truthy check → `""` session key stalled the loop → changed to `!== undefined`
+  5. `noteInferenceForSession` used `getOrInit` → created ghost stubs crowding out legitimate sessions → changed to `sessions.get()`
+  6. Comment-strip regex `/\/\/.*/g` matched `://` in URLs → URL bypass patterns went blind → fixed with `(?<!:)\/\/` lookbehind
+  7. Untracked `src/` files silently passed CI guard → exit 1 on untracked files
+  8. Empty-string `conversation_id` bypassed gate (`!""` is truthy) → changed to `=== undefined`
+  9. Stale intersection cast `args as typeof args & { conversation_id?: string }` after type guard → removed
+  10. `(args as any).max_tokens` after type guard already narrows field → changed to `args.max_tokens`
+  11. `isPrismInferArgs` missing `typeof a.conversation_id !== "string"` check → non-string truthy value passed guard
+  12. `args.conversation_id!` non-null assertion across async `.then()` boundary → captured `const _convId` synchronously
+  13. Stale ALLOWLIST entry for `layer1Integration.test.ts` → removed (file uses no SYMBOL_PATTERNS)
+- **`isSessionSaveLedgerArgs` / `isSessionSaveHandoffArgs` / `isSessionLoadContextArgs`** — `conversation_id` validation added to all three type guards.
+- **`isPrismInferArgs`** — `conversation_id` type-checked as string when present.
+
+### Changed
+- `session_save_ledger` and `session_save_handoff` now gate on `requireContextLoaded` at entry (hard block on unknown/expired session, soft warning on boundaries-version drift).
+- `session_load_context` calls `markContextLoaded` in all 3 success paths (normal, fresh-project early-return, and third assembly branch).
+- 3071 tests across 101 files.
+
+---
+
+## [19.2.9] - 2026-07-05 — ⚡ Auto-Evict + 27B Routing Fix
+
+### Added
+- **Auto-evict warm smaller models** — When `model_ceiling: "27b"` is requested and 27B is installed but not warm, the handler now automatically unloads any warm smaller-tier models (9B, 4B, 2B) if freeing them would provide sufficient RAM for 27B. Eliminates the need for callers to manually unload models before requesting a large-model ceiling.
+  - Eviction is conditional: `freeBytes + warmBytes ≥ minFreeGb` must hold before any eviction fires.
+  - Evictions run with `Promise.allSettled` (network error to Ollama cannot crash the inference call).
+  - In-process mutex prevents concurrent requests from racing the eviction window.
+  - 800ms settle before re-reading free RAM (measured Ollama buffer-release latency).
+  - Live test: 9B warm (5.6 GB) → evicted → 27B loaded and ran locally. `used_cloud=false`, `attempts=[]`.
+
+### Fixed
+- **`model_ceiling: "27b"` ignored for enterprise plans** — Portal returns `model_ceiling: "32b"` for legacy enterprise/advanced accounts. Added normalization `32b → 27b` (same pattern as existing `14b → 9b`). Per-call `model_ceiling: "27b"` now resolves correctly without being clamped down.
+
+### Changed
+- 3096 tests across 101 files (up from 3031/101). 4 new auto-evict unit tests covering eviction condition guard (F1), parallel eviction with failure logging (F2), eviction mutex (F3), and ceiling-index guard (F4).
+
+## [19.2.8] - 2026-06-24 — 🔧 ESM require() Fix + Schema-Code Audit Skill
+
+### Fixed
+- **`knowledge_ingest` broken** — `require("path")` in `ingestHandler.ts` crashes in ESM context (`"type": "module"`). Replaced with static `import { resolve } from "path"`. File-path ingestion was completely non-functional.
+- **`sniffFormat` broken** — `require('node:fs')` in `migration/utils.ts` same ESM issue. Replaced with top-level `import { openSync, readSync, closeSync } from "node:fs"`.
+- Zero `require()` calls remain in compiled output.
+
+### Added
+- **`schema-code-audit` skill** — Deep cross-reference audit technique: extracts every `.from()` call from API routes and verifies table names, column names, FK joins, onConflict constraints, and cross-table ID usage against actual migration DDL. Originated from a sweep that found 20 BLOCKER bugs across banking, billing, accounting, and clinical modules.
+- **`pre-push-audit` rules 20-25** — Six new schema-code rules: phantom table, ghost column, invalid FK join, missing upsert constraint, nested insert anti-pattern, cross-table ID confusion.
+
 ## [19.2.7] - 2026-06-24 — 🔒 CodeQL Security Sweep
 
 ### Security
@@ -414,13 +485,13 @@ Prevents AI agents from reporting `done / fixed / working / 90%+` without observ
 **SSML rate formula restored** (prism-aac)
 `rate × 2` formula (capped at 1.4) confirmed working via tts-live-diag-rate.mjs. Stored slider 0.5 → SSML 1.0 (normal speed). Fixes Romanian/Ukrainian 2× slower regression.
 
-**Marketplace catalog** (synalux-private)
+**Marketplace catalog** 
 `marketplace_modules` table created via migration `20260510_marketplace_modules.sql`. Resolves 500 on every `/api/v1/marketplace/catalog` call (table was never applied to prod Supabase).
 
 **13 synalux stub fixes**
 Unread count, mail sync (IMAP→501, OAuth→real Gmail fetch), inbox thread 503, accounting providers removed (no longer returned as 'planned'), Zoom 501→422, chat providers cleaned, e-sign 501→422, feature-flags DB error returns success:false, SMS send 501→503, marketplace/installed 401, MathPanel + MathKeyboardRegion stub comments removed.
 
-**Inbox / messages** (prism-aac + synalux-private)
+**Inbox / messages** (prism-aac)
 - `/api/v1/prism-aac/inbox/poll` now returns real Gmail unread messages (via user's OAuth grant) and unclaimed SMS from `inbound_sms` table. Previously returned `[]`.
 - Per-message TTS on arrival: speaks "New message from [sender]: [text]" for ≤3 messages.
 - Reply button (↩) on schedule message tasks opens AACChatPanel and pre-selects the sender contact.
@@ -505,7 +576,7 @@ External systems were already building on Prism algorithms with hand-tuned appro
 
 ## [13.1.0] - 2026-05-04 — 🤖 Prism Coder 14B sibling + tier-aware local routing
 
-Coordinated cross-product release with **synalux-private v0.14.4** and **prism-aac v0.2.1**. No prism-mcp-server code changes (the model fleet lives in Ollama; npm package is unchanged) — this entry documents what ships through the Synalux portal that prism-mcp clients reach.
+Coordinated cross-product release with **portal v0.14.4** and **prism-aac v0.2.1**. No prism-mcp-server code changes (the model fleet lives in Ollama; npm package is unchanged) — this entry documents what ships through the Synalux portal that prism-mcp clients reach.
 
 ### Model fleet
 - **`prism-coder:7b` re-trained from clean Qwen2.5-Coder-7B base.** Replaces v18aac-MAX (BFCL 47.2%) with v18clean-epoch0 (BFCL **88.1%** 3-run StdDev 0%, AAC realigned **47/48 (97.9%)**, caregiver targeted **20/20**, emergency_qa 13/13, text_correct 15/15, translate 8/8). +40.9pp BFCL recovery, no AAC regression.
@@ -571,7 +642,7 @@ The adaptive engine observes 5 dimensions of user behavior and shapes runtime pa
 4. **Background noise** — EMA noise floor with `threshold = floor + 15dB`, **clamped at ≤ -20dB** so a loud environment never pushes the threshold above what voice can hit.
 5. **Prompt patterns** — frequency-weighted category preference (`count × exp(-age_days/14)`), 30-day decay on time-of-day vocabulary so summer routines don't haunt the autumn UI.
 
-`PROFILE_VERSION = 2` with v1 → v2 migration. Schema lives canonically at `synalux-private/portal/src/shared/adaptiveEngine.ts`; PrismAAC mirrors it for offline operation, with `training/sync_adaptive_engine.sh` as a structural drift check.
+`PROFILE_VERSION = 2` with v1 → v2 migration. Schema lives canonically at `the Synalux portal`; PrismAAC mirrors it for offline operation, with `training/sync_adaptive_engine.sh` as a structural drift check.
 
 Hysteresis: `dominantMood` only flips when ≥6 of last 10 events agree, so a single emergency doesn't trap the system in `'urgent'` for the next half hour.
 </details>

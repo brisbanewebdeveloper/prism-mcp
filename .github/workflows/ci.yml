@@ -37,8 +37,28 @@ jobs:
       - name: Audit Dependencies
         run: npm audit --audit-level=high
 
+      - name: Private repo leak guard
+        shell: bash
+        run: |
+          # Scan every file git tracks — extension-based grep misses dotfiles,
+          # Dockerfiles, .gitignore, LICENSE, smithery.yaml, etc.
+          # Split the search term so this file doesn't self-match.
+          TERM="synalux""-private"
+          HITS=$(git ls-files | xargs grep -ln "$TERM" 2>/dev/null \
+            | grep -v "package-lock.json" | grep -v ".github/workflows/ci.yml" || true)
+          if [ -n "$HITS" ]; then
+            echo "ERROR: private repo name leaked in tracked files:"
+            git ls-files | xargs grep -n "$TERM" 2>/dev/null \
+              | grep -v "package-lock.json" | grep -v ".github/workflows/ci.yml"
+            exit 1
+          fi
+
       - name: Build TypeScript
         run: npm run build
+
+      - name: Raw-inference chokepoint guard
+        shell: bash
+        run: node scripts/no-raw-inference.mjs
 
       - name: Run Unit Tests
         # Skip the heavyweight CLI integration tests to keep parallel load low
