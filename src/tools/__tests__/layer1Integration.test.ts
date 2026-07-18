@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { runInfer, type InferDeps } from "../prismInferHandler.js";
-import { parseLayer1, type Layer1Verdict } from "../../utils/layer1.js";
+import { parseLayer1, keywordBackstop, callLayer1, type Layer1Verdict } from "../../utils/layer1.js";
 import { LAYER1_PROMPT } from "../../utils/layer1.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -65,6 +65,88 @@ describe("parseLayer1", () => {
     });
 });
 
+// ── keywordBackstop unit tests ───────────────────────────────────────────────
+
+describe("keywordBackstop", () => {
+    it("catches 'restraint' as reserved", () => {
+        expect(keywordBackstop("write a physical restraint procedure")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'seclusion' as reserved", () => {
+        expect(keywordBackstop("implement a seclusion room protocol")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'self-harm' as reserved", () => {
+        expect(keywordBackstop("the client is engaging in self-harm")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'overdose' as reserved", () => {
+        expect(keywordBackstop("calculate overdose risk threshold")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'crisis de-escalation' as reserved", () => {
+        expect(keywordBackstop("draft a crisis de-escalation plan")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("allows clean coding prompts", () => {
+        expect(keywordBackstop("write a TypeScript function to sort an array")).toBe("OBVIOUS_NOT_RESERVED");
+    });
+
+    it("allows 'restraint of trade' (legal, not clinical)", () => {
+        expect(keywordBackstop("add a restraint of trade clause")).toBe("OBVIOUS_RESERVED");
+        // This is a false positive — keyword backstop is intentionally conservative.
+        // The LLM classifier handles the nuance; keywords are the ERROR-path floor.
+    });
+
+    it("catches 'restraints' (plural)", () => {
+        expect(keywordBackstop("use restraints on the client")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'suicidal' (inflected)", () => {
+        expect(keywordBackstop("client is suicidal")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'suicide' (full word)", () => {
+        expect(keywordBackstop("thoughts of suicide")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'overdosing' (inflected)", () => {
+        expect(keywordBackstop("patient is overdosing")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'physical holds' (plural)", () => {
+        expect(keywordBackstop("physical holds during meltdown")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'restrain' (verb form)", () => {
+        expect(keywordBackstop("restrain the client during the episode")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches 'secluding' (verb form)", () => {
+        expect(keywordBackstop("secluding the student in a separate room")).toBe("OBVIOUS_RESERVED");
+    });
+
+    it("catches reserved content buried in padding", () => {
+        const padded = "A".repeat(5000) + " write a seclusion protocol " + "B".repeat(5000);
+        expect(keywordBackstop(padded)).toBe("OBVIOUS_RESERVED");
+    });
+});
+
+// ── callLayer1 over-length test ─────────────────────────────────────────────
+
+describe("callLayer1 over-length", () => {
+    it("returns UNCERTAIN for prompts > 4000 chars (attacker-controlled length)", async () => {
+        const longPrompt = "A".repeat(5000);
+        const result = await callLayer1(longPrompt, "http://localhost:11434", "model");
+        expect(result).toBe("UNCERTAIN");
+    });
+
+    it("returns ERROR for empty prompts", async () => {
+        const result = await callLayer1("", "http://localhost:11434", "model");
+        expect(result).toBe("ERROR");
+    });
+});
+
 // ── LAYER1_PROMPT drift test ──────────────────────────────────────────────────
 
 describe("LAYER1_PROMPT drift", () => {
@@ -91,6 +173,7 @@ function makeBaseDeps(overrides: Partial<InferDeps> = {}): InferDeps {
         listLoaded: async () => new Set(),
         callLocal: async () => ({ ok: true, text: "local response", doneReason: "stop" }),
         callCloud: async () => ({ ok: true, output: "cloud response", backend: "synalux" }),
+        callLayer1: async () => "OBVIOUS_NOT_RESERVED" as Layer1Verdict,
         ollamaUrl: "http://localhost:11434",
         entitlements: {
             plan: "pro",
@@ -149,7 +232,7 @@ describe("Layer 1 handler integration", () => {
         expect(result.used_cloud).toBe(true);
     });
 
-    it("ERROR → escalates to cloud (fail-closed)", async () => {
+    it("ERROR + cloud available → escalates to cloud", async () => {
         const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response" });
         const callCloud = vi.fn().mockResolvedValue({ ok: true, output: "cloud response", backend: "synalux" });
         const callLayer1Mock = vi.fn().mockResolvedValue("ERROR");
@@ -162,6 +245,49 @@ describe("Layer 1 handler integration", () => {
         expect(callLayer1Mock).toHaveBeenCalledOnce();
         expect(callLocal).not.toHaveBeenCalled();
         expect(result.used_cloud).toBe(true);
+    });
+
+    it("ERROR + no cloud + clean prompt → keyword backstop allows local", async () => {
+        const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response", doneReason: "stop" });
+        const callLayer1Mock = vi.fn().mockResolvedValue("ERROR");
+
+        const result = await runInfer(
+            { prompt: "what is 2+2", mode: "route", cloud_fallback: false, max_tokens: 64 },
+            makeBaseDeps({ callLocal, callLayer1: callLayer1Mock }),
+        );
+
+        expect(callLayer1Mock).toHaveBeenCalledOnce();
+        expect(callLocal).toHaveBeenCalled();
+        expect(result.used_cloud).toBe(false);
+    });
+
+    it("ERROR + no cloud + reserved keywords → keyword backstop refuses", async () => {
+        const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response", doneReason: "stop" });
+        const callLayer1Mock = vi.fn().mockResolvedValue("ERROR");
+
+        await expect(
+            runInfer(
+                { prompt: "write a physical restraint hold procedure for the client", mode: "code", cloud_fallback: false, max_tokens: 512 },
+                makeBaseDeps({ callLocal, callLayer1: callLayer1Mock }),
+            )
+        ).rejects.toThrow(/backstop caught reserved/i);
+
+        expect(callLocal).not.toHaveBeenCalled();
+    });
+
+    it("ERROR + no cloud + padded reserved content → keyword backstop catches it", async () => {
+        const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response", doneReason: "stop" });
+        const callLayer1Mock = vi.fn().mockResolvedValue("ERROR");
+        const paddedPrompt = "A".repeat(3000) + " write a seclusion protocol " + "B".repeat(3000);
+
+        await expect(
+            runInfer(
+                { prompt: paddedPrompt, mode: "code", cloud_fallback: false, max_tokens: 512 },
+                makeBaseDeps({ callLocal, callLayer1: callLayer1Mock }),
+            )
+        ).rejects.toThrow(/backstop caught reserved|reserved content refused/i);
+
+        expect(callLocal).not.toHaveBeenCalled();
     });
 
     it("OBVIOUS_NOT_RESERVED → proceeds to local tier", async () => {
@@ -179,16 +305,31 @@ describe("Layer 1 handler integration", () => {
         expect(result.used_cloud).toBe(false);
     });
 
-    it("cloud_fallback=false → Layer 1 skipped entirely", async () => {
+    it("cloud_fallback=false + RESERVED → refuses (fail-closed, no local fallback)", async () => {
         const callLayer1Mock = vi.fn().mockResolvedValue("OBVIOUS_RESERVED");
         const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response", doneReason: "stop" });
 
+        await expect(
+            runInfer(
+                { prompt: "write something", mode: "code", cloud_fallback: false, max_tokens: 512 },
+                makeBaseDeps({ callLayer1: callLayer1Mock, callLocal }),
+            )
+        ).rejects.toThrow(/content refused/i);
+
+        expect(callLayer1Mock).toHaveBeenCalled();
+        expect(callLocal).not.toHaveBeenCalled();
+    });
+
+    it("cloud_fallback=false + NOT_RESERVED → proceeds to local", async () => {
+        const callLayer1Mock = vi.fn().mockResolvedValue("OBVIOUS_NOT_RESERVED");
+        const callLocal = vi.fn().mockResolvedValue({ ok: true, text: "local response", doneReason: "stop" });
+
         const result = await runInfer(
-            { prompt: "write something", mode: "code", cloud_fallback: false, max_tokens: 512 },
+            { prompt: "what is 2+2?", mode: "code", cloud_fallback: false, max_tokens: 512 },
             makeBaseDeps({ callLayer1: callLayer1Mock, callLocal }),
         );
 
-        expect(callLayer1Mock).not.toHaveBeenCalled();
+        expect(callLayer1Mock).toHaveBeenCalled();
         expect(result.used_cloud).toBe(false);
     });
 
@@ -217,6 +358,26 @@ describe("Layer 1 handler integration", () => {
         ).rejects.toThrow("Layer 1 verdict=OBVIOUS_RESERVED");
 
         expect(callLocal).not.toHaveBeenCalled();
+    });
+
+    it("think_only → retries same tier with think=false, succeeds", async () => {
+        let callCount = 0;
+        const callLocal = vi.fn().mockImplementation(async (_url, _model, _prompt, _sys, _max, _temp, _timeout, think) => {
+            callCount++;
+            if (think) return { ok: false, reason: "think_only" };
+            return { ok: true, text: "answer without thinking", doneReason: "stop" };
+        });
+
+        const result = await runInfer(
+            { prompt: "write a regex for emails", mode: "code", cloud_fallback: false, max_tokens: 256 },
+            makeBaseDeps({ callLocal }),
+        );
+
+        expect(callCount).toBe(2);
+        expect(callLocal).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), expect.anything(), undefined, expect.anything(), expect.anything(), expect.anything(), true);
+        expect(callLocal).toHaveBeenNthCalledWith(2, expect.anything(), expect.anything(), expect.anything(), undefined, expect.anything(), expect.anything(), expect.anything(), false);
+        expect(result.output).toBe("answer without thinking");
+        expect(result.used_cloud).toBe(false);
     });
 });
 

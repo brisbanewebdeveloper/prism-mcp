@@ -4,7 +4,7 @@
 
 [![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Models on HuggingFace](https://img.shields.io/badge/🤗-prism--coder-yellow)](https://huggingface.co/dcostenco)
 
 <p align="center">
@@ -15,6 +15,57 @@ Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claud
 
 **No account needed. No API keys. Runs on your machine.**  
 A paid subscription adds cloud sync, higher model tiers, and team features through the [Synalux portal](https://synalux.ai).
+
+---
+
+## What's New in v20.0.5
+
+### Local-First Delegation — 15 Categories, Measured Rate
+The `local-inference-first` skill covers 15 hard-trigger categories (code gen, regex, format conversion, summarization, documentation, factual lookup, classification, shell commands, config gen, and more). Pasted code blocks now trigger delegation regardless of question phrasing. Measured delegation rate: **30-35% on engineering sessions, 40-60% on transform/content sessions**. Rate depends on prompt mix, not the skill — the instruments now self-validate with `nonDelegatedCount` to prevent curated-set tautologies.
+
+### Think-Only Retry (v20.0.4)
+Qwen 3.5 models (9B/27B) with thinking enabled could burn all tokens on `<think>` blocks and return empty content, causing a cascade to 4B. Now detects think-only responses and retries the same tier with thinking disabled — preserving model quality instead of falling to a smaller model.
+
+---
+
+## What's New in v20.0.3
+
+### Layer 1 Cold-Model Resilience
+The reserved-category classifier now retries once with a longer timeout on cold-model failure, then falls back to a deterministic keyword backstop before refusing. Over-length prompts (>4K chars) are classified as UNCERTAIN before reaching the classifier — prompt padding can no longer force the ERROR branch. This eliminates the cold-start refusal problem without weakening the safety gate.
+
+### Keyword Backstop for Reserved Content
+When the LLM classifier fails (timeout, injection, resource pressure), a deterministic regex floor catches reserved vocabulary (restraint, seclusion, self-harm, suicide, overdose, crisis de-escalation, etc.) including inflected and verb forms. Blocks prompt-padding and classifier-injection attacks on the ERROR path.
+
+### Single-Source Safety Text
+The safety statement in the MCP server `instructions` field now imports from `boundaries.ts` — one source of truth instead of two hand-maintained copies. Boundaries version bumped to v3 with an explicit delivery decision documented in code.
+
+### Reserved-Category Safety Gate — All Tiers (v20.0.2)
+The Layer 1 semantic classifier now runs for **every** user, not just paid tiers. Reserved clinical content is refused on free tier when cloud is unavailable — fail-closed.
+
+### Ledger Dedup (v20.0.2)
+`session_save_ledger` deduplicates identical entries within a 5-minute window.
+
+### Evidence Script (v20.0.2)
+`scripts/generate-evidence.sh` regenerates all 5 evidence files with built-in assertions. Run `bash scripts/generate-evidence.sh` to verify the full pipeline.
+
+---
+
+## What's New in v20.0.0
+
+### License: AGPL-3.0 → Apache-2.0
+Prism MCP is now Apache-2.0. The thin-client architecture means all proprietary value (skill resolution, tier gating, billing, cloud inference) lives server-side — the open client carries no moat to protect. Apache-2.0 removes the enterprise adoption friction that AGPL caused.
+
+### Thin Client Architecture
+Skill routing, budget management, and content resolution have moved server-side to the Synalux portal. The MCP client is now a thin API caller — simpler, smaller, and portable across any host (Claude Code, Gemini, Cursor, autonomous scripts). Offline fallback reads the last successful response from local SQLite.
+
+### Clean-Room Voyage AI Adapter
+The Voyage AI embedding adapter was independently reimplemented from the [Voyage API docs](https://docs.voyageai.com/reference/embeddings-api) to ensure 100% project-owned copyright. Default model updated to `voyage-3.5`. See [PROVENANCE.md](./PROVENANCE.md) for details.
+
+### Server-Side Drift Detection
+Session drift detection (GATE 5) no longer requires Claude Code hooks. The timer runs server-side per conversation, piggybacked on every MCP tool response. Works for any host.
+
+### CLA Requirement
+External contributions now require signing the [Individual CLA](./CLA.md). The CLA check is merge-blocking on the `main` branch.
 
 ---
 
@@ -363,9 +414,9 @@ All on-device models are free to run locally via Ollama on every tier. A subscri
 |---|---|---|---|---|
 | Seats | 1 | 1 | up to 5 | up to 25 |
 | Local model ceiling | up to 4b | up to 9b | up to 27b | up to 27b |
-| Daily cloud inference | -- | 200 | 2,000 | 100,000 |
-| Cloud Coder (Web IDE) | -- | 100/day | 1,000/day | 100,000/day |
-| Cloud search | -- | 50/day | 500/day | 100,000/day |
+| Cloud inference | -- | ✅ | ✅ | ✅ (priority) |
+| Cloud Coder (Web IDE) | -- | ✅ | ✅ | ✅ (priority) |
+| Cloud search | -- | ✅ | ✅ | ✅ |
 | Max output tokens | 512 | 1,024 | 2,048 | 4,096 |
 | Cloud fallback | -- | Claude Opus 4.7 | Claude Opus 4.7 | Priority + Opus 4.7 |
 | Grounding verifier (fact-check AI output) | -- | ✅ | ✅ | ✅ |
@@ -623,15 +674,51 @@ It reads `~/.prism-mcp/data.db` and POSTs entries to the portal. Ledger entries 
 
 ---
 
-## License
+## License & Tiers
+
+**This repository (the Prism MCP client)** is licensed under [Apache-2.0](./LICENSE).
+
+### Free (no account)
+
+| Feature | Details |
+|---------|---------|
+| Local inference | Ollama via `prism_infer`, capped at the 4B model tier |
+| Session memory | Persistent sessions, handoffs, ledger — all local SQLite |
+| Knowledge search | Semantic search across session history |
+| Skills | All skills available locally (run `sync-skills.sh` to populate) |
+| Drift detection | Server-side GATE 5 reminders |
+
+### Paid (Synalux subscription)
+
+Everything in Free, plus:
+
+| Feature | Details |
+|---------|---------|
+| Model ceiling | Up to 27B locally + cloud cascade (9B → 27B → Claude) when local is unavailable |
+| Skill routing | Portal resolves which skills to load based on your project and prompt |
+| Cross-device memory | Supabase cloud sync — sessions survive across machines |
+| Grounding verifier | L3 NLI verification on model outputs |
+| Team features | Multi-agent Hivemind, workspace collaboration |
+
+The paid tier adds **intelligent routing** — the Synalux portal determines which skills are relevant to your current project and prompt, so your agent gets domain expertise (stripe patterns, training protocols, clinical standards) instead of loading everything. Free users with the repo can run `sync-skills.sh` to populate all skills locally; paid routing adds project-aware and prompt-aware selection.
+
+- Contributions require signing the [CLA](./CLA.md).
+- "Prism" and "Synalux" are trade names of Synalux LLC; the Apache license does
+  not grant trademark rights (see §6 of the license).
+
+### License change (v20)
+
+As of this release, prism-mcp is relicensed from AGPL-3.0 to Apache-2.0.
+Prior versions remain under AGPL-3.0. Existing forks retain all rights
+received under the original license.
 
 | Product | License |
 |---|---|
-| **prism-mcp-server** (this repo) | [AGPL-3.0](LICENSE) |
+| **prism-mcp-server** (this repo) | [Apache-2.0](LICENSE) |
 | **VS Code extension** (synalux-ai.synalux) | BSL-1.1 |
 | **Web IDE** (synalux.ai/coder) | Synalux Terms of Service |
-| **Prism AAC** | AGPL-3.0 |
+| **Prism AAC** | Apache-2.0 |
 
-The AGPL-3.0 license covers the MCP server and its source code. The VS Code extension and Web IDE are separate products with their own licenses. Commercial hosted/managed deployment of the MCP server is available via the Synalux subscription.
+This repository is licensed under Apache-2.0. Cloud features (hosted inference, cross-device memory, team features) are provided by the Synalux cloud service under separate terms.
 
 © 2026 Synalux, LLC.

@@ -1,13 +1,8 @@
 import {
-  BRAVE_API_KEY,
-  FIRECRAWL_API_KEY,
-  GOOGLE_SEARCH_API_KEY,
-  GOOGLE_SEARCH_CX,
-  SEMANTIC_SCHOLAR_API_KEY,
-  PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN,
-  PRISM_USER_ID,
-  PRISM_SCHOLAR_TOPICS,
-  PRISM_ENABLE_HIVEMIND
+  BRAVE_API_KEY, FIRECRAWL_API_KEY, GOOGLE_SEARCH_API_KEY,
+  GOOGLE_SEARCH_CX, SEMANTIC_SCHOLAR_API_KEY,
+  PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN, PRISM_USER_ID,
+  PRISM_SCHOLAR_TOPICS, PRISM_ENABLE_HIVEMIND,
 } from "../config.js";
 import { getStorage } from "../storage/index.js";
 import { debugLog } from "../utils/logger.js";
@@ -257,6 +252,7 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
     if (urls.length === 0) return `No articles found for "${topic}"`;
 
     await hivemindHeartbeat(`Scraping ${urls.length} articles on: ${topic}`);
+
     const scrapedTexts: string[] = [];
 
     for (const url of urls) {

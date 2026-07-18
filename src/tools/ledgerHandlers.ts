@@ -779,7 +779,7 @@ export async function sessionLoadContextHandler(args: unknown) {
     resetInferenceMetrics();
   }
 
-  const { project, level = "standard", role, conversation_id: convId } = args;
+  const { project, level = "standard", role, conversation_id: convId, prompt } = args;
   // T6 fix: explicit Number() coercion prevents string "2000" from later concatenating instead of adding
   const _maxTokensArg = Number(args.max_tokens);
   const _maxTokensSetting = parseInt(await getSetting("max_tokens", "0"), 10);
@@ -810,32 +810,39 @@ export async function sessionLoadContextHandler(args: unknown) {
   if (!data) {
     let freshSkillBlock = "";
     try {
-      const { resolveSkillsForProject: resolveForFresh } = await import("./skillRouting.js");
-      const freshResolved = await resolveForFresh(project);
-      for (const entry of freshResolved.skills.filter(e => e.protected)) {
-        const content = await getSetting(`skill:${entry.name}`, "");
-        if (!content?.trim()) continue;
-        freshSkillBlock += `\n\n[📜 SKILL: ${entry.name}]\n${content.trim()}`;
+      const { resolveSkills: resolveForFresh } = await import("./skillRouting.js");
+      const freshResolution = await resolveForFresh(project);
+      // Client-renders-content: load from local DB by resolved names
+      for (const name of freshResolution.names || []) {
+        const content = await getSetting(`skill:${name}`, "");
+        if (content?.trim()) {
+          freshSkillBlock += `\n\n[📜 SKILL: ${name}]\n${content.trim()}`;
+        }
+      }
+      // Offline fallback: load protected skills from local DB
+      if (freshResolution.isOffline) {
+        const protectedNames = ['prime-directive', 'evidence-first-protocol', 'behavioral-verifier', 'occam-razor-protocol', 'session-drift-detection', 'pre-commit-protocol', 'pre-push-audit', 'implementation-integrity-audit', 'bcba_ai_assistant'];
+        for (const name of protectedNames) {
+          if (freshResolution.names?.includes(name)) continue;
+          const content = await getSetting(`skill:${name}`, "");
+          if (content?.trim()) {
+            freshSkillBlock += `\n\n[📜 SKILL: ${name}]\n${content.trim()}`;
+          }
+        }
       }
     } catch {
       debugLog(`[session_load_context] Fresh project skill injection failed — continuing without`);
     }
     if (convId) {
-      const { markContextLoaded } = await import("../session/sessionContext.js");
+      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
       markContextLoaded(convId, project, BOUNDARIES_VERSION);
+      noteDriftSessionStart(convId);
     }
-    const { BOUNDARIES_TEXT: BT0, BOUNDARIES_VERSION: BV0 } = await import("../boundaries/boundaries.js");
-    const boundariesHeader0 =
-      `# OPERATING BOUNDARIES (v${BV0}) — enforced server-side, shown for transparency\n` +
-      BT0 + "\n\n" +
-      `# NOTE FOR NON-CLAUDE HOSTS: these boundaries run in code on every prism_infer call.\n` +
-      `# Reserved-category requests are routed to cloud or refused — not by instruction.\n\n---\n\n`;
     return {
       content: [{
         type: "text",
-        text: boundariesHeader0 +
-          `No session context found for project "${project}" at level ${level}.\n` +
+        text: `No session context found for project "${project}" at level ${level}.\n` +
           `This project has no previous session history. Starting fresh.` +
           freshSkillBlock,
       }],
@@ -1097,103 +1104,42 @@ export async function sessionLoadContextHandler(args: unknown) {
     }
   }
 
-  // ─── Project-Aware Skill Injection ──────────────────────────
-  // Skills are priority-sorted and cap-aware. Protected skills always load
-  // (they bypass the cap check). This prevents the silent-truncation bug
-  // where important behavioral skills were dropped because large low-priority
-  // skills consumed the budget first.
-  const { resolveSkillsForProject } = await import("./skillRouting.js");
-  const resolved = await resolveSkillsForProject(project);
-  const sortedSkills = resolved.skills;
-  const userLocalPolicy = resolved.user_local;
-  // F5: surface offline routing to the agent so it knows project/keyword skills may be missing
-  if (resolved.isOffline) {
-    skillBlock += `\n\n[⚠️ OFFLINE ROUTING: synalux.ai unreachable — using stale or fallback routing table. Project-specific and keyword-triggered skills may be missing. Universal protected skills still load.]`;
-  }
+  // ─── All other skills resolved by portal API ───────────────
+  const { resolveSkills, _setStorage } = await import("./skillRouting.js");
+  _setStorage(
+    async (k, v) => { try { await storage.setSetting?.(k, v); } catch {} },
+    async (k) => { try { return await getSetting(k, ""); } catch { return ""; } },
+  );
+  const skillResolution = await resolveSkills(project, prompt, effectiveRole);
 
-  let synaluxContent: Record<string, string> = {};
-  if (SYNALUX_CONFIGURED && storage && typeof (storage as unknown as { fetchSkillContent?: unknown }).fetchSkillContent === "function") {
-    const missing = sortedSkills.map(s => s.name).filter(n => !loadedSkills.includes(n));
-    synaluxContent = await (storage as unknown as { fetchSkillContent: (n: string[]) => Promise<Record<string,string>> })
-      .fetchSkillContent(missing).catch(() => ({}));
-    debugLog(`[session_load_context] Synalux skill content fetched: ${Object.keys(synaluxContent).join(", ") || "none"}`);
-  }
-
-  const SKILL_BLOCK_CAP = 40_000;
-  const skippedSkills: string[] = [];
-  for (const entry of sortedSkills) {
-    if (loadedSkills.includes(entry.name)) continue;
-    const content = synaluxContent[entry.name] || await getSetting(`skill:${entry.name}`, "");
-    if (!content || !content.trim()) continue;
-    const trimmed = content.trim();
-
-    if (entry.protected) {
-      skillBlock += `\n\n[📜 SKILL: ${entry.name}]\n${trimmed}`;
-      loadedSkills.push(entry.name);
+  // Client-renders-content: portal returns names, we load content from local DB
+  for (const name of skillResolution.names || []) {
+    if (loadedSkills.includes(name)) continue;
+    const content = await getSetting(`skill:${name}`, "");
+    if (content?.trim()) {
+      skillBlock += `\n\n[📜 SKILL: ${name}]\n${content.trim()}`;
+      loadedSkills.push(name);
       skillLoaded = true;
-      debugLog(`[session_load_context] Skill "${entry.name}" loaded (protected, p${entry.priority}) [${skillBlock.length} chars]`);
-      continue;
     }
-
-    if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP) {
-      skippedSkills.push(entry.name);
-      debugLog(`[session_load_context] Skill "${entry.name}" skipped — would exceed cap (${skillBlock.length}+${trimmed.length} > ${SKILL_BLOCK_CAP})`);
-      continue;
-    }
-    const source = synaluxContent[entry.name] ? "synalux" : "local-platform";
-    skillBlock += `\n\n[📜 SKILL: ${entry.name}]\n${trimmed}`;
-    loadedSkills.push(entry.name);
-    skillLoaded = true;
-    debugLog(`[session_load_context] Skill "${entry.name}" loaded (${source}, p${entry.priority}) [${skillBlock.length}/${SKILL_BLOCK_CAP} chars]`);
   }
 
-  // ─── User-Local Skills ──────────────────────────────────────
-  // Loaded ONLY when user_local.enabled=true (set in Synalux routing table
-  // or explicitly requested). Stored under user_skill: prefix — users can
-  // write here via dashboard; they CANNOT write to the platform skill: keys.
-  if (userLocalPolicy.enabled) {
-    const prefix = userLocalPolicy.key_prefix || "user_skill:";
+  // Offline fallback: load ALL local skill: content (no tier gating).
+  // Deliberate: offline = degraded = best-effort. A repo-holder with
+  // sync-skills.sh has the full library locally regardless of tier.
+  // Tier gating is portal-side (name resolution); offline bypasses it.
+  if (skillResolution.isOffline) {
     const allSettings = await storage.getAllSettings?.() || {};
     for (const [k, v] of Object.entries(allSettings)) {
-      if (!k.startsWith(prefix) || !v) continue;
-      if (skillBlock.length >= SKILL_BLOCK_CAP) break;
-      const skillName = k.replace(prefix, "");
-      if (loadedSkills.includes(skillName)) continue;
-      const trimmed = (v as string).trim();
-      if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP && loadedSkills.length > 0) continue;
-      skillBlock += `\n\n[📜 USER SKILL: ${skillName}]\n${trimmed}`;
-      loadedSkills.push(skillName);
-      skillLoaded = true;
-      debugLog(`[session_load_context] User-local skill "${skillName}" loaded`);
-    }
-  }
-
-  // ─── Memory-Based Skill Discovery ──────────────────────────
-  // If recent handoff/ledger mentions a platform skill name, auto-load it.
-  // Only scans platform skill: keys — user_skill: discovery is not automatic.
-  if (formattedContext.length > 0 && skillBlock.length < SKILL_BLOCK_CAP) {
-    const contextText = formattedContext.toLowerCase();
-    const allSkillKeys = await storage.getAllSettings?.() || {};
-    for (const [k, v] of Object.entries(allSkillKeys)) {
       if (!k.startsWith("skill:") || !v) continue;
-      if (skillBlock.length >= SKILL_BLOCK_CAP) break;
-      const skillName = k.replace("skill:", "");
-      if (loadedSkills.includes(skillName)) continue;
-      if (contextText.includes(skillName.replace(/-/g, " ")) || contextText.includes(skillName)) {
-        const trimmed = (v as string).trim();
-        if (skillBlock.length + trimmed.length > SKILL_BLOCK_CAP && loadedSkills.length > 0) {
-          skippedSkills.push(skillName);
-          continue;
-        }
-        skillBlock += `\n\n[📜 CONTEXT SKILL: ${skillName}]\n${trimmed}`;
-        loadedSkills.push(skillName);
-        debugLog(`[session_load_context] Context-triggered skill "${skillName}"`);
+      const name = k.replace("skill:", "");
+      if (loadedSkills.includes(name)) continue;
+      const content = (v as string).trim();
+      if (content && content.trim()) {
+        skillBlock += '\n\n[📜 SKILL: ' + name + ']\n' + content.trim();
+        loadedSkills.push(name);
+        skillLoaded = true;
       }
     }
-  }
-
-  if (skippedSkills.length > 0) {
-    skillBlock += `\n\n[⚠️ ${skippedSkills.length} skills TRUNCATED by ${SKILL_BLOCK_CAP}-char cap — NOT loaded: ${skippedSkills.join(", ")}. These rules are NOT in your context. Do not claim to follow them.]`;
   }
 
   // ─── Agent Greeting Block ────────────────────────────────────
@@ -1208,8 +1154,10 @@ export async function sessionLoadContextHandler(args: unknown) {
     greetingBlock = `\n\n[👤 AGENT IDENTITY]\n${namePart}${rolePart}${skillPart}`;
   }
 
-  // ─── SDM Intuitive Recall (v5.5) ───
-  // Generate embedding of current context and fetch latent SDM patterns
+  // ─── SDM Associative Recall (v5.5) ───
+  // Accepted as-is (R27): cosine similarity at 0.55 threshold, 3 matches max.
+  // Relabeled from "Intuitive Recall" to "Associative Recall" in R16.
+  // Not a verified-fact source — label says "similarity-matched, not verified facts."
   let sdmRecallBlock = "";
   if (level !== "quick") {
     try {
@@ -1227,7 +1175,7 @@ export async function sessionLoadContextHandler(args: unknown) {
 
         const topMatches = await decodeSdmVector(project, targetVector, 3, 0.55);
         if (topMatches.length > 0) {
-          sdmRecallBlock = `\n\n[🧠 INTUITIVE RECALL]\nThe deeper Superposed Memory matrix resonated with your current task and surfaced these latent patterns:\n`;
+          sdmRecallBlock = `\n\n[🔍 ASSOCIATIVE RECALL]\nSimilarity-matched session summaries (cosine ≥ 0.55, not verified facts):\n`;
           for (const match of topMatches) {
              sdmRecallBlock += `- [Sim: ${(match.similarity * 100).toFixed(1)}%] ${match.summary}\n`;
           }
@@ -1253,23 +1201,15 @@ export async function sessionLoadContextHandler(args: unknown) {
     behavBlock = [...rawBlock].slice(0, 2000).join('');
   }
 
-  // ─── v9.4.7: ABA Precision Protocol (foundational) ────────
-  const abaProtocol = `\n\n[🧠 ABA PRECISION PROTOCOL]\n` +
-    `Rule 1 — Observable Goals: Every task must have a measurable, verifiable outcome. State the specific result.\n` +
-    `Rule 2 — Precise Execution: One step at a time. Verify each step. If it fails → STOP → fix → verify → then continue.\n` +
-    `Rule 3 — No Reinforcement of Errors: Never repeat the same mistake twice. When the user says something is wrong, read the actual code/data FIRST before forming an opinion.\n` +
-    `Rule 4 — No Negation/Filler/Hedging Lead: NEVER start with "I can't", "I'm unable to", "Unfortunately", "I cannot", "I apologize", "While I cannot", "Sorry", "Regrettably", "I'm afraid", "As an AI", "Sure,", "Certainly,", "I can certainly", "Let me be transparent", "I should note", "Just to clarify", "It's worth noting". You may use "Yes" or "Absolutely" ONLY as a 1-word direct answer to a binary Yes/No question. UNCERTAINTY ESCAPE: Use ONLY for required database fields/API params (e.g., "Missing: patient_id"). Do NOT use as generic refusal.\n` +
-    `Rule 5 — Fix Without Asking: When you see a bug, fix it immediately. Do NOT ask "would you like me to fix that?" — just fix it.\n` +
-    `Rule 6 — Action Intent: When user says "fix/run/open/deploy", they want ACTION not a tutorial. Ask for specific info needed in 1-2 sentences, or act directly.\n` +
-    `Rule 7 — Tool Redirect: When user asks to "open browser"/"run terminal"/"git push" — output ONLY the URL or command. No follow-up. No explanations. Example: "open browser" → "https://synalux.ai/dashboard"`;
+  // ABA Precision Protocol is now delivered via skill routing
+  // (aba-precision-protocol, protected universal at priority -1).
+  // The inline literal was deleted in R25 to eliminate the mirror pair.
 
   // T5 structural truncation: assemble sections in priority order so budget truncation
   // drops the LEAST critical sections first (session history), never skills.
-  // Priority high→low: ABA | skills | behavioral warnings | version | drift | briefing | SDM | history
-  // The header + critical rules are always at the top; history is appended last.
+  // Priority high→low: skills | behavioral warnings | version | drift | briefing | SDM | history
   const criticalPrefix =
     `${MEMORY_BOUNDARY_PREFIX}📋 Session context for "${project}" (${level}):\n\n` +
-    abaProtocol +
     behavBlock +
     skillBlock +
     versionNote +
@@ -1318,20 +1258,14 @@ export async function sessionLoadContextHandler(args: unknown) {
     }
 
     if (convId) {
-      const { markContextLoaded } = await import("../session/sessionContext.js");
+      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
       markContextLoaded(convId, project, BOUNDARIES_VERSION);
+      noteDriftSessionStart(convId);
     }
 
-    const { BOUNDARIES_TEXT, BOUNDARIES_VERSION: BV } = await import("../boundaries/boundaries.js");
-    const boundariesHeader =
-      `# OPERATING BOUNDARIES (v${BV}) — enforced server-side, shown for transparency\n` +
-      BOUNDARIES_TEXT + "\n\n" +
-      `# NOTE FOR NON-CLAUDE HOSTS: these boundaries run in code on every prism_infer call.\n` +
-      `# Reserved-category requests are routed to cloud or refused — not by instruction.\n\n---\n\n`;
-
     return {
-      content: [{ type: "text", text: boundariesHeader + responseText + MEMORY_BOUNDARY_SUFFIX }],
+      content: [{ type: "text", text: responseText + MEMORY_BOUNDARY_SUFFIX }],
       isError: false,
     };
   }
@@ -1339,20 +1273,14 @@ export async function sessionLoadContextHandler(args: unknown) {
   let responseText = criticalPrefix + lowerPriority + historySection;
 
   if (convId) {
-    const { markContextLoaded } = await import("../session/sessionContext.js");
+    const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
     const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
     markContextLoaded(convId, project, BOUNDARIES_VERSION);
+    noteDriftSessionStart(convId);
   }
 
-  const { BOUNDARIES_TEXT, BOUNDARIES_VERSION: BV2 } = await import("../boundaries/boundaries.js");
-  const boundariesHeader2 =
-    `# OPERATING BOUNDARIES (v${BV2}) — enforced server-side, shown for transparency\n` +
-    BOUNDARIES_TEXT + "\n\n" +
-    `# NOTE FOR NON-CLAUDE HOSTS: these boundaries run in code on every prism_infer call.\n` +
-    `# Reserved-category requests are routed to cloud or refused — not by instruction.\n\n---\n\n`;
-
   return {
-    content: [{ type: "text", text: boundariesHeader2 + responseText + MEMORY_BOUNDARY_SUFFIX }],
+    content: [{ type: "text", text: responseText + MEMORY_BOUNDARY_SUFFIX }],
     isError: false,
   };
 }

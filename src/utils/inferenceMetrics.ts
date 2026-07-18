@@ -37,6 +37,13 @@ export interface InferenceSnapshot {
      *  Accumulated as submittedEst + completionTokens for every used_cloud=false call.
      *  This is the "opportunity savings" — what would have gone to Claude/Synalux portal. */
     cloudTokensSavedEst: number;
+    thinkOnlyRetries: number;
+    thinkOnlyRetryPct: number;
+    /** Total user prompts seen this session (delegated + not delegated).
+     *  A rate reading with nonDelegatedCount === 0 is a curated-set tautology,
+     *  not a rate measurement. */
+    totalPrompts: number;
+    nonDelegatedCount: number;
     byModel: Record<string, ModelStats>;
 }
 
@@ -66,6 +73,18 @@ let promptTokensSubmittedEst = 0;
 let totalCompletionTokens = 0;
 let totalLatencyMs = 0;
 let cloudTokensSavedEst = 0;
+let thinkOnlyRetries = 0;
+let totalPrompts = 0;
+let nonDelegatedCount = 0;
+
+export function recordThinkOnlyRetry(): void {
+    thinkOnlyRetries++;
+}
+
+export function recordPromptSeen(delegated: boolean): void {
+    totalPrompts++;
+    if (!delegated) nonDelegatedCount++;
+}
 
 export function recordInference(result: {
     backend: string;
@@ -145,6 +164,10 @@ export function getInferenceSnapshot(): InferenceSnapshot {
         totalTokens: promptTokensSubmittedEst + totalCompletionTokens,
         avgLatencyMs: total > 0 ? Math.round(totalLatencyMs / total) : 0,
         cloudTokensSavedEst,
+        thinkOnlyRetries,
+        thinkOnlyRetryPct: localCalls > 0 ? Math.round((thinkOnlyRetries / localCalls) * 100) : 0,
+        totalPrompts,
+        nonDelegatedCount,
         byModel: modelCopy,
     };
 }
@@ -157,6 +180,9 @@ export function resetInferenceMetrics(): void {
     totalCompletionTokens = 0;
     totalLatencyMs = 0;
     cloudTokensSavedEst = 0;
+    thinkOnlyRetries = 0;
+    totalPrompts = 0;
+    nonDelegatedCount = 0;
     for (const key of Object.keys(byModel)) {
         delete byModel[key];
     }

@@ -109,6 +109,7 @@ import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/ap
 import { ddInfo, ddError as ddLogError } from "./utils/ddLogger.js";
 import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
 import { recordInvocation } from "./utils/analytics.js";
+import { BOUNDARIES_TEXT } from "./boundaries/boundaries.js";
 
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
 
@@ -810,7 +811,7 @@ export function createServer() {
       },
       // Supplementary signal — not all clients support this field.
       // Primary mechanism is the dynamic tool description above.
-      instructions: `Prism MCP — The Mind Palace for AI Agents. This server provides persistent session memory, knowledge search, and context management tools. Use session_load_context to recover previous work state, session_save_ledger to log completed work, and session_save_handoff to preserve state for the next session.`,
+      instructions: `Prism MCP — The Mind Palace for AI Agents. This server provides persistent session memory, knowledge search, and context management tools. Use session_load_context to recover previous work state, session_save_ledger to log completed work, and session_save_handoff to preserve state for the next session.\n\nArchitecture: session_save_ledger and session_save_handoff require a loaded project context (conversation_id that called session_load_context). ${BOUNDARIES_TEXT} All cloud inference routes through the Synalux portal for billing, tier-gating, and audit.`,
     }
   );
 
@@ -1228,7 +1229,11 @@ export function createServer() {
 
           case "session_save_ledger":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
-            result = await sessionSaveLedgerHandler(args); break;
+            result = await sessionSaveLedgerHandler(args);
+            // GATE 5: Reset drift timer — save_ledger counts as a drift checkpoint
+            { const cid = (args as Record<string, unknown>)?.conversation_id as string | undefined;
+              if (cid) { const { noteDriftCheck } = await import("./session/sessionContext.js"); noteDriftCheck(cid); } }
+            break;
 
           case "session_save_handoff":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
@@ -1381,7 +1386,11 @@ export function createServer() {
 
           case "session_detect_drift":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
-            result = await sessionDetectDriftHandler(args); break;
+            result = await sessionDetectDriftHandler(args);
+            // GATE 5: Reset drift timer — detect_drift is the canonical check
+            { const cid = (args as Record<string, unknown>)?.conversation_id as string | undefined;
+              if (cid) { const { noteDriftCheck } = await import("./session/sessionContext.js"); noteDriftCheck(cid); } }
+            break;
 
           case "verify_behavior":
             if (!isVerifyBehaviorArgs(args)) throw new Error("file_path and change_summary required.");
@@ -1488,6 +1497,24 @@ export function createServer() {
                 });
               } catch { /* sendLoggingMessage is best-effort */ }
             }
+          }
+        }
+
+        // ═══ GATE 5: Server-Side Drift Timer Injection ═══
+        // Piggyback on every prism-mcp tool response: if the session is 60+
+        // minutes old and hasn't run session_detect_drift in the last 60 min,
+        // append a mandatory reminder. This replaces the guard_on_submit.py
+        // hook dependency — works on any host, not just Claude Code.
+        if (result && !result.isError && Array.isArray(result.content)) {
+          const convId = (args as Record<string, unknown>)?.conversation_id as string | undefined;
+          if (convId) {
+            try {
+              const { getDriftReminder } = await import("./session/sessionContext.js");
+              const reminder = getDriftReminder(convId);
+              if (reminder) {
+                result.content.push({ type: "text" as const, text: reminder });
+              }
+            } catch { /* getDriftReminder is best-effort — never block tool responses */ }
           }
         }
 

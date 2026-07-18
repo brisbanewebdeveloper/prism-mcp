@@ -1,50 +1,30 @@
 /**
  * src/boundaries/boundaries.ts
  *
- * Operating boundaries delivered in every session_load_context result.
+ * Safety declaration text and version tracking.
  *
- * These boundaries are enforced server-side in code (prism_infer safety
- * gates, requireContextLoaded). This text is belt-and-suspenders for a
- * cooperative host — it cannot be removed to bypass enforcement.
+ * DELIVERY DECISION (R18, explicit):
+ * The safety text is delivered via the MCP server `instructions` field
+ * (loaded once at connection). It is NOT injected per-call into
+ * session_load_context — the per-call banner was removed in R15/R16
+ * because the enforcement is in code (Layer 1 classifier + keyword
+ * backstop + fail-closed refusal), not in the banner text.
  *
- * Update BOUNDARIES_VERSION any time the text changes so session drift
- * detection can flag stale sessions.
+ * Some MCP clients don't surface `instructions` to the model. This is
+ * accepted: the code gates catch everything regardless. The text is
+ * defense-in-depth for cooperative hosts, not the enforcement mechanism.
+ *
+ * BOUNDARIES_VERSION is still used by markContextLoaded for session
+ * drift detection — bump it when the safety contract changes.
  */
 
-export const BOUNDARIES_VERSION = "1";
+export const BOUNDARIES_VERSION = "3";
 
 export const BOUNDARIES_TEXT = `
-## OPERATING BOUNDARIES — server-enforced, shown for transparency
+Safety boundaries are enforced in code — shown so hosts avoid wasted round-trips.
 
-### 1. Safety gates (unconditional — run before and after every model call)
-- Crisis/self-harm inputs are intercepted before reaching any model.
-- BCBA reserved categories (restraint, seclusion, physical management, dosing) route
-  to cloud or refuse; they NEVER generate locally. Fail-closed: if cloud is unavailable
-  and the prompt is reserved, the request is refused — never downgraded to local.
-- Dangerous output (restraint instructions, overdose methods, self-harm guidance)
-  is blocked regardless of which host requested it.
-
-### 2. BCBA clinical standards
-- Apply ABA principles grounded in the current BACB Ethics Code and Task List (5th Ed).
-- Use evidence-based interventions: FCT, DRA, DRO, NCR, antecedent modifications.
-- Least restrictive, dignity-preserving, trauma-informed procedures always.
+- **Crisis/self-harm** inputs are intercepted before reaching any model.
+- **BCBA reserved categories** (restraint, seclusion, physical management, dosing) are classified by Layer 1. RESERVED and UNCERTAIN prompts escalate to cloud or are refused. On classifier failure, a keyword backstop blocks reserved vocabulary before local generation.
+- **Dangerous output** (restraint instructions, overdose methods, self-harm guidance) is blocked regardless of host.
 - AAC access is never restricted as a consequence.
-- Physical management / restraint / seclusion are RESERVED — cloud only, with audit.
-
-### 3. Correctness gates (project-scoped write tools)
-- session_save_ledger and session_save_handoff require a loaded project context
-  (conversation_id that called session_load_context successfully).
-- This prevents a non-Claude host from writing state it hasn't confirmed.
-
-### 4. Inference routing
-- Local inference (Ollama) runs ONLY for OBVIOUS_NOT_RESERVED prompts (Layer 1 verdict).
-- RESERVED / UNCERTAIN / classifier errors escalate to cloud. Never downgrade reserved
-  prompts to local — that is exactly what Layer 1 flagged.
-- Cloud must never be reached directly by a host; all cloud inference routes through
-  the Synalux portal for billing, tier-gating, and HIPAA audit.
-
-### 5. Host note
-These boundaries are enforced by the server. They apply identically whether the host
-is Claude Code, Gemini, an autonomous script, or a cron job. A host that does not read
-this text still cannot bypass the enforcement — it is in code, not instructions.
 `.trim();

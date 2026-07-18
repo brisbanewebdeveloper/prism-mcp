@@ -889,6 +889,7 @@ export class SqliteStorage implements StorageBackend {
     "archived_at", "deleted_at", "is_rollup", "role", "event_type",
     "created_at", "updated_at", "session_date", "importance", "title",
     "agent_name", "last_accessed_at", "confidence_score", "rollup_count",
+    "embedding",
   ]);
 
   private parsePostgRESTFilters(
@@ -1058,6 +1059,20 @@ export class SqliteStorage implements StorageBackend {
     const now = new Date().toISOString();
     assertEmbeddableLedgerContent(entry.summary, entry.decisions, "saveLedger");
     const pendingEmbeddingState = createPendingEmbeddingState();
+
+    // Dedup: skip if an identical (project, conversation_id, summary) exists within 5 minutes
+    if (entry.project && entry.conversation_id && entry.summary) {
+      const dup = await this.db.execute({
+        sql: `SELECT id FROM session_ledger
+          WHERE project = ? AND conversation_id = ? AND summary = ?
+          AND created_at > datetime('now', '-5 minutes')
+          LIMIT 1`,
+        args: [entry.project, entry.conversation_id, entry.summary],
+      });
+      if (dup.rows.length > 0) {
+        return { id: (dup.rows[0] as unknown as { id: string }).id, deduplicated: true };
+      }
+    }
 
     await this.db.execute({
       sql: `INSERT INTO session_ledger

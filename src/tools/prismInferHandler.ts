@@ -38,8 +38,8 @@ import { ddLog } from "../utils/ddLogger.js";
 import { stripThink } from "../utils/thinkStrip.js";
 import { passesQualityGate } from "../utils/qualityGate.js";
 import { checkInputSafety, checkOutputSafety } from "../utils/safetyGate.js";
-import { callLayer1 as defaultCallLayer1, type Layer1Verdict } from "../utils/layer1.js";
-import { recordInference, formatInferenceMetrics } from "../utils/inferenceMetrics.js";
+import { callLayer1 as defaultCallLayer1, keywordBackstop, type Layer1Verdict } from "../utils/layer1.js";
+import { recordInference, recordThinkOnlyRetry, formatInferenceMetrics } from "../utils/inferenceMetrics.js";
 
 // ─── Tool Definition ────────────────────────────────────────────
 
@@ -290,7 +290,13 @@ async function callOllamaGenerate(
         const data = (await res.json()) as OllamaChatResp;
         if (data.error) return { ok: false, reason: `ollama_err:${data.error}` };
         const text = (data.message?.content ?? "").trim();
-        if (!text) return { ok: false, reason: "empty_response" };
+        if (!text) {
+            // When think=true, the model may burn all tokens on <think> and
+            // produce empty content. Report this distinctly so the tier loop
+            // can retry the same model with think=false rather than skipping.
+            const hadThinking = !!((data.message as any)?.thinking);
+            return { ok: false, reason: hadThinking ? "think_only" : "empty_response" };
+        }
         return { ok: true, text, doneReason: data.done_reason, promptTokens: data.prompt_eval_count, completionTokens: data.eval_count };
     } catch (err) {
         const name = err instanceof Error ? err.name : "Unknown";
@@ -534,38 +540,69 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     }
 
     // ── §E Layer 1 semantic pre-classifier ──────────────────────────────────
-    // Catches adversarial paraphrases the keyword stub misses.
-    // Runs only when cloud escalation is possible — without cloud, there is
-    // nowhere to route a RESERVED verdict.
+    // Runs for ALL tiers when Ollama is reachable. RESERVED prompts escalate
+    // to cloud if available; otherwise refuse (fail-closed). Free-tier users
+    // without cloud still get classified — a RESERVED verdict refuses the
+    // request rather than silently routing to local.
     // Recursion guard: skip when this call IS the Layer 1 classification
     // (mode="route" + max_tokens<=16 is the Layer 1 call signature).
     const layer1RecursionGuard = mode === "route" && maxTokens <= 16;
-    if (allowCloud && !layer1RecursionGuard) {
+    if (installed && !layer1RecursionGuard) {
         const l1fn = deps.callLayer1 ?? defaultCallLayer1;
-        const l1Model = resolveOllamaName("prism-coder:4b", installed ?? new Set());
+        const l1Model = resolveOllamaName("prism-coder:4b", installed);
         const l1 = await l1fn(args.prompt, deps.ollamaUrl, l1Model);
-        if (l1 !== "OBVIOUS_NOT_RESERVED") {
-            debugLog(`[prism_infer] Layer 1 verdict=${l1} — escalating to cloud`);
+        if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
+            debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
-            const cloudTimeout = args.timeout_ms ?? 90_000;
-            const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
-            if (cloud.ok && cloud.output) {
-                return await applyVerification(cloud.output, gatedArgs, deps, {
-                    backend: cloud.backend ?? "synalux",
-                    model_picked: null,
-                    ram_free_mb: ramFreeMb,
-                    latency_ms: Date.now() - t0,
-                    used_cloud: true,
-                    attempts,
-                    plan: ent.plan,
-                    completion_tokens: Math.ceil(cloud.output.length / 4),
-                });
+            if (allowCloud) {
+                const cloudTimeout = args.timeout_ms ?? 90_000;
+                const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
+                if (cloud.ok && cloud.output) {
+                    return await applyVerification(cloud.output, gatedArgs, deps, {
+                        backend: cloud.backend ?? "synalux",
+                        model_picked: null,
+                        ram_free_mb: ramFreeMb,
+                        latency_ms: Date.now() - t0,
+                        used_cloud: true,
+                        attempts,
+                        plan: ent.plan,
+                        completion_tokens: Math.ceil(cloud.output.length / 4),
+                    });
+                }
+                attempts.push({ tier: "synalux", reason: cloud.reason ?? "unknown" });
             }
-            attempts.push({ tier: "synalux", reason: cloud.reason ?? "unknown" });
-            // Layer 1 flagged RESERVED but cloud unavailable — fail closed, never fall through to local.
             throw new Error(
-                `prism_infer: Layer 1 verdict=${l1} but cloud unavailable. attempts=${JSON.stringify(attempts)}`
+                `prism_infer: Layer 1 verdict=${l1}, reserved content refused. attempts=${JSON.stringify(attempts)}`
             );
+        }
+        if (l1 === "ERROR") {
+            debugLog(`[prism_infer] Layer 1 verdict=ERROR — classifier failed, trying cloud then keyword backstop`);
+            attempts.push({ tier: "layer1", reason: "layer1_error" });
+            if (allowCloud) {
+                const cloudTimeout = args.timeout_ms ?? 90_000;
+                const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
+                if (cloud.ok && cloud.output) {
+                    return await applyVerification(cloud.output, gatedArgs, deps, {
+                        backend: cloud.backend ?? "synalux",
+                        model_picked: null,
+                        ram_free_mb: ramFreeMb,
+                        latency_ms: Date.now() - t0,
+                        used_cloud: true,
+                        attempts,
+                        plan: ent.plan,
+                        completion_tokens: Math.ceil(cloud.output.length / 4),
+                    });
+                }
+                attempts.push({ tier: "synalux", reason: cloud.reason ?? "unknown" });
+            }
+            const backstop = keywordBackstop(args.prompt);
+            debugLog(`[prism_infer] keyword backstop verdict=${backstop}`);
+            attempts.push({ tier: "keyword_backstop", reason: `backstop_${backstop.toLowerCase()}` });
+            if (backstop === "OBVIOUS_RESERVED") {
+                throw new Error(
+                    `prism_infer: classifier failed + keyword backstop caught reserved content. attempts=${JSON.stringify(attempts)}`
+                );
+            }
         }
         debugLog(`[prism_infer] Layer 1 verdict=OBVIOUS_NOT_RESERVED — proceeding local`);
     }
@@ -666,9 +703,19 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             anyViable = true;
             const timeout = args.timeout_ms ?? DEFAULT_TIMEOUTS[tier.tag] ?? 60_000;
             const enableThink = args.think ?? (mode !== "route");
-            const result = await deps.callLocal(
+            let result = await deps.callLocal(
                 deps.ollamaUrl, ollamaName, args.prompt, args.system, maxTokens, temperature, timeout, enableThink,
             );
+            // Think-only retry: model burned all tokens on <think>, empty content.
+            // Retry same model with think=false rather than falling to a smaller tier.
+            // One-shot: think=false cannot re-trigger think_only (no thinking to burn).
+            if (!result.ok && result.reason === "think_only" && enableThink) {
+                debugLog(`[prism_infer] ${tier.tag} returned think-only — retrying with think=false`);
+                recordThinkOnlyRetry();
+                result = await deps.callLocal(
+                    deps.ollamaUrl, ollamaName, args.prompt, args.system, maxTokens, temperature, timeout, false,
+                );
+            }
             if (result.ok) {
                 const { stripped, thinkOnly } = stripThink(result.text);
                 const output = stripped;

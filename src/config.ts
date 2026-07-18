@@ -47,9 +47,8 @@ function firstDefinedEnv(
  *   PRISM_DASHBOARD_PORT   — (optional) Mind Palace dashboard HTTP port. Defaults to 3000.
  *   PRISM_USER_ID          — (optional) Unique tenant ID for multi-user Supabase instances.
  *                            Defaults to "default". Set per-user in Claude Desktop config.
- *   VOYAGE_API_KEY         — (optional) API key for Voyage AI embeddings. Enables embedding_provider=voyage.
- *                            Voyage AI is the embedding provider recommended by Anthropic for use with
- *                            Claude. Get a free key at https://dash.voyageai.com.
+ *   VOYAGE_API_KEY         — (optional) Voyage AI API key for embeddings.
+ *                            Set embedding_provider=voyage to use. https://dash.voyageai.com
  *
  * If a required key is missing, the process exits immediately.
  * If an optional key is missing, a warning is logged but the server continues
