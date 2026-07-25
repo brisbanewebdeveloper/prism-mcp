@@ -29,6 +29,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mock config before any imports ──────────────────────────
 
+const { mockDebugLog } = vi.hoisted(() => ({
+  mockDebugLog: vi.fn(),
+}));
+
 vi.mock("../src/config.js", () => ({
   BRAVE_API_KEY: "brave_test_key",
   BRAVE_ANSWERS_API_KEY: "brave_answers_test",
@@ -40,7 +44,7 @@ vi.mock("../src/config.js", () => ({
 
 vi.mock("../src/utils/logger.js", () => ({
   sanitizeForLog: vi.fn((s: string) => s),
-  debugLog: vi.fn(),
+  debugLog: mockDebugLog,
 }));
 
 const mockGetJwt = vi.fn();
@@ -109,6 +113,7 @@ describe("synaluxSearch", () => {
       expect(result).toContain("Description: Desc 1");
       expect(result).toContain("URL: https://a.example");
       expect(result).toContain("Title: Result 2");
+      expect(mockDebugLog.mock.calls.flat().join("\n")).not.toContain("test query");
     });
 
     it("caps limit to 20", async () => {
@@ -213,6 +218,45 @@ describe("synaluxSearch", () => {
       expect(body.formats).toEqual(["html"]);
       expect(body.onlyMainContent).toBe(false);
       expect(body.waitFor).toBe(5000);
+    });
+
+    it("uses a caller-provided scrape timeout without sending it in the body", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "success", content: "html" }),
+      });
+      const timeoutSpy = vi
+        .spyOn(AbortSignal, "timeout")
+        .mockReturnValue(new AbortController().signal);
+
+      try {
+        await synaluxSearch.synaluxScrape("https://example.com", {
+          timeoutMs: 4_000,
+        });
+
+        expect(timeoutSpy).toHaveBeenCalledWith(4_000);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+          url: "https://example.com",
+        });
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+    });
+
+    it("accepts the portal data.markdown response contract", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "success",
+          data: { markdown: "# Portal Scrape" },
+        }),
+      });
+
+      const result = await synaluxSearch.synaluxScrape("https://example.com");
+
+      expect(result).toBe("# Portal Scrape");
     });
 
     it("returns empty string when content is missing", async () => {
@@ -496,37 +540,18 @@ describe("braveApi synalux routing", () => {
       expect(result).toContain("Via Synalux");
     });
 
-    it("falls back to Brave when synalux fails", async () => {
-      // Call 1: synaluxWebSearch → portal fetch fails
+    it("does not bypass configured Synalux when portal web search fails", async () => {
       fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // Call 2: performWebSearchRaw → synaluxWebSearchRaw → portal fetch fails again
-      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // Call 3: performWebSearchRaw → direct Brave fetch succeeds
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          web: { results: [{ title: "Via Brave", description: "Direct", url: "https://b.example" }] },
-        }),
-      });
 
-      const result = await braveApi.performWebSearch("test", 5, 0);
-      expect(result).toContain("Via Brave");
+      await expect(braveApi.performWebSearch("private query", 5, 0))
+        .rejects.toThrow("Portal down");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it("skips synalux when offset > 0 (portal does not support pagination)", async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          web: { results: [{ title: "Brave Direct", description: "d", url: "https://d.example" }] },
-        }),
-      });
-
-      const result = await braveApi.performWebSearch("test", 5, 10);
-
-      // Should go straight to Brave, not portal
-      const url = fetchMock.mock.calls[0][0];
-      expect(url.toString()).toContain("api.search.brave.com");
-      expect(result).toContain("Brave Direct");
+    it("fails before network I/O when configured Synalux cannot honor an offset", async () => {
+      await expect(braveApi.performWebSearch("private query", 5, 10))
+        .rejects.toThrow("does not support search offsets");
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
@@ -557,42 +582,12 @@ describe("braveApi synalux routing", () => {
       expect(result).toContain("Via Synalux Pizza");
     });
 
-    it("falls back to Brave when synalux fails", async () => {
-      // synaluxLocalSearch → portal fails
+    it("does not bypass configured Synalux when portal local search fails", async () => {
       fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // performLocalSearchRaw → synaluxLocalSearchRaw → portal fails again
-      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // performLocalSearchRaw → direct Brave web search (location IDs step)
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          locations: { results: [{ id: "loc1" }] },
-        }),
-      });
-      // getPoisData
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          results: [{
-            id: "loc1",
-            name: "Brave Pizza",
-            address: { streetAddress: "456 Brave St", addressLocality: "NY", addressRegion: "NY", postalCode: "10001" },
-            phone: "(555) 333-4444",
-            rating: { ratingValue: 4.0, ratingCount: 50 },
-            openingHours: ["Mon-Fri 9am-9pm"],
-          }],
-        }),
-      });
-      // getDescriptionsData
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          descriptions: { loc1: "Direct Brave result" },
-        }),
-      });
 
-      const result = await braveApi.performLocalSearch("pizza", 5);
-      expect(result).toContain("Brave Pizza");
+      await expect(braveApi.performLocalSearch("private place query", 5))
+        .rejects.toThrow("Portal down");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -621,29 +616,12 @@ describe("braveApi synalux routing", () => {
       expect(parsed.poisData.results[0].name).toBe("Raw Local");
     });
 
-    it("falls back to Brave raw on synalux failure", async () => {
-      // synaluxLocalSearchRaw → portal fails
+    it("does not bypass configured Synalux when raw local search fails", async () => {
       fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // Direct Brave: web search for location IDs → no locations → web fallback
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ web: { results: [] }, locations: { results: [] } }),
-      });
-      // performWebSearch inside fallback → synalux portal fails
-      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // performWebSearch → synaluxWebSearchRaw fails
-      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // performWebSearch → direct Brave web search
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          web: { results: [{ title: "Brave Fallback", description: "d", url: "u" }] },
-        }),
-      });
 
-      const raw = await braveApi.performLocalSearchRaw("pizza", 3);
-      const parsed = JSON.parse(raw);
-      expect(parsed.source).toBe("web_fallback");
+      await expect(braveApi.performLocalSearchRaw("private place query", 3))
+        .rejects.toThrow("Portal down");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -665,19 +643,12 @@ describe("braveApi synalux routing", () => {
       expect(result).toBe("Synalux says: Paris is the capital of France.");
     });
 
-    it("falls back to Brave when synalux fails", async () => {
-      // synaluxBraveAnswers → portal fails
+    it("does not bypass configured Synalux when portal answers fail", async () => {
       fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // Direct Brave Answers API
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { role: "assistant", content: "Direct Brave answer" } }],
-        }),
-      });
 
-      const result = await braveApi.performBraveAnswers("capital of France");
-      expect(result).toBe("Direct Brave answer");
+      await expect(braveApi.performBraveAnswers("private query"))
+        .rejects.toThrow("Portal down");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -699,20 +670,24 @@ describe("braveApi synalux routing", () => {
       expect(parsed.web.results[0].title).toBe("Raw");
     });
 
-    it("falls back to Brave raw on synalux failure", async () => {
-      // synaluxWebSearchRaw → portal fetch fails
-      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
-      // Direct Brave API succeeds
+    it("does not retry a quota-bearing portal search in the MCP client", async () => {
       fetchMock.mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          web: { results: [{ title: "Brave Raw", description: "d", url: "u" }] },
-        }),
+        ok: false,
+        status: 503,
+        text: async () => "search provider temporarily unavailable",
       });
 
-      const raw = await braveApi.performWebSearchRaw("test", 5, 0);
-      const parsed = JSON.parse(raw);
-      expect(parsed.web.results[0].title).toBe("Brave Raw");
+      await expect(braveApi.performWebSearchRaw("private query", 5, 0))
+        .rejects.toThrow("HTTP 503");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not make a direct Brave request after configured Synalux fails", async () => {
+      fetchMock.mockRejectedValueOnce(new Error("Portal down"));
+
+      await expect(braveApi.performWebSearchRaw("private query", 5, 0))
+        .rejects.toThrow("Portal down");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 });

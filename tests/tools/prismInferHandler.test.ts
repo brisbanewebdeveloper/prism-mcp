@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import {
     formatLocalWorkerMemory,
+    PRISM_INFER_TOOL,
     prepareMemoryAwareInferArgs,
     resolveRequestedModelCeiling,
     runInfer,
@@ -94,6 +95,11 @@ function verifierMock(outcome: Partial<GroundingOutcome> & { action: GroundingOu
 // ═══════════════════════════════════════════════════════════════════
 
 describe("isPrismInferArgs — type guard", () => {
+    it("documents Gemini 3.6 Flash as the only cloud fallback", () => {
+        expect(PRISM_INFER_TOOL.description).toContain("Gemini 3.6 Flash");
+        expect(PRISM_INFER_TOOL.description).not.toMatch(/Claude|Opus|Sonnet/i);
+    });
+
     it("accepts minimal valid args (prompt only)", () => {
         expect(isPrismInferArgs({ prompt: "hello" })).toBe(true);
     });

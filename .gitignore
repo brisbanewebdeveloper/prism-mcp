@@ -105,3 +105,13 @@ training/Modelfile.bfcl
 training/bfcl_*.txt
 __pycache__/
 results.json
+
+# Private evaluation and routing assets
+# Canonical home: synalux-private/prism-training/from-public-prism/
+/scripts/eval-layer1.mjs
+/tests/benchmarks/
+/tests/codingRoutingMatrix.test.ts
+/tests/fixtures/coding-quality-policy.json
+/tests/fixtures/coding-routing-matrix.json
+/tests/fixtures/layer1-bcba-routing.json
+/vertex-ai/test_pipeline_benchmark.ts

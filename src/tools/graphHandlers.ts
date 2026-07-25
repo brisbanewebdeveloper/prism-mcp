@@ -120,7 +120,7 @@ export async function knowledgeSearchHandler(args: unknown) {
   // Phase 1: destructure enable_trace (defaults to false for backward compat)
   const { project, query, category, limit = 10, enable_trace = false, activation } = args as any;
 
-  debugLog(`[knowledge_search] Searching: project=${project || "all"}, query="${query || ""}", category=${category || "any"}, limit=${limit}`);
+  debugLog(`[knowledge_search] Searching: project=${project || "all"}, query_chars=${query?.length || 0}, category=${category || "any"}, limit=${limit}`);
 
 
   // Phase 1: Capture total start time for latency measurement
@@ -151,7 +151,8 @@ export async function knowledgeSearchHandler(args: unknown) {
   const storageMs = performance.now() - storageStart;
   const totalMs = performance.now() - totalStart;
 
-  if (!data) {
+  const resultCount = Array.isArray(data?.results) ? data.results.length : 0;
+  if (!data || resultCount === 0) {
     // Phase 1: Use contentBlocks array instead of inline object
     // so we can conditionally push the trace block at content[1]
     const contentBlocks: Array<{ type: string; text: string }> = [{
@@ -203,7 +204,7 @@ export async function knowledgeSearchHandler(args: unknown) {
   // Phase 1: Wrap in contentBlocks array for optional trace attachment
   const contentBlocks: Array<{ type: string; text: string }> = [{
     type: "text",
-    text: `🧠 Found ${data.count} knowledge entries:\n\n${JSON.stringify(data.results || data, null, 2)}`,
+    text: `🧠 Found ${resultCount} knowledge entries:\n\n${JSON.stringify(data.results, null, 2)}`,
   }];
 
   // Phase 1: Attach MemoryTrace with strategy="keyword" and timing data
@@ -211,7 +212,7 @@ export async function knowledgeSearchHandler(args: unknown) {
     const trace = createMemoryTrace({
       strategy: "keyword",
       query: query || "",
-      resultCount: data.count,
+      resultCount,
       topScore: null,       // keyword search doesn't produce similarity scores
       threshold: null,       // keyword search has no threshold concept
       embeddingMs: 0,        // no embedding needed for keyword search
@@ -1423,4 +1424,3 @@ Example:
     return { questions: [], reason: "generation_failed" };
   }
 }
-

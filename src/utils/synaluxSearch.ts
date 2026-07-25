@@ -68,11 +68,17 @@ interface SynaluxScrapeOptions {
   formats?: string[];
   onlyMainContent?: boolean;
   waitFor?: number;
+  timeoutMs?: number;
 }
 
 interface SynaluxScrapeResponse {
   status: string;
   content?: string;
+  data?: {
+    markdown?: string;
+    html?: string;
+    rawHtml?: string;
+  };
   error?: string;
 }
 
@@ -132,7 +138,7 @@ async function portalPost<T>(path: string, body: Record<string, unknown>, timeou
  * the shape of performWebSearch() in braveApi.ts.
  */
 export async function synaluxWebSearch(query: string, count: number = 10): Promise<string> {
-  debugLog(`[synaluxSearch] web search: q="${query}", limit=${count}`);
+  debugLog(`[synaluxSearch] web search: query_chars=${query.length}, limit=${count}`);
 
   const data = await portalPost<SynaluxSearchResponse>("/api/v1/prism/search", {
     query,
@@ -161,7 +167,7 @@ export async function synaluxWebSearch(query: string, count: number = 10): Promi
  * Used by code-mode handlers that pass raw data to the QuickJS sandbox.
  */
 export async function synaluxWebSearchRaw(query: string, count: number = 10): Promise<string> {
-  debugLog(`[synaluxSearch] web search raw: q="${query}", limit=${count}`);
+  debugLog(`[synaluxSearch] web search raw: query_chars=${query.length}, limit=${count}`);
 
   const data = await portalPost<SynaluxSearchResponse>("/api/v1/prism/search", {
     query,
@@ -193,7 +199,7 @@ export async function synaluxWebSearchRaw(query: string, count: number = 10): Pr
  * Returns formatted text matching performLocalSearch() shape.
  */
 export async function synaluxLocalSearch(query: string, count: number = 5): Promise<string> {
-  debugLog(`[synaluxSearch] local search: q="${query}", count=${count}`);
+  debugLog(`[synaluxSearch] local search: query_chars=${query.length}, count=${count}`);
 
   const data = await portalPost<SynaluxLocalSearchResponse>("/api/v1/prism/local-search", {
     query,
@@ -219,7 +225,7 @@ export async function synaluxLocalSearch(query: string, count: number = 5): Prom
  * Local/POI search raw — returns JSON string for code-mode sandbox.
  */
 export async function synaluxLocalSearchRaw(query: string, count: number = 5): Promise<string> {
-  debugLog(`[synaluxSearch] local search raw: q="${query}", count=${count}`);
+  debugLog(`[synaluxSearch] local search raw: query_chars=${query.length}, count=${count}`);
 
   const data = await portalPost<SynaluxLocalSearchResponse>("/api/v1/prism/local-search", {
     query,
@@ -254,7 +260,7 @@ export async function synaluxLocalSearchRaw(query: string, count: number = 5): P
  * AI-grounded answers via Synalux portal.
  */
 export async function synaluxBraveAnswers(query: string, model?: string): Promise<string> {
-  debugLog(`[synaluxSearch] answers: q="${query}", model=${model || "default"}`);
+  debugLog(`[synaluxSearch] answers: query_chars=${query.length}, model=${model || "default"}`);
 
   const body: Record<string, unknown> = { query };
   if (model) body.model = model;
@@ -276,18 +282,26 @@ export async function synaluxBraveAnswers(query: string, model?: string): Promis
  * Scrape a URL via Synalux portal. Returns the extracted content string.
  */
 export async function synaluxScrape(url: string, options?: SynaluxScrapeOptions): Promise<string> {
-  debugLog(`[synaluxSearch] scrape: url="${url}"`);
+  debugLog(`[synaluxSearch] scrape: url_chars=${url.length}`);
 
   const body: Record<string, unknown> = { url };
   if (options?.formats) body.formats = options.formats;
   if (options?.onlyMainContent !== undefined) body.onlyMainContent = options.onlyMainContent;
   if (options?.waitFor !== undefined) body.waitFor = options.waitFor;
 
-  const data = await portalPost<SynaluxScrapeResponse>("/api/v1/prism/scrape", body);
+  const data = await portalPost<SynaluxScrapeResponse>(
+    "/api/v1/prism/scrape",
+    body,
+    options?.timeoutMs,
+  );
 
   if (data.status === "error") {
     throw new Error(`[synaluxSearch] scrape error: ${data.error || "unknown"}`);
   }
 
-  return data.content || "";
+  return data.content ||
+    data.data?.markdown ||
+    data.data?.html ||
+    data.data?.rawHtml ||
+    "";
 }

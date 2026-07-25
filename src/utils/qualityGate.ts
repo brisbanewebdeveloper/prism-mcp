@@ -70,7 +70,11 @@ export function passesQualityGate(
         .replace(/^#{1,6}\s+.*$/gm, "")
         .replace(/^[\s*-]*\*{1,2}[^*]+\*{1,2}:?\s*$/gm, "");
     const proseSentences = proseOnly.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 10);
-    if (proseSentences.length >= 6) {
+    // Plain source code often repeats structural lines across methods. In code
+    // mode those are not prose loops, and splitting on "." corrupts member
+    // access (`node = self.root` becomes `node = self`). Pass B below still
+    // catches egregious repetition at the higher threshold.
+    if (mode !== "code" && proseSentences.length >= 6) {
         const counts = new Map<string, number>();
         for (const s of proseSentences) {
             const key = s.toLowerCase();
@@ -85,7 +89,17 @@ export function passesQualityGate(
     // inside fake code blocks or other structural elements. Higher
     // threshold avoids false positives on legitimate code patterns
     // (e.g. `node = self.root` × 4 is fine, × 5 is suspicious).
-    const allSentences = stripped.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 10);
+    // In code mode, periods are member-access operators, not sentence
+    // boundaries. Splitting `input.length` at "." made several different
+    // loops share the fragment `while (i < input` and falsely counted it as
+    // repeated output. Full-line matching still catches genuinely duplicated
+    // source while preserving valid repeated control-flow shapes.
+    const fullTextUnits = mode === "code"
+        ? stripped.split(/\n+/)
+        : stripped.split(/[.!?\n]+/);
+    const allSentences = fullTextUnits
+        .map(s => s.trim())
+        .filter(s => s.length > 10);
     if (allSentences.length >= 10) {
         const counts = new Map<string, number>();
         for (const s of allSentences) {

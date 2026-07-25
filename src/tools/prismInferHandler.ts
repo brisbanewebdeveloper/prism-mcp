@@ -12,7 +12,7 @@
  *   4. On local fail, if cloud_fallback=true:
  *        - exchange synalux_sk_ → JWT (cached)
  *        - POST synalux portal /api/v1/prism/inference
- *        - portal runs its own cascade (9B/27B/Claude by tier)
+ *        - portal serves Gemini 3.6 Flash according to the user's tier
  *   5. Return { output, backend, model_picked, ram_free_mb, latency_ms, used_cloud }
  *
  * `prism_infer` is a thin client. It never calls Anthropic / OpenRouter
@@ -38,6 +38,11 @@ import { getEntitlements, clampCeiling, type PrismEntitlements, FREE_ENTITLEMENT
 import { ddLog } from "../utils/ddLogger.js";
 import { stripThink } from "../utils/thinkStrip.js";
 import { passesQualityGate } from "../utils/qualityGate.js";
+import {
+    applyDeterministicCodingRepairs,
+    buildCodingRepairPrompt,
+    passesCodingQualityGate,
+} from "../utils/codingQualityPolicy.js";
 import { checkInputSafety, checkOutputSafety } from "../utils/safetyGate.js";
 import { callLayer1 as defaultCallLayer1, keywordBackstop, type Layer1Verdict } from "../utils/layer1.js";
 import { recordInference, recordThinkOnlyRetry, formatInferenceMetrics, estimateTokens } from "../utils/inferenceMetrics.js";
@@ -75,6 +80,7 @@ const MEMORY_HISTORY_LIMITS: Readonly<Record<InferContextDepth, number>> = {
 };
 const FAST_TASK_COMPLEXITY_MAX = 3;
 const BALANCED_TASK_COMPLEXITY_MAX = 6;
+const MAX_CODING_REPAIR_ATTEMPTS = 2;
 
 // ─── Tool Definition ────────────────────────────────────────────
 
@@ -85,7 +91,7 @@ export const PRISM_INFER_TOOL: Tool = {
         "Owns model selection across 27B / 9B / 4B / 2B using an explicit `model_ceiling` or " +
         "the caller's `task_complexity`, then validates loaded memory size, model context, " +
         "entitlements, installed models, and free RAM at call time. " +
-        "Falls through to the synalux portal cloud cascade (9B → 27B → Claude Opus 4.7) " +
+        "Falls through to the Synalux portal Gemini 3.6 Flash cloud fallback " +
         "only when local is unviable AND `cloud_fallback=true`. " +
         "When `project` is provided, loads the dashboard-configured quick/standard/deep handoff and bounded history " +
         "as untrusted historical context for a memory-aware local worker. " +
@@ -552,8 +558,8 @@ async function callSynaluxInference(
 
     const url = `${PRISM_SYNALUX_BASE_URL}/api/v1/prism/inference`;
     // reserved=true tells the portal this prompt was refused by local Layer-1
-    // as reserved clinical content: it must be served by Claude or refused —
-    // never by a small local model or OpenRouter (plan v2 §5.1).
+    // as reserved clinical content: it must be served by the portal's
+    // reserved-capable cloud backend or refused — never by a local model.
     const reqBody = JSON.stringify({ prompt, max_tokens: maxTokens, ...(opts?.reserved ? { reserved: true } : {}) });
     try {
         let res = await fetch(url, {
@@ -1079,11 +1085,106 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 );
             }
             if (result.ok) {
-                const { stripped, thinkOnly } = stripThink(result.text);
-                const output = stripped;
+                let { stripped, thinkOnly } = stripThink(result.text);
+                let output = stripped;
 
                 // Quality gate — all modes. Route uses mode-aware empty floor (length===0).
-                const gate = passesQualityGate(output, thinkOnly, result.doneReason, mode);
+                let gate = passesQualityGate(output, thinkOnly, result.doneReason, mode);
+                if (gate.pass && mode === "code") {
+                    gate = passesCodingQualityGate(args.prompt, output);
+                }
+
+                // High-precision coding failures get bounded same-tier repair
+                // attempts before cloud escalation. Multiple attempts matter
+                // when syntax repair exposes a second structural defect.
+                for (
+                    let repairAttempt = 0;
+                    repairAttempt < MAX_CODING_REPAIR_ATTEMPTS;
+                    repairAttempt++
+                ) {
+                    const codingGateFailure =
+                        !gate.pass &&
+                        mode === "code" &&
+                        (gate.reason?.startsWith("code_") === true ||
+                            gate.reason?.startsWith("python_") === true);
+                    if (!codingGateFailure) break;
+
+                    const failedReason = gate.reason ?? "code_quality";
+                    const deterministicRepair = applyDeterministicCodingRepairs(
+                        output,
+                        failedReason,
+                    );
+                    if (deterministicRepair.changes.length > 0) {
+                        output = deterministicRepair.output;
+                        gate = passesQualityGate(output, false, result.doneReason, mode);
+                        if (gate.pass) {
+                            gate = passesCodingQualityGate(args.prompt, output);
+                        }
+                        attempts.push({
+                            tier: tier.tag,
+                            reason:
+                                `code_repair_deterministic:${deterministicRepair.changes.join(",")}`,
+                        });
+                        if (gate.pass) break;
+                    }
+
+                    const repair = buildCodingRepairPrompt(args.prompt, output, failedReason);
+                    const repairSystem = args.system
+                        ? `${args.system}\n\n${repair.system}`
+                        : repair.system;
+                    const repairPromptTokens =
+                        estimateTokens(repair.prompt) +
+                        estimateTokens(repairSystem) +
+                        CTX_TEMPLATE_MARGIN;
+                    if (repairPromptTokens <= tier.ctxTokens) {
+                        attempts.push({ tier: tier.tag, reason: `code_repair:${failedReason}` });
+                        const repaired = await deps.callLocal(
+                            deps.ollamaUrl,
+                            ollamaName,
+                            repair.prompt,
+                            repairSystem,
+                            maxTokens,
+                            0,
+                            timeout,
+                            false,
+                        );
+                        if (repaired.ok) {
+                            const repairedStripped = stripThink(repaired.text);
+                            const repairedGenericGate = passesQualityGate(
+                                repairedStripped.stripped,
+                                repairedStripped.thinkOnly,
+                                repaired.doneReason,
+                                mode,
+                            );
+                            const repairedGate = repairedGenericGate.pass
+                                ? passesCodingQualityGate(args.prompt, repairedStripped.stripped)
+                                : repairedGenericGate;
+                            result = repaired;
+                            stripped = repairedStripped.stripped;
+                            thinkOnly = repairedStripped.thinkOnly;
+                            output = stripped;
+                            gate = repairedGate;
+                            if (!gate.pass) {
+                                attempts.push({
+                                    tier: tier.tag,
+                                    reason: `code_repair_failed:${gate.reason ?? "quality_gate"}`,
+                                });
+                            }
+                        } else {
+                            attempts.push({
+                                tier: tier.tag,
+                                reason: `code_repair_error:${repaired.reason}`,
+                            });
+                            break;
+                        }
+                    } else {
+                        attempts.push({
+                            tier: tier.tag,
+                            reason: "code_repair_skipped:ctx_insufficient",
+                        });
+                        break;
+                    }
+                }
                 if (!gate.pass && allowCloud) {
                     debugLog(`[prism_infer] quality gate FAIL (${gate.reason}) — escalating to cloud`);
                     attempts.push({ tier: tier.tag, reason: `quality_gate:${gate.reason}` });
