@@ -57,6 +57,22 @@ features.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.2.7
+
+### Session Saves Survive Agent Restarts
+Prism now remembers that a conversation successfully loaded its project context
+when the MCP server restarts or another Prism process handles the next request.
+`session_save_ledger` and `session_save_handoff` no longer fail with a false
+`context_not_loaded` error in that flow.
+
+The recovery remains fail-closed: authorization is limited to the exact project
+and conversation, expires with the existing context window, and stores no
+plaintext conversation identifier. Cross-project, forged, malformed, expired,
+or future-dated receipts are still rejected. The release also updates PostCSS
+to the patched 8.5.23 release.
+
+---
+
 ## What's New in v20.2.6
 
 ### Safer Configuration Updates Across Every Agent

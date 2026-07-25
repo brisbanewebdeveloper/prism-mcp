@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.2.7] - 2026-07-25 — Reliable Cross-Process Session Saves
+
+### Fixed
+- Persisted successful context-load receipts locally so
+  `session_save_ledger` and `session_save_handoff` continue to recognize the
+  active conversation after an MCP server restart or process handoff.
+- Kept context authorization scoped to the exact project and conversation,
+  bounded by the existing six-hour lifetime, and fail-closed for malformed,
+  forged, future-dated, expired, and cross-project receipts.
+- Stored only one-way scope hashes, never plaintext conversation or project
+  identifiers.
+
+### Tests
+- Added restart and sibling-process recovery coverage plus malformed, forged,
+  future-dated, expired, cross-project, storage-failure, and plaintext-leak
+  regressions.
+
+### Security
+- Updated PostCSS to 8.5.23, resolving the high-severity previous-source-map
+  path-traversal advisory and deduplicating Vite onto the patched release.
+
 ## [20.2.6] - 2026-07-22 — Safe Host Configuration Reads
 
 ### Fixed
