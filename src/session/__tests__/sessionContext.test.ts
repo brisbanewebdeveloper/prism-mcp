@@ -14,17 +14,55 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { GateResult } from "../../session/sessionContext.js";
 import { BOUNDARIES_VERSION } from "../../boundaries/boundaries.js";
 
+const receiptStore = vi.hoisted(() => {
+  type Receipt = {
+    conversationHash: string;
+    projectHash: string;
+    project: string;
+    boundariesVersion: string;
+    loadedAt: number;
+    lastSeen: number;
+  };
+  const rows = new Map<string, Receipt>();
+  return {
+    rows,
+    save: vi.fn(async (receipt: Receipt, expiresBefore: number) => {
+      for (const [key, row] of rows) {
+        if (row.lastSeen < expiresBefore) rows.delete(key);
+      }
+      rows.set(`${receipt.conversationHash}:${receipt.projectHash}`, receipt);
+    }),
+    get: vi.fn(async (conversationHash: string, projectHash: string) =>
+      rows.get(`${conversationHash}:${projectHash}`) ?? null),
+  };
+});
+
+vi.mock("../../storage/configStorage.js", () => ({
+  saveSessionContextReceipt: receiptStore.save,
+  getSessionContextReceipt: receiptStore.get,
+}));
+
 // Reset module registry before each test so the in-memory Map starts empty.
 let markContextLoaded: (conversationId: string, project: string, version: string) => void;
 let requireContextLoaded: (conversationId: string | undefined) => GateResult;
+let registerContextLoaded: (conversationId: string, project: string, version: string) => Promise<void>;
+let requireContextLoadedForProject: (
+  conversationId: string | undefined,
+  project: string,
+) => Promise<GateResult>;
 let noteInferenceForSession: (conversationId: string, info: { backend: string; usedCloud: boolean }) => void;
 let getSessionState: (conversationId: string) => unknown;
 
 beforeEach(async () => {
+  receiptStore.rows.clear();
+  receiptStore.save.mockClear();
+  receiptStore.get.mockClear();
   vi.resetModules();
   const mod = await import("../../session/sessionContext.js");
   markContextLoaded = mod.markContextLoaded;
   requireContextLoaded = mod.requireContextLoaded;
+  registerContextLoaded = (mod as any).registerContextLoaded;
+  requireContextLoadedForProject = (mod as any).requireContextLoadedForProject;
   noteInferenceForSession = mod.noteInferenceForSession;
   getSessionState = mod.getSessionState;
 });
@@ -92,6 +130,117 @@ describe("markContextLoaded → requireContextLoaded lifecycle", () => {
     markContextLoaded("conv-A", "proj", BOUNDARIES_VERSION);
     expect(requireContextLoaded("conv-A")).toBeNull();
     expect(requireContextLoaded("conv-B")).not.toBeNull();
+  });
+});
+
+describe("durable project-scoped context recovery", () => {
+  it("recovers a loaded project after process-local state is lost", async () => {
+    await registerContextLoaded("private-conversation-id", "project-a", BOUNDARIES_VERSION);
+
+    expect(receiptStore.save).toHaveBeenCalledTimes(1);
+    const persisted = receiptStore.save.mock.calls[0][0];
+    expect(persisted.conversationHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(persisted.projectHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(persisted)).not.toContain("private-conversation-id");
+
+    vi.resetModules();
+    const restarted = await import("../../session/sessionContext.js");
+    const result = await (restarted as any).requireContextLoadedForProject(
+      "private-conversation-id",
+      "project-a",
+    );
+
+    expect(result).toBeNull();
+    expect((restarted.getSessionState("private-conversation-id") as any)?.project).toBe("project-a");
+  });
+
+  it("does not let a valid conversation receipt authorize another project", async () => {
+    await registerContextLoaded("conversation-a", "project-a", BOUNDARIES_VERSION);
+
+    vi.resetModules();
+    const restarted = await import("../../session/sessionContext.js");
+    const result = await (restarted as any).requireContextLoadedForProject(
+      "conversation-a",
+      "project-b",
+    );
+
+    expect(result).toMatchObject({ blocked: true });
+    if (result?.blocked) expect(result.error).toContain("context_not_loaded");
+  });
+
+  it("recovers each project loaded by a multi-project bootstrap", async () => {
+    await registerContextLoaded("multi-project-conversation", "project-a", BOUNDARIES_VERSION);
+    await registerContextLoaded("multi-project-conversation", "project-b", BOUNDARIES_VERSION);
+
+    vi.resetModules();
+    const restarted = await import("../../session/sessionContext.js");
+    await expect((restarted as any).requireContextLoadedForProject(
+      "multi-project-conversation",
+      "project-a",
+    )).resolves.toBeNull();
+    await expect((restarted as any).requireContextLoadedForProject(
+      "multi-project-conversation",
+      "project-b",
+    )).resolves.toBeNull();
+  });
+
+  it("fails closed on a project mismatch when durable storage is unavailable", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await registerContextLoaded("conversation-a", "project-a", "old-boundaries");
+    receiptStore.get.mockRejectedValueOnce(new Error("config DB unavailable"));
+
+    const result = await requireContextLoadedForProject("conversation-a", "project-b");
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("lookup failed"));
+    errorSpy.mockRestore();
+  });
+
+  it("keeps unknown conversation ids fail-closed", async () => {
+    const result = await requireContextLoadedForProject("forged-conversation", "project-a");
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(receiptStore.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an expired durable receipt", async () => {
+    await registerContextLoaded("expired-conversation", "project-a", BOUNDARIES_VERSION);
+    const [key, receipt] = [...receiptStore.rows.entries()][0];
+    receiptStore.rows.set(key, {
+      ...receipt,
+      loadedAt: Date.now() - (8 * 60 * 60 * 1000),
+      lastSeen: Date.now() - (7 * 60 * 60 * 1000),
+    });
+
+    vi.resetModules();
+    const restarted = await import("../../session/sessionContext.js");
+    const result = await (restarted as any).requireContextLoadedForProject(
+      "expired-conversation",
+      "project-a",
+    );
+
+    expect(result).toMatchObject({ blocked: true });
+    if (result?.blocked) expect(result.error).toContain("expired");
+  });
+
+  it("rejects a receipt whose stored project does not match its lookup scope", async () => {
+    await registerContextLoaded("conversation-a", "project-a", BOUNDARIES_VERSION);
+    const [key, receipt] = [...receiptStore.rows.entries()][0];
+    receiptStore.rows.set(key, { ...receipt, project: "project-b" });
+
+    vi.resetModules();
+    const restarted = await import("../../session/sessionContext.js");
+    const result = await (restarted as any).requireContextLoadedForProject(
+      "conversation-a",
+      "project-a",
+    );
+
+    expect(result).toMatchObject({ blocked: true });
+  });
+
+  it("preserves the session-agnostic opt-out when conversation_id is omitted", async () => {
+    await expect(requireContextLoadedForProject(undefined, "project-a")).resolves.toBeNull();
+    expect(receiptStore.get).not.toHaveBeenCalled();
   });
 });
 

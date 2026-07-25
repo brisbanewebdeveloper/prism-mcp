@@ -111,7 +111,9 @@ vi.mock("../../src/utils/imageCaptioner.js", () => ({
 // Allow all calls through here so existing handler-behavior tests stay focused.
 vi.mock("../../src/session/sessionContext.js", () => ({
   requireContextLoaded: vi.fn(() => null),
+  requireContextLoadedForProject: vi.fn(() => Promise.resolve(null)),
   markContextLoaded: vi.fn(),
+  registerContextLoaded: vi.fn(() => Promise.resolve()),
   noteDriftSessionStart: vi.fn(),
   noteInferenceForSession: vi.fn(),
   getSessionState: vi.fn(() => null),
@@ -209,9 +211,8 @@ import {
 } from "../../src/tools/ledgerHandlers.js";
 import { REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 import {
-  markContextLoaded,
-  noteDriftSessionStart,
-  requireContextLoaded,
+  registerContextLoaded,
+  requireContextLoadedForProject,
 } from "../../src/session/sessionContext.js";
 
 const BOOTSTRAP_DEPTH_CASES = ["quick", "standard", "deep"] as const;
@@ -230,9 +231,8 @@ const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockRefreshConfigStorageCache = vi.mocked(refreshConfigStorageCache);
 const mockAwaitSkillManifestSync = vi.mocked(awaitSkillManifestSync);
-const mockMarkContextLoaded = vi.mocked(markContextLoaded);
-const mockNoteDriftSessionStart = vi.mocked(noteDriftSessionStart);
-const mockRequireContextLoaded = vi.mocked(requireContextLoaded);
+const mockRegisterContextLoaded = vi.mocked(registerContextLoaded);
+const mockRequireContextLoadedForProject = vi.mocked(requireContextLoadedForProject);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -290,9 +290,8 @@ describe("ledgerHandlers", () => {
     mockGetStorage.mockResolvedValue(storage as any);
     mockGetSetting.mockResolvedValue("");
     mockGetAllSettings.mockResolvedValue({});
-    mockRequireContextLoaded.mockImplementation(() => null);
-    mockMarkContextLoaded.mockImplementation(() => undefined);
-    mockNoteDriftSessionStart.mockImplementation(() => undefined);
+    mockRequireContextLoadedForProject.mockResolvedValue(null);
+    mockRegisterContextLoaded.mockResolvedValue();
   });
 
   // ====================================================================
@@ -1420,8 +1419,8 @@ describe("ledgerHandlers", () => {
 
     it("generates a stable hidden conversation id and carries it through bootstrap, ledger, handoff, and drift registration", async () => {
       const registered = new Set<string>();
-      mockMarkContextLoaded.mockImplementation((conversationId) => { registered.add(conversationId); });
-      mockRequireContextLoaded.mockImplementation((conversationId) => conversationId && registered.has(conversationId)
+      mockRegisterContextLoaded.mockImplementation(async (conversationId) => { registered.add(conversationId); });
+      mockRequireContextLoadedForProject.mockImplementation(async (conversationId) => conversationId && registered.has(conversationId)
         ? null
         : { blocked: true, error: "context_not_loaded" });
       mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
@@ -1435,8 +1434,7 @@ describe("ledgerHandlers", () => {
       const conversationId = bootstrap.structuredContent.conversation_id as string;
       expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
       expect(bootstrap.content[0].text).not.toContain(conversationId);
-      expect(mockMarkContextLoaded).toHaveBeenCalledWith(conversationId, "test-project", "1");
-      expect(mockNoteDriftSessionStart).toHaveBeenCalledWith(conversationId);
+      expect(mockRegisterContextLoaded).toHaveBeenCalledWith(conversationId, "test-project", "1");
 
       expect((await sessionSaveLedgerHandler({
         project: "test-project", conversation_id: conversationId, summary: "Finished startup",
@@ -1444,7 +1442,7 @@ describe("ledgerHandlers", () => {
       expect((await sessionSaveHandoffHandler({
         project: "test-project", conversation_id: conversationId, last_summary: "Finished startup",
       })).isError).toBe(false);
-      expect(mockRequireContextLoaded).toHaveBeenCalledWith(conversationId);
+      expect(mockRequireContextLoadedForProject).toHaveBeenCalledWith(conversationId, "test-project");
     });
 
     it("reuses a supplied conversation id and flattens dashboard identity controls", async () => {

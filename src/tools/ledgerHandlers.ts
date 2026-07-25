@@ -358,8 +358,8 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   // silently wrong write. Does NOT gate safety — prism_infer handles that.
   let _saveLedgerGateWarning: string | undefined;
   {
-    const { requireContextLoaded } = await import("../session/sessionContext.js");
-    const gate = requireContextLoaded(args.conversation_id);
+    const { requireContextLoadedForProject } = await import("../session/sessionContext.js");
+    const gate = await requireContextLoadedForProject(args.conversation_id, args.project);
     if (gate !== null && gate.blocked) {
       return { content: [{ type: "text", text: gate.error }], isError: true };
     }
@@ -561,8 +561,8 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
 
   let _saveHandoffGateWarning: string | undefined;
   {
-    const { requireContextLoaded } = await import("../session/sessionContext.js");
-    const gate = requireContextLoaded(args.conversation_id);
+    const { requireContextLoadedForProject } = await import("../session/sessionContext.js");
+    const gate = await requireContextLoadedForProject(args.conversation_id, args.project);
     if (gate !== null && gate.blocked) {
       return { content: [{ type: "text", text: gate.error }], isError: true };
     }
@@ -1071,10 +1071,9 @@ export async function sessionLoadContextHandler(
       }
     }
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
     const freshText = `No session context found for project "${project}" at level ${level}.\n` +
       `This project has no previous session history. Starting fresh.` +
@@ -1365,10 +1364,9 @@ export async function sessionLoadContextHandler(
     }
     nativeContext += `\n**Session Version:** ${version === null || version === undefined ? "None" : compact(version, 40)}\n`;
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
     return {
       content: [{
@@ -1626,10 +1624,9 @@ export async function sessionLoadContextHandler(
     }
 
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
 
     return {
@@ -1641,10 +1638,9 @@ export async function sessionLoadContextHandler(
   let responseText = criticalPrefix + lowerPriority + historySection;
 
   if (convId) {
-    const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+    const { registerContextLoaded } = await import("../session/sessionContext.js");
     const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-    markContextLoaded(convId, project, BOUNDARIES_VERSION);
-    noteDriftSessionStart(convId);
+    await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
   }
 
   return {

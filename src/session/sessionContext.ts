@@ -1,11 +1,11 @@
 /**
- * Session state tracking — connection-scoped, in-process.
+ * Session state tracking — in-process hot path with a durable local receipt.
  *
  * This is NOT business logic — it's MCP connection lifecycle state.
  * Business logic (skill routing, budget tranching, content resolution)
  * lives in the synalux portal at /api/v1/prism/skills.
  *
- * What stays here (connection-scoped, cannot be portal-side):
+ * What stays here (host lifecycle state, cannot be portal-side):
  *   markContextLoaded / requireContextLoaded — write-gate for session tools
  *   noteInferenceForSession — telemetry counter
  *   drift timer — connection-scoped GATE 5 enforcement
@@ -15,7 +15,10 @@
  *   prompt-keyword matching, user-local skill loading, context-discovery.
  */
 
+import { createHash } from "node:crypto";
 import { BOUNDARIES_VERSION as CURRENT_BOUNDARIES_VERSION } from "../boundaries/boundaries.js";
+import * as configStorage from "../storage/configStorage.js";
+import type { SessionContextReceipt } from "../storage/configStorage.js";
 
 interface SessionState {
   contextLoaded: boolean;
@@ -40,6 +43,7 @@ export type GateResult =
 
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 h — conversation-scoped
 const MAX_SESSIONS   = 10_000;
+const RECEIPT_CLOCK_SKEW_MS = 60_000;
 
 /**
  * Connection-scoped fallback: remember the last conversation_id seen via
@@ -111,6 +115,90 @@ export function markContextLoaded(
   lastSeenConversationId = conversationId;
 }
 
+function contextNotLoadedError(project?: string): GateResult {
+  const projectNote = project
+    ? " the requested project was not loaded for this conversation."
+    : "";
+  return {
+    blocked: true,
+    error:
+      "context_not_loaded:" + projectNote + " Call session_bootstrap(conversation_id) or " +
+      "session_load_context(project, conversation_id) " +
+      "before this action. This project-scoped tool needs confirmed working context " +
+      "to act correctly. (Enforced server-side — applies to every host.)",
+  };
+}
+
+function contextExpiredError(): GateResult {
+  return {
+    blocked: true,
+    error:
+      "context_not_loaded: session expired (6 h TTL). Call " +
+      "session_bootstrap(conversation_id) or session_load_context(project, conversation_id) again. " +
+      "(Enforced server-side — applies to every host.)",
+  };
+}
+
+function hashReceiptScope(kind: "conversation" | "project", value: string): string {
+  return createHash("sha256").update(`prism-session-${kind}\0${value}`).digest("hex");
+}
+
+async function persistContextReceipt(
+  conversationId: string,
+  project: string,
+  boundariesVersion: string,
+  loadedAt: number,
+): Promise<void> {
+  const now = Date.now();
+  const receipt: SessionContextReceipt = {
+    conversationHash: hashReceiptScope("conversation", conversationId),
+    projectHash: hashReceiptScope("project", project),
+    project,
+    boundariesVersion,
+    loadedAt,
+    lastSeen: now,
+  };
+  await configStorage.saveSessionContextReceipt(receipt, now - SESSION_TTL_MS);
+}
+
+async function persistContextReceiptBestEffort(
+  conversationId: string,
+  project: string,
+  boundariesVersion: string,
+  loadedAt: number,
+): Promise<void> {
+  try {
+    await persistContextReceipt(conversationId, project, boundariesVersion, loadedAt);
+  } catch (error) {
+    // Keep the established same-process path available on read-only or damaged
+    // config stores, but make degraded restart recovery visible to operators.
+    console.error(
+      `[sessionContext] Durable context receipt unavailable for project "${project}": ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Registers successful context materialization and persists an opaque receipt.
+ * The conversation_id never leaves this process unhashed.
+ */
+export async function registerContextLoaded(
+  conversationId: string,
+  project: string,
+  boundariesVersion: string,
+): Promise<void> {
+  markContextLoaded(conversationId, project, boundariesVersion);
+  noteDriftSessionStart(conversationId);
+  const s = sessions.get(conversationId);
+  await persistContextReceiptBestEffort(
+    conversationId,
+    project,
+    boundariesVersion,
+    s?.driftSessionStart ?? Date.now(),
+  );
+}
+
 /**
  * Soft gate for handlers that need project context to be CORRECT (not safe).
  *
@@ -139,24 +227,11 @@ export function requireContextLoaded(conversationId: string | undefined): GateRe
   // even if no write has triggered eviction yet. Evict immediately on detection.
   if (s && (Date.now() - s.lastSeen) > SESSION_TTL_MS) {
     sessions.delete(conversationId);
-    return {
-      blocked: true,
-      error:
-        "context_not_loaded: session expired (6 h TTL). Call " +
-        "session_bootstrap(conversation_id) or session_load_context(project, conversation_id) again. " +
-        "(Enforced server-side — applies to every host.)",
-    };
+    return contextExpiredError();
   }
 
   if (!s || !s.contextLoaded) {
-    return {
-      blocked: true,
-      error:
-        "context_not_loaded: call session_bootstrap(conversation_id) or " +
-        "session_load_context(project, conversation_id) " +
-        "before this action. This project-scoped tool needs confirmed working context " +
-        "to act correctly. (Enforced server-side — applies to every host.)",
-    };
+    return contextNotLoadedError();
   }
 
   // Touch on valid read — maintains LRU order.
@@ -176,6 +251,75 @@ export function requireContextLoaded(conversationId: string | undefined): GateRe
   }
 
   return null;
+}
+
+/**
+ * Project-scoped durable gate used by ledger and handoff writes.
+ *
+ * The in-memory state remains the hot path. If another MCP process loaded the
+ * requested project, or this process restarted, an unexpired hashed receipt
+ * restores only that exact project. Unknown, malformed, expired, and
+ * cross-project lookups remain fail-closed.
+ */
+export async function requireContextLoadedForProject(
+  conversationId: string | undefined,
+  project: string,
+): Promise<GateResult> {
+  if (conversationId === undefined) return null;
+  if (!conversationId || !project.trim()) return contextNotLoadedError(project || undefined);
+
+  const memoryGate = requireContextLoaded(conversationId);
+  const memoryState = sessions.get(conversationId);
+  if (memoryState?.contextLoaded && memoryState.project === project &&
+      !(memoryGate && memoryGate.blocked)) {
+    await persistContextReceiptBestEffort(
+      conversationId,
+      project,
+      memoryState.boundariesVersion ?? CURRENT_BOUNDARIES_VERSION,
+      memoryState.driftSessionStart ?? memoryState.lastSeen,
+    );
+    return memoryGate;
+  }
+
+  let receipt: SessionContextReceipt | null = null;
+  try {
+    receipt = await configStorage.getSessionContextReceipt(
+      hashReceiptScope("conversation", conversationId),
+      hashReceiptScope("project", project),
+    );
+  } catch (error) {
+    console.error(
+      `[sessionContext] Durable context receipt lookup failed for project "${project}": ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return memoryGate && memoryGate.blocked ? memoryGate : contextNotLoadedError(project);
+  }
+
+  if (!receipt) return memoryGate?.blocked ? memoryGate : contextNotLoadedError(project);
+
+  const now = Date.now();
+  const invalidReceipt =
+    receipt.project !== project ||
+    !Number.isFinite(receipt.loadedAt) ||
+    !Number.isFinite(receipt.lastSeen) ||
+    receipt.loadedAt <= 0 ||
+    receipt.loadedAt > receipt.lastSeen ||
+    receipt.lastSeen > now + RECEIPT_CLOCK_SKEW_MS;
+  if (invalidReceipt) return contextNotLoadedError(project);
+  if ((now - receipt.lastSeen) > SESSION_TTL_MS) return contextExpiredError();
+
+  markContextLoaded(conversationId, project, receipt.boundariesVersion);
+  const restored = sessions.get(conversationId);
+  if (restored) restored.driftSessionStart = receipt.loadedAt;
+
+  const restoredGate = requireContextLoaded(conversationId);
+  await persistContextReceiptBestEffort(
+    conversationId,
+    project,
+    receipt.boundariesVersion,
+    receipt.loadedAt,
+  );
+  return restoredGate;
 }
 
 /** Best-effort telemetry from prism_infer. Never affects a safety decision. */

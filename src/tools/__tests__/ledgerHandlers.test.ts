@@ -144,6 +144,8 @@ vi.mock("../../../src/utils/cognitiveMemory.js", () => ({
 vi.mock("../../../src/session/sessionContext.js", () => ({
   markContextLoaded: vi.fn(),
   requireContextLoaded: vi.fn(() => null),
+  registerContextLoaded: vi.fn(() => Promise.resolve()),
+  requireContextLoadedForProject: vi.fn(() => Promise.resolve(null)),
   noteInferenceForSession: vi.fn(),
   getSessionState: vi.fn(() => null),
   noteDriftSessionStart: vi.fn(),
@@ -172,7 +174,10 @@ vi.mock("../../../src/utils/vaultExporter.js", () => ({
 
 import { getStorage } from "../../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../../src/storage/configStorage.js";
-import { requireContextLoaded, markContextLoaded } from "../../../src/session/sessionContext.js";
+import {
+  registerContextLoaded,
+  requireContextLoadedForProject,
+} from "../../../src/session/sessionContext.js";
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -428,7 +433,7 @@ describe("ledgerHandlers", () => {
     // --- Context gate ---
 
     it("blocks save and returns structured error when context not loaded", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: true,
         error: "context_not_loaded: call session_load_context first.",
       });
@@ -441,7 +446,7 @@ describe("ledgerHandlers", () => {
     });
 
     it("passes through to storage when context is loaded (gate returns null)", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce(null);
 
       const result = await sessionSaveLedgerHandler(validArgs);
 
@@ -450,7 +455,7 @@ describe("ledgerHandlers", () => {
     });
 
     it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: false,
         warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
       });
@@ -700,22 +705,22 @@ describe("ledgerHandlers", () => {
       );
     });
 
-    // --- conversation_id / markContextLoaded ---
+    // --- conversation_id / durable context registration ---
 
-    it("calls markContextLoaded when conversation_id is provided", async () => {
+    it("registers durable context when conversation_id is provided", async () => {
       storage.loadContext.mockResolvedValue(null);
 
       await sessionLoadContextHandler({ project: "test-project", conversation_id: "conv-xyz" });
 
-      expect(vi.mocked(markContextLoaded)).toHaveBeenCalledWith("conv-xyz", "test-project", "test");
+      expect(vi.mocked(registerContextLoaded)).toHaveBeenCalledWith("conv-xyz", "test-project", "test");
     });
 
-    it("does not call markContextLoaded when conversation_id is absent", async () => {
+    it("does not register durable context when conversation_id is absent", async () => {
       storage.loadContext.mockResolvedValue(null);
 
       await sessionLoadContextHandler({ project: "test-project" });
 
-      expect(vi.mocked(markContextLoaded)).not.toHaveBeenCalled();
+      expect(vi.mocked(registerContextLoaded)).not.toHaveBeenCalled();
     });
 
     it("does not include safety banner (enforcement is in code)", async () => {
@@ -908,7 +913,7 @@ describe("ledgerHandlers", () => {
     // --- Context gate ---
 
     it("blocks handoff save and returns structured error when context not loaded", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: true,
         error: "context_not_loaded: call session_load_context first.",
       });
@@ -922,7 +927,7 @@ describe("ledgerHandlers", () => {
 
     it("passes through to storage when context is loaded (gate returns null)", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
-      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce(null);
 
       const result = await sessionSaveHandoffHandler(validArgs);
 
@@ -932,7 +937,7 @@ describe("ledgerHandlers", () => {
 
     it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: false,
         warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
       });
