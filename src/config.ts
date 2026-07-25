@@ -409,7 +409,8 @@ export const PRISM_DASHBOARD_PORT = Number.isInteger(parsedDashboardPort)
 //
 // Auto-resolution (PRISM_STORAGE=auto, the default) picks in this order:
 //   1. PRISM_FORCE_LOCAL=true → "local" (override everything)
-//   2. SYNALUX_API_KEY + PRISM_SYNALUX_BASE_URL set → "synalux"
+//   2. Synalux credentials + portal-confirmed cloud-memory entitlement → "synalux"
+//      (portal-confirmed free → "local"; unverifiable entitlement → fail closed)
 //   3. SUPABASE_URL + SUPABASE_KEY set → "supabase" (legacy)
 //   4. else → "local"
 
@@ -459,7 +460,11 @@ export const SUPABASE_CONFIGURED =
 // becomes a thin HTTP client of the synalux portal. This is the paid-tier
 // default. Synalux portal owns project validation, tier gating, audit logs,
 // and hivemind agent coordination.
-export const PRISM_SYNALUX_BASE_URL = sanitizeEnv(process.env.PRISM_SYNALUX_BASE_URL);
+// PRISM_SYNALUX_BASE_URL is canonical. SYNALUX_BASE_URL remains a legacy
+// compatibility alias so every portal client resolves the same origin.
+export const PRISM_SYNALUX_BASE_URL = sanitizeEnv(
+  process.env.PRISM_SYNALUX_BASE_URL || process.env.SYNALUX_BASE_URL,
+);
 export const PRISM_SYNALUX_API_KEY = sanitizeEnv(process.env.PRISM_SYNALUX_API_KEY);
 export const SYNALUX_CONFIGURED =
   !!PRISM_SYNALUX_BASE_URL &&
@@ -686,20 +691,24 @@ export const PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS = parseInt(
 
 // ─── v7.1: Task Router Configuration ─────────────────────────
 // Deterministic heuristic-based routing for delegating coding tasks
-// between the host cloud model and the local claw-code-agent.
-// Set PRISM_TASK_ROUTER_ENABLED=true to unlock the session_task_route tool.
+// between the host cloud model and Prism's local worker. Local-first is the
+// default; set PRISM_TASK_ROUTER_ENABLED=false for an explicit operator opt-out.
 
 /** Master switch for the task router tool. */
-export const PRISM_TASK_ROUTER_ENABLED_ENV = process.env.PRISM_TASK_ROUTER_ENABLED === "true";
+export const PRISM_TASK_ROUTER_ENABLED_ENV = process.env.PRISM_TASK_ROUTER_ENABLED !== "false";
 
 /** Confidence threshold below which routing defaults to the host model. (Default: 0.6) */
 export const PRISM_TASK_ROUTER_CONFIDENCE_THRESHOLD = parseFloat(
   process.env.PRISM_TASK_ROUTER_CONFIDENCE_THRESHOLD || "0.6"
 );
 
-/** Maximum complexity score (1-10) that Claw can handle. Tasks above this → host. (Default: 4) */
+/**
+ * Operator ceiling for bounded local work (1-10). The router independently
+ * rejects architecture, security, tool-heavy, and other host-only work.
+ * Default 10 lets prism_infer select every entitled/RAM-safe local tier.
+ */
 export const PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY = parseInt(
-  process.env.PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY || "4", 10
+  process.env.PRISM_TASK_ROUTER_MAX_CLAW_COMPLEXITY || "10", 10
 );
 
 /** Hide and reject the web-search code-mode tool when explicitly disabled. */
@@ -922,4 +931,3 @@ export const PRISM_BACKUP_ENABLED =
 if (PRISM_BACKUP_ENABLED && PRISM_DEBUG_LOGGING) {
   console.error(`[Prism] Backup scheduler: ${PRISM_BACKUP_SCHEDULE}, max=${PRISM_BACKUP_MAX}`);
 }
-

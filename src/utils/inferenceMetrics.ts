@@ -13,6 +13,10 @@
  */
 
 import { debugLog } from "./logger.js";
+import { appendInferMetric, queryInferMetrics } from "../storage/inferMetricsLedger.js";
+import { ingestPanelMetrics } from "../storage/panelMetricsSpool.js";
+
+const PANEL_CALLER = "panel";
 
 export interface ModelStats {
     calls: number;
@@ -97,8 +101,46 @@ export function recordInference(result: {
      *  Ollama returns prompt_eval_count=0 (KV-cache hit). */
     prompt_text?: string;
     prompt_length?: number;
+    /** Persisted to the durable ledger when present (Phase 0, plan §5.6). */
+    mode?: string;
+    ram_free_mb?: number;
+    quality_gate_failed?: boolean;
+    /** §5.2 failure contract — structured terminal disposition. */
+    gate_outcome?: { status: "success" | "degraded" | "refused"; reason?: string; served_anyway: boolean };
 }): void {
     if (result.backend === "safety_gate") return;
+
+    // Durable ledger row (fire-and-forget; in-memory counters below remain the
+    // per-session view). safety_gate is excluded by the early return above.
+    // §5.2: prefer the structured gate_outcome; keep the legacy
+    // "gate_failed_served" string for degraded rows so existing ledger
+    // queries stay valid. Refused rows (escalation:"report") carry the
+    // refusal reason — the serve-mode throw paths ledger directly at the
+    // refusal site (makeReservedRefusal / backstop), so exactly one row
+    // is written either way.
+    const gateOutcomeStr = result.gate_outcome
+        ? (result.gate_outcome.status === "degraded" ? "gate_failed_served" : result.gate_outcome.status)
+        : (result.quality_gate_failed ? "gate_failed_served" : undefined);
+    appendInferMetric({
+        backend: result.backend,
+        model: result.model_picked,
+        used_cloud: result.used_cloud,
+        mode: result.mode,
+        gate_outcome: gateOutcomeStr,
+        refusal_reason: result.gate_outcome?.status === "refused" ? result.gate_outcome.reason : undefined,
+        prompt_tokens: result.prompt_tokens,
+        completion_tokens: result.completion_tokens,
+        latency_ms: result.latency_ms,
+        ram_free_mb: result.ram_free_mb,
+    });
+
+    // §5.2: refused results (escalation:"report") get a ledger row above but
+    // must NOT touch the session accumulators — no model ran and nothing was
+    // served, so counting them as local serves would inflate local% and
+    // cloudTokensSavedEst (the GATE 6 KPI: "improves only when local inference
+    // replaces a cloud call"). Serve-mode refusals throw and never reach here,
+    // so skipping keeps both modes' accounting identical.
+    if (result.backend === "refused") return;
 
     const key = result.model_picked ?? result.backend;
 
@@ -189,10 +231,49 @@ export function resetInferenceMetrics(): void {
     debugLog("[inference-metrics] Session metrics reset");
 }
 
-export async function inferenceMetricsHandler(): Promise<{
+export async function inferenceMetricsHandler(args?: { period?: string }): Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
 }> {
+    if (args?.period === "all") {
+        const ingest = await ingestPanelMetrics();
+        const agg = await queryInferMetrics();
+        if (!agg || agg.total === 0) {
+            const warning = ingest.failed_files > 0
+                ? ` Panel spool ingestion failed for ${ingest.failed_files} file(s); retained for retry.`
+                : "";
+            return { content: [{ type: "text", text: `No persisted inference calls yet (ledger empty).${warning}` }] };
+        }
+        const localPct = agg.total ? Math.round((agg.local / agg.total) * 100) : 0;
+        const cloudPct = agg.total ? Math.round((agg.cloud / agg.total) * 100) : 0;
+        const span = agg.first_ts && agg.last_ts
+            ? `${new Date(agg.first_ts).toISOString().slice(0, 10)} → ${new Date(agg.last_ts).toISOString().slice(0, 10)}`
+            : "n/a";
+        const byB = Object.entries(agg.by_backend)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => `  ${k}: ${v}`).join("\n");
+        const panel = agg.by_caller[PANEL_CALLER];
+        const panelPct = panel?.total ? Math.round((panel.local / panel.total) * 100) : 0;
+        const panelLine = panel
+            ? `Panel local serve rate: ${panelPct}% (${panel.local}/${panel.total}; cloud ${panel.cloud})`
+            : "Panel local serve rate: no panel calls recorded";
+        let ingestNote = "";
+        if (ingest.invalid > 0) ingestNote = `discarded ${ingest.invalid} invalid panel row(s)`;
+        if (ingest.failed_files > 0) {
+            ingestNote += `${ingestNote ? "; " : ""}retained ${ingest.failed_files} panel file(s) for retry`;
+        }
+        const ingestLine = ingestNote ? `\nPanel spool: ${ingestNote}` : "";
+        return {
+            content: [{
+                type: "text",
+                text: `📊 Inference Metrics — ALL TIME (persisted ledger, ${span})\n` +
+                    `Total calls: ${agg.total} — Local: ${agg.local} (${localPct}%) | Cloud: ${agg.cloud} (${cloudPct}%)\n` +
+                    `${panelLine}\n` +
+                    `Prompt tokens: ${agg.prompt_tokens} | Completion tokens: ${agg.completion_tokens}\n` +
+                    `Avg latency: ${agg.avg_latency_ms}ms\nBy backend:\n${byB}${ingestLine}`,
+            }],
+        };
+    }
     const block = formatInferenceMetrics();
     return {
         content: [{

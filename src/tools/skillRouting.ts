@@ -5,6 +5,9 @@
  * Offline: last-good from local DB, or empty with warning.
  */
 
+import { getSynaluxJwt, invalidateSynaluxJwt } from '../utils/synaluxJwt.js';
+import { PRISM_SYNALUX_API_KEY, PRISM_SYNALUX_BASE_URL } from '../config.js';
+
 // -- Type exports (backward compat) ------------------------------------------
 
 export interface UserLocalPolicy { enabled: boolean; key_prefix: string }
@@ -33,19 +36,41 @@ export interface ResolvedSkills {
 
 // -- Constants ----------------------------------------------------------------
 
-const SYNALUX_BASE = process.env.SYNALUX_BASE_URL || 'https://synalux.ai';
-const SKILLS_TOKEN = process.env.PRISM_SKILLS_TOKEN || '';
 const LIVE_TTL = 5 * 60 * 1000;
 const FAIL_TTL = 30_000;
 const DEFAULT_UL: UserLocalPolicy = { enabled: false, key_prefix: 'user_skill:' };
 
+export const REQUIRED_PROTECTED_SKILL_NAMES = [
+  'prime-directive',
+  'aba-precision-protocol',
+  'evidence-first-protocol',
+  'behavioral-verifier',
+  'occam-razor-protocol',
+  'absence-of-evidence-protocol',
+  'never-fabricate-data',
+  'session-drift-detection',
+  'pre-commit-protocol',
+  'pre-push-audit',
+  'implementation-integrity-audit',
+  'local-inference-first',
+] as const;
+
+/**
+ * Native skills that every subscription tier receives through `prism connect`.
+ *
+ * `prism-startup` is deliberately not part of OFFLINE_FALLBACK: it tells the
+ * host to call session_load_context, so injecting it back into that tool's
+ * response would be circular. It still belongs in every native manifest so a
+ * newly connected host can discover the hook-free first-turn procedure.
+ */
+export const REQUIRED_NATIVE_SKILL_NAMES = [
+  ...REQUIRED_PROTECTED_SKILL_NAMES,
+  'prism-startup',
+] as const;
+
 export const OFFLINE_FALLBACK: SkillRoutingTable = {
   version: 1,
-  universal: [
-    { name: 'prime-directive', priority: 0, protected: true },
-    { name: 'evidence-first-protocol', priority: 1, protected: true },
-    { name: 'bcba_ai_assistant', priority: 20 },
-  ],
+  universal: REQUIRED_PROTECTED_SKILL_NAMES.map((name, priority) => ({ name, priority, protected: true })),
   projects: {},
   user_local: DEFAULT_UL,
 };
@@ -55,6 +80,27 @@ export const OFFLINE_FALLBACK: SkillRoutingTable = {
 interface PortalResp {
   loaded: string[]; skipped: string[];
   routing_version: number; tier: string;
+  /** Per-skill metadata (portal ≥ routing v23). Older portals omit it. */
+  skills?: Array<{ name: string; priority: number; protected: boolean; category: string }>;
+}
+
+/**
+ * Map a portal response to ResolvedSkill[]. Uses the portal's per-skill
+ * metadata when present; for older portals that send names only, falls back
+ * to neutral defaults (protected:false) — the budgeting floor then relies on
+ * the caller's own knowledge (e.g. OFFLINE_FALLBACK). NEVER fabricate
+ * protected:true here: an over-broad floor would defeat budgeting entirely.
+ */
+function toResolvedSkills(resp: PortalResp): ResolvedSkill[] {
+  if (resp.skills && resp.skills.length > 0) {
+    return resp.skills.map((s) => ({
+      name: s.name, priority: s.priority, protected: s.protected,
+      category: (s.category as ResolvedSkill['category']) ?? 'universal',
+    }));
+  }
+  return resp.loaded.map((name, i) => ({
+    name, priority: i, protected: false, category: 'universal' as const,
+  }));
 }
 
 interface CacheEntry { resp: PortalResp; at: number; live: boolean }
@@ -77,6 +123,9 @@ export function _setStorage(persist: typeof persistFn, read: typeof readFn): voi
 
 async function callPortal(project: string, prompt?: string, role?: string): Promise<PortalResp | null> {
   try {
+    const synaluxBase = (process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
+      process.env.SYNALUX_BASE_URL?.trim() || PRISM_SYNALUX_BASE_URL ||
+      'https://synalux.ai').replace(/\/+$/, '');
     const body: Record<string, string> = { project };
     if (prompt) body.prompt = prompt;
     if (role) body.role = role;
@@ -84,12 +133,49 @@ async function callPortal(project: string, prompt?: string, role?: string): Prom
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
-    if (SKILLS_TOKEN) headers['Authorization'] = `Bearer ${SKILLS_TOKEN}`;
+    // Auth precedence: static PRISM_SKILLS_TOKEN (legacy/CI) → JWT exchanged
+    // from the synalux API key. The JWT path uses the same per-user identity
+    // as inference, so skills and inference resolve the SAME tier — without
+    // it, machines with only PRISM_SYNALUX_API_KEY silently resolve tier=free
+    // and never receive unprotected/prompt-routed skills.
+    const staticToken = process.env.PRISM_SKILLS_TOKEN || '';
+    const configuredApiKey = process.env.PRISM_SYNALUX_API_KEY?.trim() || PRISM_SYNALUX_API_KEY;
+    let usedJwt = false;
+    if (staticToken) {
+      headers['Authorization'] = `Bearer ${staticToken}`;
+    } else {
+      // Bound the exchange so a hanging JWT endpoint cannot stall
+      // session_load_context startup: after 4s proceed unauthenticated
+      // (free-tier resolve) — the exchange keeps running and its cached
+      // result authenticates the next call.
+      const jwt = await Promise.race([
+        getSynaluxJwt(),
+        new Promise<null>((r) => setTimeout(r, 4_000, null)),
+      ]);
+      if (jwt) { headers['Authorization'] = `Bearer ${jwt}`; usedJwt = true; }
+      else if (configuredApiKey) {
+        // A configured paid identity that cannot authenticate must retain its
+        // last-good result. Sending the request anonymously would silently
+        // turn an auth outage into a free-tier downgrade.
+        return null;
+      }
+    }
 
-    const res = await fetch(`${SYNALUX_BASE}/api/v1/prism/resolve`, {
+    const doFetch = () => fetch(`${synaluxBase}/api/v1/prism/resolve`, {
       method: 'POST', headers, body: JSON.stringify(body),
       signal: AbortSignal.timeout(5_000),
+      redirect: 'error', // never follow a redirect with a credential attached
     });
+    let res = await doFetch();
+    if (res.status === 401 && usedJwt) {
+      // Expired/rotated JWT — invalidate and retry once with a fresh one.
+      invalidateSynaluxJwt();
+      const fresh = await getSynaluxJwt();
+      if (fresh) {
+        headers['Authorization'] = `Bearer ${fresh}`;
+        res = await doFetch();
+      }
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return (await res.json()) as PortalResp;
   } catch { return null; }
@@ -130,9 +216,7 @@ export async function resolveSkills(project: string, prompt?: string, role?: str
   if (cached) {
     return {
       names: cached.resp.loaded,
-      skills: cached.resp.loaded.map((name, i) => ({
-        name, priority: i, protected: false, category: 'universal' as const,
-      })),
+      skills: toResolvedSkills(cached.resp),
       user_local: DEFAULT_UL,
       isOffline: !cached.live,
       routing_version: cached.resp.routing_version,
@@ -146,7 +230,7 @@ export async function resolveSkills(project: string, prompt?: string, role?: str
       if (stored) {
         const resp = JSON.parse(stored) as PortalResp;
         return {
-          names: resp.loaded, skills: [], user_local: DEFAULT_UL,
+          names: resp.loaded, skills: toResolvedSkills(resp), user_local: DEFAULT_UL,
           isOffline: true,
           routing_version: resp.routing_version,
         };

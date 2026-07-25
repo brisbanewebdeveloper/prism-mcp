@@ -35,6 +35,7 @@ import { getLLMProvider } from "../utils/llm/factory.js";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { redactSettings } from "../tools/commonHelpers.js";
 import { handleGraphRoutes } from "./graphRouter.js";
+import { isDashboardSettingKeyAllowed, isDashboardSettingValueAllowed } from "./settingsPolicy.js";
 import {
   safeCompare,
   generateToken,
@@ -47,23 +48,6 @@ import {
 
 
 const PORT = PRISM_DASHBOARD_PORT;
-
-const DASHBOARD_SETTABLE_KEYS = new Set<string>([
-  "PRISM_STORAGE",
-  "text_provider", "embedding_provider", "embedding_model",
-  "openai_base_url", "openai_model", "openai_embedding_model",
-  "PRISM_ENABLE_HIVEMIND", "PRISM_DARK_FACTORY_ENABLED",
-  "PRISM_TASK_ROUTER_ENABLED", "PRISM_SCHOLAR_ENABLED",
-  "PRISM_HDC_ENABLED", "PRISM_ACTR_ENABLED",
-  "PRISM_GRAPH_PRUNING_ENABLED",
-]);
-
-export function isDashboardSettingKeyAllowed(key: string): boolean {
-  return DASHBOARD_SETTABLE_KEYS.has(key) ||
-    key.startsWith("skill:") ||
-    key.startsWith("ttl:") ||
-    key.startsWith("autoload:");
-}
 
 /** Read HTTP request body as string (Buffer-based to avoid GC thrash on large imports) */
 /** SECURITY: 10MB limit prevents memory exhaustion from oversized POST payloads. */
@@ -766,15 +750,20 @@ return false;}
         try {
           const body = await readBody(req);
           const parsed = JSON.parse(body);
-          if (parsed.key && parsed.value !== undefined) {
+          if (typeof parsed.key === "string" && parsed.key && parsed.value !== undefined) {
             // SECURITY: Allowlist of dashboard-settable keys to prevent
             // credential overwrite (SUPABASE_KEY, STRIPE_SECRET_KEY, etc.)
             if (!isDashboardSettingKeyAllowed(parsed.key)) {
               res.writeHead(403, { "Content-Type": "application/json" });
               return res.end(JSON.stringify({ error: `Setting key "${parsed.key}" is not allowed via the dashboard.` }));
             }
+            const value = String(parsed.value);
+            if (!isDashboardSettingValueAllowed(parsed.key, value)) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              return res.end(JSON.stringify({ error: `Invalid value for setting "${parsed.key}".` }));
+            }
             const { setSetting } = await import("../storage/configStorage.js");
-            await setSetting(parsed.key, String(parsed.value));
+            await setSetting(parsed.key, value);
             res.writeHead(200, { "Content-Type": "application/json" });
             return res.end(JSON.stringify({ ok: true, key: parsed.key, value: parsed.value }));
           }

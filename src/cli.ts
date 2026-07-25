@@ -8,14 +8,345 @@ import { getStorage, closeStorage } from './storage/index.js';
 import { getSetting } from './storage/configStorage.js';
 import { PRISM_USER_ID, SERVER_CONFIG } from './config.js';
 import { getCurrentGitState } from './utils/git.js';
-import { sessionLoadContextHandler, sessionSaveLedgerHandler, sessionSaveHandoffHandler } from './tools/ledgerHandlers.js';
+import {
+  sessionBootstrapHandler,
+  sessionLoadContextHandler,
+  sessionSaveLedgerHandler,
+  sessionSaveHandoffHandler,
+} from './tools/ledgerHandlers.js';
+import {
+  configureClaudeAgentPolicy,
+  configureClaudeNativeStartup,
+  configureCodexAgentPolicy,
+  configureCodexNativeStartup,
+  configureGeminiAgentPolicy,
+  configureGeminiNativeStartup,
+  connectHosts,
+  migrateLegacyClaudeHooks,
+  migrateLegacyClaudeInstructions,
+  migrateLegacyClaudeManagedStartup,
+  migrateLegacyClaudeProjectMcp,
+  normalizeHostName,
+} from './connect.js';
+import { runBrowserCli } from './browserCli.js';
+import { filterPrismMemoryContext } from './utils/memoryQuality.js';
+import { isRecoverableStartupStorageError } from './utils/startupRecovery.js';
 
 const program = new Command();
+
+interface LoadJsonOutputMetadata {
+  agentName?: string;
+  effectiveRole?: string;
+  gitHash: string | null;
+  gitBranch: string | null;
+  packageVersion: string;
+}
+
+/** Build the stable `prism load --json` envelope from depth-specific context. */
+export function buildLoadJsonOutput(
+  project: string,
+  data: Record<string, any>,
+  level: string,
+  metadata: LoadJsonOutputMetadata,
+) {
+  const filteredData = filterPrismMemoryContext(data);
+  let history: any[] = [];
+  let historyLimit = 0;
+  if (level === 'standard') {
+    history = Array.isArray(filteredData.recent_sessions) ? filteredData.recent_sessions : [];
+    historyLimit = 5;
+  } else if (level === 'deep') {
+    // Canonical deep context uses session_history. Fall back only when that
+    // field is absent so older portal responses remain consumable.
+    history = Array.isArray(filteredData.session_history)
+      ? filteredData.session_history
+      : Array.isArray(filteredData.recent_sessions)
+        ? filteredData.recent_sessions
+        : [];
+    historyLimit = 50;
+  }
+
+  return {
+    agent_name: metadata.agentName || null,
+    handoff: [{
+      project,
+      role: metadata.effectiveRole || filteredData.role || 'global',
+      last_summary: filteredData.last_summary || null,
+      pending_todo: filteredData.pending_todo || null,
+      active_decisions: filteredData.active_decisions || null,
+      keywords: filteredData.keywords || null,
+      key_context: filteredData.key_context || null,
+      active_branch: filteredData.active_branch || null,
+      version: filteredData.version ?? null,
+      updated_at: filteredData.updated_at || null,
+    }],
+    // Keep the established key for callers while sourcing the canonical field
+    // for the requested depth.
+    recent_ledger: history.slice(0, historyLimit).map((entry: any) => ({
+      summary: entry?.summary || null,
+      decisions: entry?.decisions || null,
+      keywords: entry?.keywords || null,
+      created_at: entry?.session_date || entry?.created_at || null,
+    })),
+    git_hash: metadata.gitHash,
+    git_branch: metadata.gitBranch,
+    pkg_version: metadata.packageVersion,
+  };
+}
 
 program
   .name('prism')
   .description('Prism — The Mind Palace for AI Agents')
   .version(SERVER_CONFIG.version);
+
+/** Print the canonical hook-free first-turn display used by the MCP tool. */
+export const isRecoverableBootstrapStorageError = isRecoverableStartupStorageError;
+
+async function printBootstrapDisplay(): Promise<void> {
+  const result = await sessionBootstrapHandler({});
+  const output = result.content?.map((part: any) => part?.text).filter(Boolean).join('\n') || '';
+  if (!output) throw new Error('session_bootstrap returned no display content');
+  console.log(output);
+  if (result.isError) process.exitCode = 1;
+}
+
+export async function runBootstrapCommand(): Promise<void> {
+  const previousStorage = process.env.PRISM_STORAGE;
+  try {
+    try {
+      await printBootstrapDisplay();
+    } catch (err) {
+      if (!isRecoverableBootstrapStorageError(err)) throw err;
+
+      // Startup is a read-only display. If paid cloud memory is temporarily
+      // unavailable, retry this one read against the local last-good database
+      // instead of blocking the host's entire first turn. Do not persist the
+      // override: normal saves still use the configured subscription backend.
+      await closeStorage().catch(() => { });
+      process.env.PRISM_STORAGE = 'local';
+      console.error('Prism cloud startup unavailable; using local last-good context for this startup.');
+      await printBootstrapDisplay();
+    }
+  } catch (err) {
+    console.error(`Bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  } finally {
+    if (previousStorage === undefined) {
+      delete process.env.PRISM_STORAGE;
+    } else {
+      process.env.PRISM_STORAGE = previousStorage;
+    }
+    await closeStorage().catch(() => { });
+  }
+}
+
+program
+  .command('bootstrap')
+  .description('Print the canonical dashboard-configured first-turn Prism greeting')
+  .action(runBootstrapCommand);
+
+// Parsed by the direct dispatch at the bottom so all Python CLI flags pass
+// through unchanged. Registering it here keeps the command visible in help.
+program
+  .command('browser')
+  .description('Run the packaged local Prism Browser automation CLI');
+
+// ─── prism connect ────────────────────────────────────────────
+// Registers this installed package with supported MCP hosts. The
+// merge is additive: an existing `prism` or `prism-mcp` entry is
+// reported and left byte-for-byte untouched.
+
+program
+  .command('connect')
+  .description('Register Prism with installed MCP hosts (close hosts before writing)')
+  .option('--host <name>', 'Target one host: claude-code, claude-desktop, cursor, gemini, or codex')
+  .option('--all', 'Target all supported hosts instead of auto-detecting installed hosts')
+  .option('--dry-run', 'Preview configuration changes without writing files')
+  .option('--refresh', 'Refresh only entries previously created by Prism; custom entries stay untouched')
+  .action(async (options: { host?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }) => {
+    try {
+      if (!options.dryRun) {
+        console.log('Close target MCP hosts before registration so they cannot edit configuration concurrently.');
+      }
+      const hosts = options.host ? [normalizeHostName(options.host)] : undefined;
+      const summary = connectHosts({
+        all: !!options.all,
+        dryRun: !!options.dryRun,
+        refresh: !!options.refresh,
+        hosts,
+      });
+
+      if (summary.results.length === 0) {
+        console.error('No supported MCP hosts detected. Use --host <name> or --all to target one explicitly.');
+        process.exitCode = 1;
+        return;
+      }
+
+      for (const result of summary.results) {
+        if (result.status === 'registered') {
+          console.log(`✓ ${result.label}: registered (${result.path})`);
+        } else if (result.status === 'would-register') {
+          console.log(`• ${result.label}: would register (${result.path})`);
+        } else if (result.status === 'refreshed') {
+          console.log(`✓ ${result.label}: Prism-managed entry refreshed (${result.path})`);
+        } else if (result.status === 'would-refresh') {
+          console.log(`• ${result.label}: would refresh Prism-managed entry (${result.path})`);
+        } else if (result.status === 'existing') {
+          console.log(`− ${result.label}: already registered — untouched (${result.path})`);
+        } else {
+          console.error(`✗ ${result.label}: ${result.message || 'registration failed'} (${result.path})`);
+          process.exitCode = 1;
+        }
+      }
+      const connectedClaude = summary.results.some((result) =>
+        result.host === 'claude-code' && result.status !== 'error' && result.startupCompatible);
+      const connectedGemini = summary.results.some((result) =>
+        result.host === 'gemini' && result.status !== 'error' && result.startupCompatible);
+      const connectedCodex = summary.results.some((result) =>
+        result.host === 'codex' && result.status !== 'error' && result.startupCompatible);
+
+      if (options.dryRun) {
+        if (connectedClaude) {
+          const projectMcpMigration = migrateLegacyClaudeProjectMcp(undefined, undefined, true);
+          const hookMigration = migrateLegacyClaudeHooks(undefined, true);
+          const instructionMigration = migrateLegacyClaudeInstructions(undefined, true);
+          const managedMigration = migrateLegacyClaudeManagedStartup(undefined, true);
+          const nativeStartup = configureClaudeNativeStartup(undefined, true);
+          const agentPolicy = configureClaudeAgentPolicy(undefined, true);
+          if (projectMcpMigration.status === 'would-remove') {
+            console.log(`• Claude Code: would remove exact legacy project Prism registration (${projectMcpMigration.path})`);
+          }
+          if (hookMigration.status === 'would-remove') {
+            console.log(`• Claude Code: would remove ${hookMigration.removed} legacy Prism hook action(s) (${hookMigration.path})`);
+          }
+          if (instructionMigration.status === 'would-remove') {
+            console.log(`• Claude Code: would remove ${instructionMigration.removed} legacy Prism startup section(s) (${instructionMigration.path})`);
+          }
+          if (managedMigration.status === 'would-remove') {
+            console.log(`• Claude Code: would remove legacy managed startup block (${managedMigration.path})`);
+          }
+          if (nativeStartup.status === 'would-install' || nativeStartup.status === 'would-refresh') {
+            console.log(`• Claude Code: would ${nativeStartup.status === 'would-install' ? 'install' : 'refresh'} native startup instructions (${nativeStartup.path})`);
+          }
+          if (agentPolicy.status === 'would-install' || agentPolicy.status === 'would-refresh') {
+            console.log(`• Claude Code: would ${agentPolicy.status === 'would-install' ? 'install' : 'refresh'} local-first fallback policy (${agentPolicy.path})`);
+          }
+        }
+        if (connectedGemini) {
+          const nativeStartup = configureGeminiNativeStartup(undefined, true);
+          const agentPolicy = configureGeminiAgentPolicy(undefined, true);
+          if (nativeStartup.status === 'would-install' || nativeStartup.status === 'would-refresh') {
+            console.log(`• Gemini CLI: would ${nativeStartup.status === 'would-install' ? 'install' : 'refresh'} native startup instructions (${nativeStartup.path})`);
+          }
+          if (agentPolicy.status === 'would-install' || agentPolicy.status === 'would-refresh') {
+            console.log(`• Gemini CLI: would ${agentPolicy.status === 'would-install' ? 'disable native agents for' : 'refresh'} local-first policy (${agentPolicy.path})`);
+          }
+        }
+        if (connectedCodex) {
+          const nativeStartup = configureCodexNativeStartup(undefined, true);
+          const agentPolicy = configureCodexAgentPolicy(undefined, true);
+          if (nativeStartup.status === 'would-install' || nativeStartup.status === 'would-refresh') {
+            console.log(`• Codex: would ${nativeStartup.status === 'would-install' ? 'install' : 'refresh'} native startup instructions (${nativeStartup.path})`);
+          }
+          if (agentPolicy.status === 'would-install' || agentPolicy.status === 'would-refresh') {
+            console.log(`• Codex: would ${agentPolicy.status === 'would-install' ? 'install' : 'refresh'} hard local-first agent limits (${agentPolicy.path})`);
+          }
+        }
+        console.log('\nDry run complete — no files changed.');
+      } else if (summary.results.some((result) =>
+        result.status !== 'error' && result.startupCompatible)) {
+        // Codex discovers native skills before it starts MCP servers. Syncing
+        // only from server startup therefore makes a fresh install require a
+        // second host restart. Materialize the entitlement snapshot before
+        // this registration command exits so the first launch sees it.
+        const { triggerSkillManifestSync } = await import('./skillManifestSync.js');
+        const skillSync = await triggerSkillManifestSync();
+        if (skillSync.status === 'failed' || skillSync.status === 'partial') {
+          throw new Error(`Synalux skill synchronization failed: ${skillSync.error || skillSync.status}`);
+        }
+        if (skillSync.status !== 'disabled') {
+          const changed = skillSync.installed.length + skillSync.updated.length + skillSync.pruned.length;
+          console.log(`✓ Synalux skills: ${skillSync.tier || 'free'} tier (${changed} changed)`);
+          if (skillSync.conflicts.length > 0) {
+            console.error(`⚠ Preserved locally modified skill conflicts: ${skillSync.conflicts.join(', ')}`);
+          }
+          if (connectedClaude) {
+            // Validate every affected surface before mutating any file.
+            migrateLegacyClaudeHooks(undefined, true);
+            migrateLegacyClaudeInstructions(undefined, true);
+            migrateLegacyClaudeManagedStartup(undefined, true);
+            configureClaudeNativeStartup(undefined, true);
+            configureClaudeAgentPolicy(undefined, true);
+            // Install the canonical block first. Never remove the legacy block
+            // unless the canonical path is already current or commits safely.
+            const nativeStartup = configureClaudeNativeStartup();
+            const agentPolicy = configureClaudeAgentPolicy();
+            const projectMcpMigration = migrateLegacyClaudeProjectMcp();
+            const hookMigration = migrateLegacyClaudeHooks();
+            const instructionMigration = migrateLegacyClaudeInstructions();
+            const managedMigration = migrateLegacyClaudeManagedStartup();
+            if (projectMcpMigration.status === 'removed') {
+              console.log(`✓ Claude Code: removed exact legacy project Prism registration (${projectMcpMigration.path}); user-scope registration now owns Prism`);
+            }
+            if (hookMigration.status === 'removed') {
+              console.log(`✓ Claude Code: removed ${hookMigration.removed} legacy Prism hook action(s); native skills now own startup and sync`);
+            }
+            if (instructionMigration.status === 'removed') {
+              console.log(`✓ Claude Code: removed ${instructionMigration.removed} legacy Prism startup section(s); MCP bootstrap now owns first-turn context`);
+            }
+            if (managedMigration.status === 'removed') {
+              console.log('✓ Claude Code: removed legacy managed startup block from ~/CLAUDE.md');
+            }
+            if (nativeStartup.status === 'installed' || nativeStartup.status === 'refreshed') {
+              console.log(`✓ Claude Code: ${nativeStartup.status} hook-free native startup instructions`);
+            }
+            if (agentPolicy.status === 'installed' || agentPolicy.status === 'refreshed') {
+              console.log(`✓ Claude Code: ${agentPolicy.status} local-first policy with Sonnet fallback`);
+            }
+          }
+          if (connectedGemini) {
+            configureGeminiNativeStartup(undefined, true);
+            configureGeminiAgentPolicy(undefined, true);
+            const nativeStartup = configureGeminiNativeStartup();
+            const agentPolicy = configureGeminiAgentPolicy();
+            if (nativeStartup.status === 'installed' || nativeStartup.status === 'refreshed') {
+              console.log(`✓ Gemini CLI: ${nativeStartup.status} hook-free native startup instructions`);
+            }
+            if (agentPolicy.status === 'installed' || agentPolicy.status === 'refreshed') {
+              console.log(`✓ Gemini CLI: ${agentPolicy.status} local-first policy; native agents disabled`);
+            }
+          }
+          if (connectedCodex) {
+            configureCodexNativeStartup(undefined, true);
+            configureCodexAgentPolicy(undefined, true);
+            const nativeStartup = configureCodexNativeStartup();
+            const agentPolicy = configureCodexAgentPolicy();
+            if (nativeStartup.status === 'installed' || nativeStartup.status === 'refreshed') {
+              console.log(`✓ Codex: ${nativeStartup.status} hook-free native startup instructions`);
+            }
+            if (agentPolicy.status === 'installed' || agentPolicy.status === 'refreshed') {
+              console.log(`✓ Codex: ${agentPolicy.status} hard local-first agent limits`);
+            }
+          }
+        } else if (connectedClaude) {
+          // The project-level npx registration is redundant once the
+          // user-level installed-server entry succeeds. Removing that exact
+          // legacy tuple is independent of native skill delivery; leave hooks
+          // and startup instructions untouched while synchronization is off.
+          const projectMcpMigration = migrateLegacyClaudeProjectMcp();
+          if (projectMcpMigration.status === 'removed') {
+            console.log(`✓ Claude Code: removed exact legacy project Prism registration (${projectMcpMigration.path}); user-scope registration now owns Prism`);
+          }
+        }
+      }
+      if (!summary.usedApiKey) {
+        console.log('PRISM_SYNALUX_API_KEY is not set; no Synalux subscription key was copied into new registrations.');
+      }
+    } catch (err) {
+      console.error(`Connect failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
 
 // ─── prism load <project> ─────────────────────────────────────
 // Loads session context using the same storage layer as the MCP
@@ -44,13 +375,13 @@ program
 program
   .command('load <project>')
   .description('Load session context for a project (same output as session_load_context MCP tool)')
-  .option('-l, --level <level>', 'Context depth: quick, standard, deep', 'standard')
+  .option('-l, --level <level>', 'Context depth: quick, standard, deep (defaults to dashboard setting)')
   .option('-r, --role <role>', 'Role scope for context loading')
   .option('-s, --storage <backend>', 'Storage backend: auto (default, prefers cloud), local (SQLite), or supabase. Overrides PRISM_STORAGE env var.')
   .option('--json', 'Emit machine-readable JSON instead of formatted text')
-  .action(async (project: string, options: { level: string; role?: string; storage?: string; json?: boolean }) => {
+  .action(async (project: string, options: { level?: string; role?: string; storage?: string; json?: boolean }) => {
     try {
-      const { level, role, storage, json: jsonOutput } = options;
+      const { level: requestedLevel, role, storage, json: jsonOutput } = options;
 
       // v9.2.2: --storage flag overrides PRISM_STORAGE env var to prevent
       // split-brain when CLI environment differs from MCP server config.
@@ -64,10 +395,12 @@ program
       }
 
       const validLevels = ['quick', 'standard', 'deep'];
-      if (!validLevels.includes(level)) {
-        console.error(`Error: Invalid level "${level}". Must be one of: ${validLevels.join(', ')}`);
+      if (requestedLevel && !validLevels.includes(requestedLevel)) {
+        console.error(`Error: Invalid level "${requestedLevel}". Must be one of: ${validLevels.join(', ')}`);
         process.exit(1);
       }
+      const configuredLevel = requestedLevel ?? await getSetting('default_context_depth', 'standard');
+      const level = validLevels.includes(configuredLevel) ? configuredLevel : 'standard';
 
       if (jsonOutput) {
         // ── JSON mode: structured output for programmatic consumption ──
@@ -85,37 +418,20 @@ program
         const d = data as Record<string, any>;
         const gitState = getCurrentGitState();
 
-        const output = {
-          agent_name: agentName || null,
-          handoff: [{
-            project,
-            role: effectiveRole || d.role || 'global',
-            last_summary: d.last_summary || null,
-            pending_todo: d.pending_todo || null,
-            active_decisions: d.active_decisions || null,
-            keywords: d.keywords || null,
-            key_context: d.key_context || null,
-            active_branch: d.active_branch || null,
-            version: d.version ?? null,
-            updated_at: d.updated_at || null,
-          }],
-          recent_ledger: (d.recent_sessions || []).map((s: any) => ({
-            summary: s.summary || null,
-            decisions: s.decisions || null,
-            keywords: s.keywords || null,
-            created_at: s.session_date || s.created_at || null,
-          })),
-          git_hash: gitState.commitSha ? gitState.commitSha.substring(0, 7) : null,
-          git_branch: gitState.branch || null,
-          pkg_version: SERVER_CONFIG.version,
-        };
+        const output = buildLoadJsonOutput(project, d, level, {
+          agentName,
+          effectiveRole,
+          gitHash: gitState.commitSha ? gitState.commitSha.substring(0, 7) : null,
+          gitBranch: gitState.branch || null,
+          packageVersion: SERVER_CONFIG.version,
+        });
         console.log(JSON.stringify(output, null, 2));
       } else {
         // ── Text mode: full parity with MCP session_load_context ──
         // Delegates to the real handler so all enrichments (morning briefing,
         // reality drift, SDM recall, visual memory, skill injection,
         // behavioral warnings, etc.) are included automatically.
-        const result = await sessionLoadContextHandler({ project, level, role });
+        const result = await sessionLoadContextHandler({ project, ...(requestedLevel ? { level: requestedLevel } : {}), role });
 
         // Surface handler-level errors (e.g. invalid args, storage failures)
         if (result.isError) {
@@ -646,5 +962,14 @@ program
     if (fail > 0) process.exit(1);
   });
 
-program.parse(process.argv);
-
+if (process.argv[2] === 'browser') {
+  try {
+    const exitCode = await runBrowserCli(process.argv.slice(3));
+    if (exitCode !== 0) process.exitCode = exitCode;
+  } catch (err) {
+    console.error(`Prism Browser failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+} else {
+  await program.parseAsync(process.argv);
+}

@@ -43,6 +43,17 @@ vi.mock("../../src/storage/configStorage.js", () => ({
   getAllSettings: vi.fn(() => Promise.resolve({})),
   getSettingSync: vi.fn(() => ""),
   initConfigStorage: vi.fn(),
+  refreshConfigStorageCache: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("../../src/skillManifestSync.js", () => ({
+  awaitSkillManifestSync: vi.fn(() => Promise.resolve({
+    status: "unchanged",
+    installed: [],
+    updated: [],
+    pruned: [],
+    conflicts: [],
+  })),
 }));
 
 vi.mock("../../src/config.js", () => ({
@@ -101,6 +112,7 @@ vi.mock("../../src/utils/imageCaptioner.js", () => ({
 vi.mock("../../src/session/sessionContext.js", () => ({
   requireContextLoaded: vi.fn(() => null),
   markContextLoaded: vi.fn(),
+  noteDriftSessionStart: vi.fn(),
   noteInferenceForSession: vi.fn(),
   getSessionState: vi.fn(() => null),
 }));
@@ -184,13 +196,19 @@ vi.mock("../../src/utils/projectResolver.js", () => ({
 // ======================================================================
 
 import { getStorage } from "../../src/storage/index.js";
-import { getSetting, getAllSettings } from "../../src/storage/configStorage.js";
+import {
+  getSetting,
+  getAllSettings,
+  refreshConfigStorageCache,
+} from "../../src/storage/configStorage.js";
 import { resolveProject } from "../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../src/storage/interface.js";
+import { awaitSkillManifestSync } from "../../src/skillManifestSync.js";
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
   sessionLoadContextHandler,
+  sessionBootstrapHandler,
   sessionForgetMemoryHandler,
   sessionExportMemoryHandler,
   memoryHistoryHandler,
@@ -198,11 +216,33 @@ import {
   sessionViewImageHandler,
   sanitizeMemoryInput,
 } from "../../src/tools/ledgerHandlers.js";
+import { REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
+import {
+  markContextLoaded,
+  noteDriftSessionStart,
+  requireContextLoaded,
+} from "../../src/session/sessionContext.js";
+
+const BOOTSTRAP_DEPTH_CASES = ["quick", "standard", "deep"] as const;
+const BOOTSTRAP_TIER_SKILLS = {
+  free: [],
+  standard: ["dev-engineering-super-skill"],
+  advanced: ["research-knowledge-super-skill"],
+  enterprise: ["ai-agent-super-skill", "bcba_ai_assistant"],
+} as const;
+const BOOTSTRAP_TIER_DEPTH_CASES = Object.entries(BOOTSTRAP_TIER_SKILLS).flatMap(
+  ([tier, tierSkills]) => BOOTSTRAP_DEPTH_CASES.map((depth) => ({ tier, tierSkills, depth })),
+);
 
 const mockGetStorage = vi.mocked(getStorage);
 const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockResolveProject = vi.mocked(resolveProject);
+const mockRefreshConfigStorageCache = vi.mocked(refreshConfigStorageCache);
+const mockAwaitSkillManifestSync = vi.mocked(awaitSkillManifestSync);
+const mockMarkContextLoaded = vi.mocked(markContextLoaded);
+const mockNoteDriftSessionStart = vi.mocked(noteDriftSessionStart);
+const mockRequireContextLoaded = vi.mocked(requireContextLoaded);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -270,6 +310,9 @@ describe("ledgerHandlers", () => {
       ok: true,
       project: declaredProject,
     }));
+    mockRequireContextLoaded.mockImplementation(() => null);
+    mockMarkContextLoaded.mockImplementation(() => undefined);
+    mockNoteDriftSessionStart.mockImplementation(() => undefined);
   });
 
   // ====================================================================
@@ -323,6 +366,27 @@ describe("ledgerHandlers", () => {
       expect(result.isError).toBe(false);
       expect(result.content[0].text).toContain("Session ledger saved");
       expect(result.content[0].text).toContain("test-project");
+      expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips greeting-only turns without resolving a project or writing storage", async () => {
+      const result = await sessionSaveLedgerHandler({
+        ...validArgs,
+        summary: "[VSCode] Hi there! Hello — it's great to see you. How can I assist you today?",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Greeting-only turn skipped");
+      expect(storage.saveLedger).not.toHaveBeenCalled();
+    });
+
+    it("keeps a greeting summary when it contains structured work", async () => {
+      await sessionSaveLedgerHandler({
+        ...validArgs,
+        summary: "Hello",
+        decisions: ["Use a bounded local worker"],
+      });
+
       expect(storage.saveLedger).toHaveBeenCalledTimes(1);
     });
 
@@ -516,6 +580,36 @@ describe("ledgerHandlers", () => {
       );
     });
 
+    it.each(["quick", "standard", "deep"] as const)(
+      "uses dashboard context depth %s when the caller omits level",
+      async (configuredLevel) => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") =>
+          key === "default_context_depth" ? configuredLevel : fallback,
+        );
+
+        await sessionLoadContextHandler(validArgs);
+
+        expect(storage.loadContext).toHaveBeenCalledWith(
+          "test-project",
+          configuredLevel,
+          "test-user-id",
+          undefined,
+        );
+      },
+    );
+
+    it("lets an explicit level override the dashboard and safely ignores stale invalid dashboard state", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") =>
+        key === "default_context_depth" ? "obsolete-depth" : fallback,
+      );
+
+      await sessionLoadContextHandler({ ...validArgs, level: "deep" });
+      expect(storage.loadContext).toHaveBeenLastCalledWith("test-project", "deep", "test-user-id", undefined);
+
+      await sessionLoadContextHandler(validArgs);
+      expect(storage.loadContext).toHaveBeenLastCalledWith("test-project", "standard", "test-user-id", undefined);
+    });
+
     it("loads context at 'quick' level", async () => {
       storage.loadContext.mockResolvedValue(null);
       await sessionLoadContextHandler({ project: "test-project", level: "quick" });
@@ -571,6 +665,28 @@ describe("ledgerHandlers", () => {
       expect(text).toContain("auth, jwt");
     });
 
+    it("removes legacy greeting memories while retaining substantive work", async () => {
+      storage.loadContext.mockResolvedValue({
+        last_summary: "[VSCode] Hello! How can I assist you today?",
+        recent_sessions: [
+          { summary: "[VSCode] Hi there! Hello — it's great to see you. How can I assist you today?" },
+          { summary: "Implemented browser approval policy", created_at: "2026-07-22T12:00:00Z" },
+        ],
+        session_history: [
+          { summary: "Hello! 👋", created_at: "2026-07-21T12:00:00Z" },
+          { summary: "Verified local inference routing", created_at: "2026-07-20T12:00:00Z" },
+        ],
+      });
+
+      const result = await sessionLoadContextHandler(validArgs);
+      const text = result.content[0].text as string;
+
+      expect(text).not.toContain("How can I assist you today");
+      expect(text).not.toContain("Hello! 👋");
+      expect(text).toContain("Implemented browser approval policy");
+      expect(text).toContain("Verified local inference routing");
+    });
+
     it("includes version note in response when version is present", async () => {
       storage.loadContext.mockResolvedValue({
         last_summary: "Summary",
@@ -604,6 +720,220 @@ describe("ledgerHandlers", () => {
       const result = await sessionLoadContextHandler(validArgs);
       const text = result.content[0].text as string;
       expect(text).not.toContain("ABA PRECISION PROTOCOL");
+    });
+
+    it("offline fallback injects only the protected floor, including ABA", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill:aba-precision-protocol") return "ABA PROTECTED FLOOR";
+        if (key === "skill:bcba_ai_assistant") return "UNPROTECTED BCBA";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "offline-protected-floor" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("ABA PROTECTED FLOOR");
+        expect(text).not.toContain("UNPROTECTED BCBA");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("intersects portal resolution with the latest manifest activation names", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        loaded: ["aba-precision-protocol", "stale-paid-skill"],
+        skipped: [], routing_version: 42, tier: "standard",
+        skills: [
+          { name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" },
+          { name: "stale-paid-skill", priority: 1, protected: false, category: "project" },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
+        if (key === "skill:stale-paid-skill") return "STALE PAID";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "manifest-intersection" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("ABA ENTITLED");
+        expect(text).not.toContain("STALE PAID");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("refreshes a stale paid process cache after sync before activating a concurrently committed free manifest", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        loaded: ["aba-precision-protocol", "stale-paid-skill"],
+        skipped: [], routing_version: 42, tier: "standard",
+        skills: [
+          { name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" },
+          { name: "stale-paid-skill", priority: 1, protected: false, category: "project" },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+
+      let processCache: Record<string, string> = {
+        "skill_manifest:names": JSON.stringify(["aba-precision-protocol", "stale-paid-skill"]),
+        "skill:aba-precision-protocol": "ABA FREE FLOOR",
+        "skill:stale-paid-skill": "STALE PAID CONTENT",
+      };
+      const concurrentlyCommittedFreeState: Record<string, string> = {
+        "skill_manifest:names": JSON.stringify(["aba-precision-protocol"]),
+        "skill:aba-precision-protocol": "ABA FREE FLOOR",
+      };
+      mockGetSetting.mockImplementation(async (key: string, defaultValue = "") => processCache[key] ?? defaultValue);
+      // Simulates awaitSkillManifestSync taking its five-minute lastResult path:
+      // it does not fetch, while another Prism process has already downgraded DB state.
+      mockAwaitSkillManifestSync.mockImplementationOnce(async () => ({
+        status: "unchanged", installed: [], updated: [], pruned: [], conflicts: [],
+      }));
+      mockRefreshConfigStorageCache.mockImplementationOnce(async () => {
+        processCache = concurrentlyCommittedFreeState;
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+
+      try {
+        const result = await sessionLoadContextHandler({ project: "concurrent-free-downgrade" });
+        const text = result.content[0].text as string;
+        expect(mockAwaitSkillManifestSync).toHaveBeenCalledTimes(1);
+        expect(mockRefreshConfigStorageCache).toHaveBeenCalledTimes(1);
+        expect(mockAwaitSkillManifestSync.mock.invocationCallOrder[0])
+          .toBeLessThan(mockRefreshConfigStorageCache.mock.invocationCallOrder[0]);
+        expect(text).toContain("ABA FREE FLOOR");
+        expect(text).not.toContain("STALE PAID CONTENT");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("uses a validated partial downgrade allowlist when the config DB still contains paid names", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        loaded: ["aba-precision-protocol", "stale-paid-skill"],
+        skipped: [], routing_version: 42, tier: "standard",
+        skills: [
+          { name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" },
+          { name: "stale-paid-skill", priority: 1, protected: false, category: "project" },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+      mockAwaitSkillManifestSync.mockImplementationOnce(async () => ({
+        status: "partial",
+        tier: "free",
+        generation: "a".repeat(64),
+        entitledNames: ["aba-precision-protocol"],
+        installed: [], updated: [], pruned: [], conflicts: [],
+        error: "config DB apply incomplete",
+      }));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") {
+          return JSON.stringify(["aba-precision-protocol", "stale-paid-skill"]);
+        }
+        if (key === "skill:aba-precision-protocol") return "ABA CURRENT FLOOR";
+        if (key === "skill:stale-paid-skill") return "STALE PAID CONTENT";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+
+      try {
+        const result = await sessionLoadContextHandler({ project: "partial-db-failure" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("ABA CURRENT FLOOR");
+        expect(text).not.toContain("STALE PAID CONTENT");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("does not inject an unentitled legacy platform skill selected as the role", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        loaded: ["aba-precision-protocol"], skipped: [], routing_version: 42, tier: "free",
+        skills: [{ name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" }],
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
+        if (key === "skill:paid-role") return "LEGACY PAID ROLE";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "legacy-paid-role", role: "paid-role" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("ABA ENTITLED");
+        expect(text).not.toContain("LEGACY PAID ROLE");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("injects user-owned role content from the user_skill namespace", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "user_skill:qa") return "USER QA ROLE";
+        if (key === "skill:qa") return "LEGACY PLATFORM QA";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "user-role", role: "qa" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("USER QA ROLE");
+        expect(text).not.toContain("LEGACY PLATFORM QA");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("does not let a same-name user role shadow an entitled platform guardrail", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "user_skill:aba-precision-protocol") return "USER OVERRIDE";
+        if (key === "skill:aba-precision-protocol") return "OFFICIAL ABA GUARDRAIL";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({
+          project: "protected-role-shadow", role: "aba-precision-protocol",
+        });
+        const text = result.content[0].text as string;
+        expect(text).toContain("OFFICIAL ABA GUARDRAIL");
+        expect(text).not.toContain("USER OVERRIDE");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("injects a user-owned role on a fresh session without enabling its legacy platform row", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "user_skill:qa") return "FRESH USER QA ROLE";
+        if (key === "skill:qa") return "LEGACY PLATFORM QA";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue(null);
+      try {
+        const result = await sessionLoadContextHandler({ project: "fresh-user-role", role: "qa" });
+        const text = result.content[0].text as string;
+        expect(text).toContain("FRESH USER QA ROLE");
+        expect(text).not.toContain("LEGACY PLATFORM QA");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it("passes role to loadContext when provided", async () => {
@@ -690,6 +1020,523 @@ describe("ledgerHandlers", () => {
       await expect(sessionLoadContextHandler(validArgs)).rejects.toThrow(
         "Connection timeout"
       );
+    });
+  });
+
+  describe("sessionBootstrapHandler", () => {
+    it.each([
+      ["quick", false, false],
+      ["standard", true, true],
+    ] as const)(
+      "renders only the %s startup depth fields",
+      async (depth, expectsSummary, expectsRecent) => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          autoload_projects: "prism-mcp",
+          default_context_depth: depth,
+          agent_name: "Dmitri",
+        }[key] ?? fallback));
+        storage.loadContext.mockResolvedValue({
+          last_summary: "Previous implementation summary",
+          pending_todo: ["Continue implementation"],
+          recent_sessions: [{ summary: "Recent implementation session", created_at: "2026-07-20T12:00:00Z" }],
+          session_history: [{ summary: "Deep-only history", created_at: "2026-07-19T12:00:00Z" }],
+          version: 5,
+        });
+
+        const result = await sessionBootstrapHandler({});
+        const text = result.content[0].text as string;
+
+        expect(text).toContain("Welcome back, Dmitri");
+        expect(text).toContain("Open TODOs");
+        expect(text).toContain("Continue implementation");
+        expect(text.includes("Previous implementation summary")).toBe(expectsSummary);
+        expect(text.includes("Recent implementation session")).toBe(expectsRecent);
+        expect(text).not.toContain("Deep-only history");
+      },
+    );
+
+    it.each([
+      ["quick", 4_000, false, false, false],
+      ["standard", 8_000, true, true, false],
+      ["deep", 30_000, true, true, true],
+    ] as const)(
+      "bounds adversarial %s startup context without changing its depth contract",
+      async (depth, maxChars, expectsSummary, expectsRecent, expectsHistory) => {
+        const longValue = "context ".repeat(1_000);
+        const manyValues = Array.from({ length: 80 }, (_, index) => `${index}: ${longValue}`);
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          autoload_projects: "prism-mcp",
+          default_context_depth: depth,
+          agent_name: "Dmitri",
+          default_role: "dev",
+        }[key] ?? fallback));
+        storage.loadContext.mockResolvedValue({
+          last_summary: longValue,
+          active_branch: longValue,
+          key_context: longValue,
+          pending_todo: manyValues,
+          active_decisions: manyValues,
+          keywords: manyValues,
+          behavioral_warnings: manyValues.map((summary) => ({ summary })),
+          recent_sessions: manyValues.map((summary, index) => ({
+            summary,
+            created_at: `2026-07-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+          })),
+          session_history: manyValues.map((summary, index) => ({
+            summary,
+            created_at: `2026-06-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+          })),
+          version: 9,
+        });
+
+        const result = await sessionBootstrapHandler({});
+        const text = result.content[0].text as string;
+
+        expect(text.length).toBeLessThanOrEqual(maxChars);
+        expect(text).toContain("Welcome back, Dmitri");
+        expect(text).toContain("Open TODOs");
+        expect(text).toContain("more TODOs omitted");
+        expect(text).toContain("</prism_memory>");
+        expect(text.includes("Last Session Summary")).toBe(expectsSummary);
+        expect(text.includes("Recent Sessions")).toBe(expectsRecent);
+        expect(text.includes("Session History")).toBe(expectsHistory);
+      },
+    );
+
+    it("shares the standard startup budget across every configured project", async () => {
+      const longSummary = "summary ".repeat(2_000);
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp,portal",
+        default_context_depth: "standard",
+        agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockImplementation(async (project: string) => ({
+        last_summary: `${project}: ${longSummary}`,
+        pending_todo: Array.from({ length: 30 }, () => longSummary),
+        recent_sessions: Array.from({ length: 30 }, () => ({
+          summary: longSummary,
+          created_at: "2026-07-20T12:00:00Z",
+        })),
+        version: 1,
+      }));
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text.length).toBeLessThanOrEqual(8_000);
+      expect(text).toContain('Session context for "prism-mcp"');
+      expect(text).toContain('Session context for "portal"');
+      expect(text.match(/<prism_memory context="historical">/g)).toHaveLength(2);
+      expect(text.match(/<\/prism_memory>/g)).toHaveLength(2);
+    });
+
+    it("retries every project from one local snapshot after a transient cloud failure without rerouting writes", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp,portal",
+        default_context_depth: "standard",
+        agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockImplementation(async (project: string) => {
+        if (project === "portal") {
+          throw new Error("[SynaluxStorage] /api/v1/prism/memory failed: Rate limit exceeded");
+        }
+        return { last_summary: "Cloud result must be discarded", version: 8 };
+      });
+      const localStorage = makeStorageStub();
+      localStorage.loadContext.mockImplementation(async (project: string) => ({
+        last_summary: `Local last-good ${project}`,
+        version: 7,
+      }));
+      const localStorageFactory = vi.fn(async () => localStorage as any);
+
+      const result = await sessionBootstrapHandler({}, { localStorageFactory });
+      const text = result.content[0].text as string;
+
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent.context_source).toBe("local-last-good");
+      expect(text).toContain("Synalux cloud context is temporarily unavailable");
+      expect(text).toContain("Local last-good prism-mcp");
+      expect(text).toContain("Local last-good portal");
+      expect(text).not.toContain("Cloud result must be discarded");
+      expect(storage.loadContext).toHaveBeenCalledTimes(2);
+      expect(localStorage.loadContext).toHaveBeenCalledTimes(2);
+      expect(localStorage.close).toHaveBeenCalledOnce();
+      expect(localStorage.saveLedger).not.toHaveBeenCalled();
+      expect(localStorage.saveHandoff).not.toHaveBeenCalled();
+
+      await sessionSaveHandoffHandler({
+        project: "test-project",
+        last_summary: "Write remains on configured storage",
+      });
+      expect(storage.saveHandoff).toHaveBeenCalledOnce();
+      expect(localStorage.saveHandoff).not.toHaveBeenCalled();
+    });
+
+    it("fails loud on non-transient bootstrap errors instead of masking them with local context", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp",
+        default_context_depth: "standard",
+      }[key] ?? fallback));
+      storage.loadContext.mockRejectedValue(new Error("Unexpected context formatter failure"));
+      const localStorageFactory = vi.fn(async () => makeStorageStub() as any);
+
+      await expect(sessionBootstrapHandler({}, { localStorageFactory }))
+        .rejects.toThrow("Unexpected context formatter failure");
+      expect(localStorageFactory).not.toHaveBeenCalled();
+    });
+
+    it("omits excess configured projects explicitly instead of exceeding the startup budget", async () => {
+      const projects = Array.from({ length: 40 }, (_, index) => `project-${index}`);
+      const longSummary = "summary ".repeat(2_000);
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: projects.join(","),
+        default_context_depth: "standard",
+        agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({
+        last_summary: longSummary,
+        pending_todo: [longSummary],
+        recent_sessions: [{ summary: longSummary, created_at: "2026-07-20T12:00:00Z" }],
+        version: 1,
+      });
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+      const openingTags = text.match(/<prism_memory context="historical">/g) || [];
+      const closingTags = text.match(/<\/prism_memory>/g) || [];
+
+      expect(text.length).toBeLessThanOrEqual(8_000);
+      expect(text).toContain("additional Auto-Load Projects omitted at standard depth");
+      expect(openingTags.length).toBeGreaterThan(0);
+      expect(openingTags).toHaveLength(closingTags.length);
+      expect(storage.loadContext.mock.calls.length).toBeLessThan(projects.length);
+    });
+
+    it("renders all fifty deep history entries with bounded decision, TODO, and file detail", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp",
+        default_context_depth: "deep",
+        agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({
+        session_history: Array.from({ length: 50 }, (_, index) => ({
+          summary: `Deep session ${index}`,
+          decisions: [`Decision ${index}`, `Hidden decision ${index}`],
+          todos: [`TODO ${index}`, `Hidden TODO ${index}`],
+          files_changed: [`src/file-${index}.ts`, `src/hidden-${index}.ts`],
+          created_at: `2026-06-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+        })),
+        version: 2,
+      });
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text.length).toBeLessThanOrEqual(30_000);
+      expect(text).toContain("Deep session 0");
+      expect(text).toContain("Deep session 49");
+      expect(text.match(/^- \[2026-06-/gm)).toHaveLength(50);
+      expect(text).toContain("Decisions: Decision 49; … 1 more omitted");
+      expect(text).toContain("TODOs: TODO 49; … 1 more omitted");
+      expect(text).toContain("Files changed: src/file-49.ts; … 1 more omitted");
+      expect(storage.getLedgerEntries).not.toHaveBeenCalled();
+      expect(storage.saveHandoff).not.toHaveBeenCalled();
+    });
+
+    it.each(["quick", "standard", "deep"] as const)(
+      "bounds an oversized developer name in the %s greeting, including the no-project path",
+      async (depth) => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          autoload_projects: "",
+          default_context_depth: depth,
+          agent_name: "D".repeat(50_000),
+        }[key] ?? fallback));
+
+        const result = await sessionBootstrapHandler({});
+        const text = result.content[0].text as string;
+
+        expect(text.length).toBeLessThanOrEqual({ quick: 4_000, standard: 8_000, deep: 30_000 }[depth]);
+        expect(text).toContain("characters omitted");
+        expect(text).toContain("No Auto-Load Projects");
+        expect(storage.loadContext).not.toHaveBeenCalled();
+      },
+    );
+
+    it("uses dashboard projects, identity, role, and depth for the hook-free greeting", async () => {
+      const nativeSkillBody = `NATIVE_SKILL_BODY_MUST_NOT_BE_INLINED${"x".repeat(120_000)}`;
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp, portal,prism-mcp",
+        default_context_depth: "deep",
+        agent_name: "Dmitri",
+        default_role: "dev",
+        "user_skill:dev": nativeSkillBody,
+      }[key] ?? fallback));
+      storage.loadContext.mockImplementation(async (project: string) => ({
+        last_summary: `Last work on ${project}`,
+        pending_todo: ["Continue implementation"],
+        version: 4,
+        session_history: [{ summary: `Earlier ${project} session`, created_at: "2026-07-20T12:00:00Z" }],
+      }));
+
+      const result = await sessionBootstrapHandler({ conversation_id: "conversation-1", prompt: "continue" });
+      const text = result.content[0].text as string;
+
+      expect(result.isError).toBe(false);
+      expect(text).toContain("Welcome back, Dmitri");
+      expect(text).toContain("loading deep context");
+      expect(text).toContain("Last work on prism-mcp");
+      expect(text).toContain("Last work on portal");
+      expect(text).toContain("Earlier prism-mcp session");
+      expect(text).toContain("Protected fallback names");
+      expect(text).not.toContain("NATIVE_SKILL_BODY_MUST_NOT_BE_INLINED");
+      expect(text.length).toBeLessThan(10_000);
+      expect(storage.loadContext).toHaveBeenCalledTimes(2);
+      expect(storage.loadContext).toHaveBeenNthCalledWith(1, "prism-mcp", "deep", "test-user-id", "dev");
+      expect(storage.loadContext).toHaveBeenNthCalledWith(2, "portal", "deep", "test-user-id", "dev");
+    });
+
+    it("still greets the developer and explains configuration when no project is selected", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        agent_name: "Dmitri",
+        default_context_depth: "quick",
+        autoload_projects: "",
+      }[key] ?? fallback));
+
+      const result = await sessionBootstrapHandler({});
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Welcome back, Dmitri");
+      expect(result.content[0].text).toContain("Agent Identity:** global — Dmitri");
+      expect(result.content[0].text).toContain("loading quick context");
+      expect(result.content[0].text).toContain("No Auto-Load Projects");
+      expect(storage.loadContext).not.toHaveBeenCalled();
+    });
+
+    it("uses truthful identity fallbacks when dashboard identity is unconfigured", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        agent_name: "",
+        default_role: "",
+        default_context_depth: "quick",
+        autoload_projects: "",
+      }[key] ?? fallback));
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text).toContain("Welcome back, developer");
+      expect(text).toContain("Agent Identity:** global — developer");
+      expect(text).not.toContain("None — None");
+    });
+
+    it.each(BOOTSTRAP_TIER_DEPTH_CASES)(
+      "uses the synchronized $tier manifest for the $depth structured greeting",
+      async ({ tier, tierSkills, depth }) => {
+        const manifestNames = [...REQUIRED_NATIVE_SKILL_NAMES, ...tierSkills];
+        mockAwaitSkillManifestSync.mockResolvedValueOnce({
+          status: "unchanged",
+          tier,
+          generation: "a".repeat(64),
+          entitledNames: manifestNames,
+          installed: [],
+          updated: [],
+          pruned: [],
+          conflicts: [],
+        });
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          autoload_projects: "prism-mcp",
+          default_context_depth: depth,
+          agent_name: "Dmitri",
+          default_role: "dev",
+          "skill_manifest:tier": tier,
+          "skill_manifest:names": JSON.stringify(manifestNames),
+        }[key] ?? fallback));
+        storage.loadContext.mockResolvedValue({
+          last_summary: "Depth-aware summary",
+          pending_todo: ["Verify native greeting"],
+          recent_sessions: [{ summary: "Recent session", created_at: "2026-07-20T12:00:00Z" }],
+          session_history: [{ summary: "Historical session", created_at: "2026-07-19T12:00:00Z" }],
+          version: 12,
+        });
+
+        const result = await sessionBootstrapHandler({});
+        const text = result.content[0].text as string;
+
+        expect(text.length).toBeLessThanOrEqual({ quick: 4_000, standard: 8_000, deep: 30_000 }[depth]);
+        expect(text).toContain("Agent Identity:** dev — Dmitri");
+        expect(text).toContain(`Subscription tier:** ${tier}`);
+        expect(text).toContain(`Provisioned skills:** ${manifestNames.length}`);
+        expect(text).toContain(`Context depth:** ${depth}`);
+        expect(text).toContain("automatic from Synalux · current · committed manifest");
+        expect(text).toContain("Open TODOs");
+        expect(text).toContain("Session Version");
+        for (const coreSkill of REQUIRED_NATIVE_SKILL_NAMES) expect(text).toContain(coreSkill);
+        for (const tierSkill of tierSkills) {
+          expect(text).toContain(tierSkill);
+          if (tierSkill.endsWith("-super-skill")) {
+            expect(text).toContain(`${tierSkill.slice(0, -"-super-skill".length)} (${tierSkill})`);
+          }
+        }
+        const entitledTierSkills = new Set<string>(tierSkills);
+        const skillsFromOtherTiers = Object.values(BOOTSTRAP_TIER_SKILLS)
+          .flat()
+          .filter((skill) => !entitledTierSkills.has(skill));
+        for (const unentitledSkill of skillsFromOtherTiers) expect(text).not.toContain(unentitledSkill);
+        expect(text).not.toContain("stale-paid-skill");
+        expect(text.includes("Last Session Summary")).toBe(depth !== "quick");
+        expect(text.includes("Recent Sessions")).toBe(depth !== "quick");
+        expect(text.includes("Session History")).toBe(depth === "deep");
+      },
+    );
+
+    it("uses a validated partial downgrade instead of stale committed paid skills", async () => {
+      const currentFreeNames = [...REQUIRED_NATIVE_SKILL_NAMES];
+      mockAwaitSkillManifestSync.mockResolvedValueOnce({
+        status: "partial",
+        tier: "free",
+        generation: "b".repeat(64),
+        entitledNames: currentFreeNames,
+        installed: [],
+        updated: [],
+        pruned: [],
+        conflicts: [],
+        error: "config DB apply incomplete",
+      });
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp",
+        default_context_depth: "standard",
+        agent_name: "Dmitri",
+        default_role: "global",
+        "skill_manifest:tier": "enterprise",
+        "skill_manifest:names": JSON.stringify([
+          ...currentFreeNames,
+          "stale-paid-skill",
+          "stale-super-skill",
+        ]),
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({ last_summary: "Current work", version: 3 });
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text).toContain("Subscription tier:** free");
+      expect(text).toContain("Entitled skills (materialization incomplete)");
+      expect(text).toContain("automatic from Synalux · partial · native materialization incomplete");
+      expect(text).not.toContain("Provisioned skills");
+      expect(text).not.toContain("available");
+      expect(text).not.toContain("stale-paid-skill");
+      expect(text).not.toContain("stale-super-skill");
+    });
+
+    it("preserves every System Ready heading within the quick budget for an adversarial manifest", async () => {
+      const longSuperSkills = Array.from({ length: 240 }, (_, index) =>
+        `super-${String(index).padStart(3, "0")}-${"x".repeat(96)}-super-skill`);
+      const longTierSkills = Array.from({ length: 240 }, (_, index) =>
+        `tier-${String(index).padStart(3, "0")}-${"y".repeat(104)}`);
+      const manifestNames = [...REQUIRED_NATIVE_SKILL_NAMES, ...longSuperSkills, ...longTierSkills];
+      mockAwaitSkillManifestSync.mockResolvedValueOnce({
+        status: "unchanged",
+        tier: "enterprise",
+        generation: "c".repeat(64),
+        entitledNames: manifestNames,
+        installed: [],
+        updated: [],
+        pruned: [],
+        conflicts: [],
+      });
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "prism-mcp",
+        default_context_depth: "quick",
+        agent_name: "Dmitri",
+        default_role: "global",
+        "skill_manifest:tier": "enterprise",
+        "skill_manifest:names": JSON.stringify(manifestNames),
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({ pending_todo: ["Keep headings visible"], version: 7 });
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text.length).toBeLessThanOrEqual(4_000);
+      expect(text).toContain("Prism System Ready");
+      expect(text).toContain("Subscription tier");
+      expect(text).toContain("Provisioned skills");
+      expect(text).toContain("Core/protected skills provisioned");
+      expect(text).toContain("Super-skills provisioned");
+      expect(text).toContain("Other tier skills provisioned");
+      expect(text).toContain("Context depth");
+      expect(text).toContain("Skill sync");
+      expect(text).toContain("more provisioned");
+    });
+
+    it("rejects malformed bootstrap arguments before touching storage", async () => {
+      await expect(sessionBootstrapHandler({ conversation_id: 42 })).rejects.toThrow(
+        "Invalid arguments for session_bootstrap",
+      );
+      expect(storage.loadContext).not.toHaveBeenCalled();
+    });
+
+    it("generates a stable hidden conversation id and carries it through bootstrap, ledger, handoff, and drift registration", async () => {
+      const registered = new Set<string>();
+      mockMarkContextLoaded.mockImplementation((conversationId) => { registered.add(conversationId); });
+      mockRequireContextLoaded.mockImplementation((conversationId) => conversationId && registered.has(conversationId)
+        ? null
+        : { blocked: true, error: "context_not_loaded" });
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "test-project",
+        default_context_depth: "standard",
+        agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({ last_summary: "Prior work", version: 2 });
+
+      const bootstrap = await sessionBootstrapHandler({});
+      const conversationId = bootstrap.structuredContent.conversation_id as string;
+      expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(bootstrap.content[0].text).not.toContain(conversationId);
+      expect(mockMarkContextLoaded).toHaveBeenCalledWith(conversationId, "test-project", "1");
+      expect(mockNoteDriftSessionStart).toHaveBeenCalledWith(conversationId);
+
+      expect((await sessionSaveLedgerHandler({
+        project: "test-project", conversation_id: conversationId, summary: "Finished startup",
+      })).isError).toBe(false);
+      expect((await sessionSaveHandoffHandler({
+        project: "test-project", conversation_id: conversationId, last_summary: "Finished startup",
+      })).isError).toBe(false);
+      expect(mockRequireContextLoaded).toHaveBeenCalledWith(conversationId);
+    });
+
+    it("reuses a supplied conversation id and flattens dashboard identity controls", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "test-project",
+        default_context_depth: "quick",
+        agent_name: "Dmitri\r\n> injected\u0000",
+        default_role: "dev\n- forged",
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({ version: 1 });
+
+      const result = await sessionBootstrapHandler({ conversation_id: "stable-conversation" });
+      expect(result.structuredContent.conversation_id).toBe("stable-conversation");
+      expect(result.content[0].text).toContain("Welcome back, Dmitri \\> injected");
+      expect(result.content[0].text).toContain("Agent Identity:** dev \\- forged — Dmitri");
+      expect(result.content[0].text).not.toContain("\n> injected");
+    });
+
+    it("surfaces partial materialization conflicts without claiming availability", async () => {
+      mockAwaitSkillManifestSync.mockResolvedValueOnce({
+        status: "partial", tier: "standard", generation: "d".repeat(64),
+        entitledNames: [...REQUIRED_NATIVE_SKILL_NAMES, "dev-engineering-super-skill"],
+        installed: [], updated: [], pruned: [], conflicts: ["dev-engineering-super-skill"],
+        error: "native materialization incomplete",
+      });
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "test-project", default_context_depth: "quick", agent_name: "Dmitri",
+      }[key] ?? fallback));
+      storage.loadContext.mockResolvedValue({ version: 1 });
+
+      const text = (await sessionBootstrapHandler({})).content[0].text as string;
+      expect(text).toContain("Entitled skills (materialization incomplete)");
+      expect(text).toContain("1 local conflict preserved");
+      expect(text).not.toContain("Super-skills provisioned");
+      expect(text).not.toContain("available");
     });
   });
 

@@ -22,15 +22,16 @@ export function isValidHttpUrl(url: string): boolean {
  * Probe for synalux credentials: env vars first, then config DB.
  * Returns true if usable credentials are now in process.env.
  */
-async function ensureSynaluxCredentials(): Promise<boolean> {
+export async function ensureSynaluxCredentials(): Promise<boolean> {
   if (SYNALUX_CONFIGURED) return true;
   // Re-check process.env directly: SYNALUX_CONFIGURED is captured at module
   // load, so credentials injected later by another caller would be invisible
   // to it. Mirrors ensureSupabaseCredentials below.
-  const envUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim();
+  const envUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim();
   const envKey = process.env.PRISM_SYNALUX_API_KEY?.trim();
   if (envUrl && envKey && isValidHttpUrl(envUrl)) return true;
-  const url = (await getSetting("PRISM_SYNALUX_BASE_URL"))?.trim();
+  const url = (await getSetting("PRISM_SYNALUX_BASE_URL"))?.trim() ||
+    (await getSetting("SYNALUX_BASE_URL"))?.trim();
   const key = (await getSetting("PRISM_SYNALUX_API_KEY"))?.trim();
   if (url && key && isValidHttpUrl(url)) {
     process.env.PRISM_SYNALUX_BASE_URL = url;
@@ -76,9 +77,22 @@ export async function getStorage(): Promise<StorageBackend> {
   }
 
   // ─── Resolve "auto" → synalux > supabase > local ─────────────
+  // Synalux is eligible only when the portal is the entitlement source;
+  // direct Supabase remains an independent legacy backend.
   if (requested === "auto") {
     if (await ensureSynaluxCredentials()) {
-      requested = "synalux";
+      const { getEntitlements } = await import("../utils/entitlements.js");
+      const entitlements = await getEntitlements();
+      const memoryEntitled = entitlements.features?.session_memory_unlimited;
+
+      if (entitlements.source !== "portal" || typeof memoryEntitled !== "boolean") {
+        throw new Error(
+          "[Prism Storage] Could not verify the Synalux cloud-memory entitlement. " +
+          "Refusing to fall back to another backend because that could split session history. " +
+          "Retry when Synalux is reachable or set PRISM_STORAGE=local explicitly.",
+        );
+      }
+      requested = memoryEntitled ? "synalux" : "local";
     } else if (await ensureSupabaseCredentials()) {
       requested = "supabase";
     } else {

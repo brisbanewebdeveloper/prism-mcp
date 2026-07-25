@@ -18,7 +18,7 @@
  *
  * HOW MCP WORKS (simplified):
  *   1. The AI client (e.g., Claude) connects via stdin/stdout
- *   2. On connect, the client receives our capabilities (tools + prompts + resources)
+ *   2. On connect, the client receives our capabilities (tools + prompts + resources + logging)
  *   3. The client can:
  *      - Call tools (brave_web_search, session_save_ledger, etc.)
  *      - List/get prompts (/resume_session slash command)
@@ -110,6 +110,8 @@ import { ddInfo, ddError as ddLogError } from "./utils/ddLogger.js";
 import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
 import { recordInvocation } from "./utils/analytics.js";
 import { BOUNDARIES_TEXT } from "./boundaries/boundaries.js";
+import { triggerSkillManifestSync } from "./skillManifestSync.js";
+import { LOCAL_FIRST_POLICY_TEXT } from "./localFirstPolicy.js";
 
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
 
@@ -135,6 +137,7 @@ import {
   SESSION_SAVE_LEDGER_TOOL,
   SESSION_SAVE_HANDOFF_TOOL,
   SESSION_LOAD_CONTEXT_TOOL,
+  SESSION_BOOTSTRAP_TOOL,
   KNOWLEDGE_SEARCH_TOOL,
   KNOWLEDGE_FORGET_TOOL,
   // ─── v0.4.0: New tool definitions (Enhancements #2 and #4) ───
@@ -187,6 +190,7 @@ import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
   sessionLoadContextHandler,
+  sessionBootstrapHandler,
   knowledgeSearchHandler,
   knowledgeForgetHandler,
   // ─── v0.4.0: New tool handlers ───
@@ -317,42 +321,16 @@ function toStandardWebSearchArgs(args: unknown): {
   };
 }
 
-// ─── v4.1 FIX: Build Session Memory Tools dynamically ────────
-// The session_load_context tool description is dynamically modified
-// to include auto-load project instructions. Tool descriptions are
-// the ONLY mechanism guaranteed by ALL MCP clients (Antigravity,
-// Claude Code, Claude CLI). The `instructions` field and
-// sendLoggingMessage are NOT reliably surfaced by any client.
-//
-// buildSessionMemoryTools() is called inside createServer() AFTER
-// initConfigStorage() has run, so getSettingSync() returns real
-// dashboard config values.
-function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
-  // Dynamically inject auto-load instruction into session_load_context description.
-  // CRITICAL: The instruction is PREPENDED so it appears FIRST in the tool description.
-  // LLMs read top-to-bottom — appending the instruction at the end caused it to be
-  // deprioritized and skipped by both Antigravity and Claude CLI.
-  let loadContextTool = SESSION_LOAD_CONTEXT_TOOL;
-  if (autoloadList.length > 0) {
-    const projectList = autoloadList.join(", ");
-    // Read the preferred context depth from dashboard config (defaults to "standard")
-    const defaultLevel = getSettingSync("default_context_depth", "standard");
-    const autoLoadPrefix =
-      `IMPORTANT: At the start of every conversation, you MUST call this tool ` +
-      `for each of these projects: ${projectList}. Do this before any other work. ` +
-      `Load level should be "${defaultLevel}" unless the user specifies otherwise. ` +
-      `Do NOT skip this. Do NOT claim the tool is unavailable. The tool IS available — just call it.\n` +
-      `Then display the agent identity from the response: \`🤖 Agent: <role> — <name>\`\n\n`;
-    loadContextTool = {
-      ...SESSION_LOAD_CONTEXT_TOOL,
-      description: autoLoadPrefix + SESSION_LOAD_CONTEXT_TOOL.description,
-    };
-  }
-
+// Hook-free first-turn startup is owned by session_bootstrap. Its static tool
+// description is surfaced by native MCP hosts before any tool call and keeps
+// project, depth, identity, and role selection inside dashboard configuration.
+// session_load_context remains available for explicit reloads and legacy hosts.
+function buildSessionMemoryTools(): Tool[] {
   return [
+    SESSION_BOOTSTRAP_TOOL,      // session_bootstrap — hook-free configured first-turn greeting + context
     SESSION_SAVE_LEDGER_TOOL,    // session_save_ledger — append immutable session log
     SESSION_SAVE_HANDOFF_TOOL,   // session_save_handoff — upsert latest project state (now with OCC)
-    loadContextTool,             // session_load_context — progressive context loading (+ auto-load instruction)
+    SESSION_LOAD_CONTEXT_TOOL,   // session_load_context — explicit project reload / legacy fallback
     KNOWLEDGE_SEARCH_TOOL,       // knowledge_search — search accumulated knowledge
     KNOWLEDGE_FORGET_TOOL,       // knowledge_forget — prune bad/old memories
     SESSION_COMPACT_LEDGER_TOOL, // session_compact_ledger — auto-compact old ledger entries (v0.4.0)
@@ -414,8 +392,10 @@ let keepAliveHandle: NodeJS.Timeout | null = null;
 
 const notificationTargets = new Set<Server>();
 let backgroundServicesScheduled = false;
-// Tracks whether a connected client already loaded context, allowing us to
-// suppress the deferred auto-push fallback.
+// ─── v5.2.1: Deferred Auto-Push Tracking ─────────────────────
+// Tracks whether any client has already called session_bootstrap or
+// session_load_context. Used by deferred auto-push to avoid duplicates when a
+// native host complies with the hook-free first-turn instruction.
 let contextLoadedByClient = false;
 
 function ensureStoragePrewarm() {
@@ -675,7 +655,7 @@ function scheduleDeferredAutoPush(server: Server) {
     }
 
     console.error(
-      `[Prism] Auto-push triggered — model did not call session_load_context within ${AUTOLOAD_PUSH_DELAY_MS / 1000}s`
+      `[Prism] Auto-push triggered — model did not call session_bootstrap or session_load_context within ${AUTOLOAD_PUSH_DELAY_MS / 1000}s`
     );
 
     try {
@@ -746,11 +726,14 @@ function scheduleDeferredAutoPush(server: Server) {
  *   - prompts:   /resume_session — inject previous context before LLM thinks
  *   - resources: memory://{project}/handoff — paperclip-attachable session state
  *                with subscribe support for live refresh
+ *   - logging:   Diagnostic notifications for auto-push, Telepathy, and watchdog
+ *                events. Clients may hide these; logging does not guarantee a
+ *                visible assistant greeting.
  */
 export function getAllPossibleTools(): Tool[] {
   return [
     ...ALL_BASE_TOOLS,
-    ...buildSessionMemoryTools([]),
+    ...buildSessionMemoryTools(),
     ...AGENT_REGISTRY_TOOLS,
     SESSION_TASK_ROUTE_TOOL,
     SESSION_START_PIPELINE_TOOL,
@@ -760,15 +743,8 @@ export function getAllPossibleTools(): Tool[] {
 }
 
 export function getAvailableTools(): Tool[] {
-  // ─── v4.1 FIX: Auto-Load via Dynamic Tool Descriptions ────────
-  // Read auto-load projects EXCLUSIVELY from dashboard config
-  // (available after initConfigStorage() in startServer).
-  //
-  // ARCHITECTURE DECISION: We inject the auto-load instruction into
-  // the session_load_context TOOL DESCRIPTION, not into `instructions`
-  // or `sendLoggingMessage`. Tool descriptions are the ONLY mechanism
-  // guaranteed by ALL MCP clients (Antigravity, Claude Code, Claude CLI).
-  //
+  // Read auto-load projects exclusively from dashboard config so startup
+  // diagnostics and session_bootstrap share one source of truth.
   // The PRISM_AUTOLOAD_PROJECTS env var has been removed — the dashboard
   // is the single source of truth. This prevents mismatches between
   // env var and dashboard settings causing duplicate project loads.
@@ -780,7 +756,7 @@ export function getAvailableTools(): Tool[] {
     console.error(`[Prism] Auto-load projects (dashboard): ${autoloadList.join(', ')}`);
   }
 
-  const SESSION_MEMORY_TOOLS = buildSessionMemoryTools(autoloadList);
+  const SESSION_MEMORY_TOOLS = buildSessionMemoryTools();
 
   return [
     ...buildRuntimeBaseTools(),
@@ -790,6 +766,22 @@ export function getAvailableTools(): Tool[] {
     ...(PRISM_DARK_FACTORY_ENABLED ? [SESSION_START_PIPELINE_TOOL, SESSION_CHECK_PIPELINE_STATUS_TOOL, SESSION_ABORT_PIPELINE_TOOL] : []),
   ];
 }
+
+export const PRISM_SERVER_INSTRUCTIONS =
+  `Prism MCP — The Mind Palace for AI Agents. On the first user turn of every conversation, ` +
+  `including greetings, call session_bootstrap exactly once with {} before any user-facing response. ` +
+  `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
+  `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
+  `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +
+  `Do not substitute session_load_context while session_bootstrap is available; use session_load_context ` +
+  `only for an explicit project reload or as an older-server fallback. ` +
+  `Use session_save_ledger to log completed work and session_save_handoff to preserve state for the next session. ` +
+  `Reuse the conversation_id returned by session_bootstrap in structuredContent for those saves and for ` +
+  `session_detect_drift, the 60-minute goal-alignment drift check. Do not add the id to the visible greeting.\n\n` +
+  `${LOCAL_FIRST_POLICY_TEXT}\n\n` +
+  `Architecture: session_save_ledger and session_save_handoff require context loaded by session_bootstrap ` +
+  `or session_load_context when a conversation_id is supplied. ${BOUNDARIES_TEXT} ` +
+  `All cloud inference routes through the Synalux portal for billing, tier-gating, and audit.`;
 
 export function createServer() {
   const activeSubscriptions = new Set<string>();
@@ -803,15 +795,16 @@ export function createServer() {
     {
       capabilities: {
         tools: {},
+        logging: {},
 
         // ─── v0.4.0: Prompt capability (Enhancement #1) ───
         ...(SESSION_MEMORY_ENABLED ? { prompts: {} } : {}),
         // ─── v0.4.0: Resource capability (Enhancement #3) ───
         ...(SESSION_MEMORY_ENABLED ? { resources: { subscribe: true } } : {}),
       },
-      // Supplementary signal — not all clients support this field.
-      // Primary mechanism is the dynamic tool description above.
-      instructions: `Prism MCP — The Mind Palace for AI Agents. This server provides persistent session memory, knowledge search, and context management tools. Use session_load_context to recover previous work state, session_save_ledger to log completed work, and session_save_handoff to preserve state for the next session.\n\nArchitecture: session_save_ledger and session_save_handoff require a loaded project context (conversation_id that called session_load_context). ${BOUNDARIES_TEXT} All cloud inference routes through the Synalux portal for billing, tier-gating, and audit.`,
+      // Supplementary signal for clients that surface MCP server instructions.
+      // The matching session_bootstrap tool description is the primary path.
+      instructions: PRISM_SERVER_INSTRUCTIONS,
     }
   );
 
@@ -1247,6 +1240,11 @@ export function createServer() {
             contextLoadedByClient = true;  // v5.2.1: suppress deferred auto-push
             result = await sessionLoadContextHandler(args); break;
 
+          case "session_bootstrap":
+            if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
+            contextLoadedByClient = true;
+            result = await sessionBootstrapHandler(args); break;
+
           case "knowledge_search":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
             result = await knowledgeSearchHandler(args); break;
@@ -1446,7 +1444,7 @@ export function createServer() {
             result = await knowledgeIngestHandler(args); break;
 
           case "inference_metrics":
-            result = await inferenceMetricsHandler(); break;
+            result = await inferenceMetricsHandler(args as { period?: string }); break;
 
           default:
             result = {
@@ -1584,10 +1582,12 @@ export function createSandboxServer() {
     {
       capabilities: {
         tools: {},
+        logging: {},
 
         prompts: {},
         resources: { subscribe: true },
       },
+      instructions: PRISM_SERVER_INSTRUCTIONS,
     }
   );
 
@@ -1595,7 +1595,7 @@ export function createSandboxServer() {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...ALL_BASE_TOOLS,
-      ...buildSessionMemoryTools([]),
+      ...buildSessionMemoryTools(),
       ...AGENT_REGISTRY_TOOLS,
       SESSION_TASK_ROUTE_TOOL,
       SESSION_START_PIPELINE_TOOL,
@@ -1666,6 +1666,26 @@ export async function startServer() {
   registerServerNotificationTarget(server);
 
   console.error(`[Prism] MCP Server successfully started and listening on stdio...`);
+
+  // Start the authoritative tier-skill refresh only after the MCP transport is
+  // connected. session_load_context awaits this same single-flight promise,
+  // while the initialize handshake is never held behind portal I/O. The
+  // recurring refresh enforces tier changes even in long-lived native hosts
+  // that do not call session_load_context again.
+  const runSkillManifestSync = () => {
+    void triggerSkillManifestSync().then((result) => {
+      if (result.status === "failed" || result.status === "partial") {
+        console.error(`[Prism Skill Sync] Refresh failed; retained last-good skills: ${result.error}`);
+      } else if (result.conflicts.length > 0) {
+        console.error(`[Prism Skill Sync] Preserved unowned/modified native skill conflicts: ${result.conflicts.join(", ")}`);
+      }
+    }).catch((error) => {
+      console.error(`[Prism Skill Sync] Unexpected refresh failure: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
+  runSkillManifestSync();
+  const skillManifestRefresh = setInterval(runSkillManifestSync, 5 * 60 * 1000);
+  skillManifestRefresh.unref();
 
   // Register graceful shutdown handlers (SIGTERM, SIGINT, SIGHUP, stdin close).
   // The stdin close handler is critical — when MCP clients disconnect, they

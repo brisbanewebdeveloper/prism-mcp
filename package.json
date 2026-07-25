@@ -1,8 +1,8 @@
 {
   "name": "prism-mcp-server",
-  "version": "20.0.5",
+  "version": "20.2.6",
   "mcpName": "io.github.dcostenco/prism-coder",
-  "description": "Prism Coder — Cognitive memory + tool-calling intelligence for AI agents. Mind Palace persistent memory (BFCL Gold Certified, 100% Tool-Call Accuracy, 114 Agent Skills, PHI Guard, Tier Enforcement, Prompt-Based Skill Routing, Zero-Search HDC/HRR retrieval, HRR Semantic Drift Detection across BCBA/Coding/AAC domains, HIPAA-hardened local-first storage, SLERP-optimized GRPO alignment) plus the prism-coder 1.7B–32B open-weights LLM fleet.",
+  "description": "Prism Coder — Cognitive memory + tool-calling intelligence for AI agents. Mind Palace persistent memory (BFCL Gold Certified, 100% Tool-Call Accuracy, 114 Agent Skills, PHI Guard, Tier Enforcement, Prompt-Based Skill Routing, Zero-Search HDC/HRR retrieval, HRR Semantic Drift Detection across BCBA/Coding/AAC domains, HIPAA-hardened local or subscription-gated Synalux storage, SLERP-optimized GRPO alignment) plus the prism-coder 1.7B–32B open-weights LLM fleet.",
   "module": "index.ts",
   "type": "module",
   "main": "dist/server.js",
@@ -13,9 +13,13 @@
     "prism-import": "dist/utils/universalImporter.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/dev/browse.py",
+    "docs/prism-browser.md"
   ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean",
     "build": "tsc && npm run chmod-bins",
     "chmod-bins": "node -e \"['dist/cli.js','dist/server.js','dist/utils/universalImporter.js'].forEach(f => { try { require('fs').chmodSync(f, 0o755); } catch (e) { console.warn('chmod skipped', f, e.message); } })\"",
     "prepublishOnly": "npm run build",
@@ -25,6 +29,8 @@
     "test:watch": "vitest",
     "test:load": "vitest run tests/load/",
     "test:ci": "vitest run --reporter=junit --outputFile=test-results.xml",
+    "test:routing:live": "npm run build && node scripts/prism-infer-live-test.mjs",
+    "test:routing:models": "npm run build && node scripts/prism-infer-live-test.mjs --infer",
     "test:mcp": "node ./test_cross_mcp.js",
     "import": "node dist/utils/universalImporter.js"
   },
@@ -65,6 +71,7 @@
     "rag",
     "embeddings",
     "cursor",
+    "codex",
     "windsurf",
     "cline",
     "persistent-memory",
@@ -118,9 +125,14 @@
     }
   },
   "overrides": {
-    "hono": "^4.12.18",
-    "fast-uri": "^3.1.2",
-    "ip-address": "^10.2.0"
+    "@hono/node-server": "^2.0.5",
+    "body-parser": "^2.3.0",
+    "fast-uri": "^3.1.4",
+    "hono": "^4.12.27",
+    "ip-address": "^10.2.0",
+    "protobufjs": "^7.6.5",
+    "sharp": "^0.35.0",
+    "tar": "^7.5.19"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
@@ -144,6 +156,7 @@
     "p-limit": "^7.3.0",
     "postcss": "8.5.12",
     "quickjs-emscripten": "^0.32.0",
+    "smol-toml": "^1.7.0",
     "stream-json": "^2.0.0",
     "turndown": "^7.2.2",
     "zod": "^4.3.6"

@@ -128,10 +128,110 @@ describe('skill routing — backward compat', () => {
     expect(typeof OFFLINE_FALLBACK.projects).toBe('object');
   });
 
+  it('pins the 12 protected free-tier universals including ABA', () => {
+    const protectedNames = OFFLINE_FALLBACK.universal
+      .filter((entry) => typeof entry !== 'string' && entry.protected)
+      .map((entry) => typeof entry === 'string' ? entry : entry.name);
+    expect(protectedNames).toHaveLength(12);
+    expect(OFFLINE_FALLBACK.universal).toHaveLength(12);
+    expect(OFFLINE_FALLBACK.universal.every((entry) => typeof entry !== 'string' && entry.protected)).toBe(true);
+    expect(protectedNames).toContain('aba-precision-protocol');
+    expect(protectedNames).not.toContain('bcba_ai_assistant');
+  });
+
   it('user_local defaults to disabled', async () => {
     mockPortalResponse(PORTAL_RESP);
     const result = await resolveSkillsForProject('any');
     expect(result.user_local.enabled).toBe(false);
     expect(result.user_local.key_prefix).toBe('user_skill:');
+  });
+});
+
+// ── Auth: PRISM_SKILLS_TOKEN precedence + synalux JWT fallback ───────────────
+// The JWT path puts skill delivery on the same per-user identity as inference
+// (fixes the enterprise-for-inference / free-for-skills split).
+import { getSynaluxJwt, invalidateSynaluxJwt } from '../src/utils/synaluxJwt.js';
+
+vi.mock('../src/utils/synaluxJwt.js', () => ({
+  getSynaluxJwt: vi.fn(),
+  invalidateSynaluxJwt: vi.fn(),
+}));
+
+function authHeaderOfCall(n = 0): string | undefined {
+  const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[n];
+  return (call[1]?.headers as Record<string, string>)?.['Authorization'];
+}
+
+describe('skill routing — auth', () => {
+  const ORIGINAL_TOKEN = process.env.PRISM_SKILLS_TOKEN;
+
+  beforeEach(() => {
+    delete process.env.PRISM_SKILLS_TOKEN;
+    vi.mocked(getSynaluxJwt).mockReset();
+    vi.mocked(invalidateSynaluxJwt).mockReset();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_TOKEN === undefined) delete process.env.PRISM_SKILLS_TOKEN;
+    else process.env.PRISM_SKILLS_TOKEN = ORIGINAL_TOKEN;
+  });
+
+  it('uses static PRISM_SKILLS_TOKEN when set (JWT not consulted)', async () => {
+    process.env.PRISM_SKILLS_TOKEN = 'static-token-abc';
+    mockPortalResponse(PORTAL_RESP);
+    await resolveSkillsForProject('prism-mcp');
+    expect(authHeaderOfCall()).toBe('Bearer static-token-abc');
+    expect(getSynaluxJwt).not.toHaveBeenCalled();
+  });
+
+  it('falls back to synalux JWT when no static token', async () => {
+    vi.mocked(getSynaluxJwt).mockResolvedValue('jwt-xyz');
+    mockPortalResponse(PORTAL_RESP);
+    await resolveSkillsForProject('prism-mcp');
+    expect(authHeaderOfCall()).toBe('Bearer jwt-xyz');
+  });
+
+  it('sends no Authorization when neither token nor key resolves (free tier preserved)', async () => {
+    vi.mocked(getSynaluxJwt).mockResolvedValue(null);
+    mockPortalResponse(PORTAL_RESP);
+    await resolveSkillsForProject('prism-mcp');
+    expect(authHeaderOfCall()).toBeUndefined();
+  });
+
+  it('does not treat configured credential failure as an anonymous free request', async () => {
+    process.env.PRISM_SYNALUX_API_KEY = 'synalux_sk_configured';
+    globalThis.fetch = vi.fn();
+    vi.mocked(getSynaluxJwt).mockResolvedValue(null);
+    const result = await resolveSkillsForProject('configured-auth-failure');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(result.isOffline).toBe(true);
+    delete process.env.PRISM_SYNALUX_API_KEY;
+  });
+
+  it('on 401 with JWT: invalidates, re-exchanges, retries once', async () => {
+    vi.mocked(getSynaluxJwt)
+      .mockResolvedValueOnce('stale-jwt')
+      .mockResolvedValueOnce('fresh-jwt');
+    const unauthorized = { ok: false, status: 401, json: async () => ({}) } as Response;
+    const success = { ok: true, status: 200, json: async () => PORTAL_RESP } as Response;
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(unauthorized)
+      .mockResolvedValueOnce(success);
+
+    const result = await resolveSkillsForProject('prism-mcp');
+    expect(invalidateSynaluxJwt).toHaveBeenCalledOnce();
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+    expect(authHeaderOfCall(1)).toBe('Bearer fresh-jwt');
+    expect(result.isOffline).toBe(false);
+  });
+
+  it('on 401 with STATIC token: no retry loop (fails to offline path)', async () => {
+    process.env.PRISM_SKILLS_TOKEN = 'revoked-token';
+    const unauthorized = { ok: false, status: 401, json: async () => ({}) } as Response;
+    globalThis.fetch = vi.fn().mockResolvedValue(unauthorized);
+    const result = await resolveSkillsForProject('prism-mcp');
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(invalidateSynaluxJwt).not.toHaveBeenCalled();
+    expect(result.isOffline).toBe(true);
   });
 });

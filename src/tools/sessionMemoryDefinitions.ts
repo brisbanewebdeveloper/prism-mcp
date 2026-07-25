@@ -122,7 +122,8 @@ export const SESSION_LOAD_CONTEXT_TOOL: Tool = {
   name: "session_load_context",
   description:
     "Load session context for a project using progressive context loading. " +
-    "Use this at the START of a new session to recover previous work state. " +
+    "Use this for an explicit project reload, or as a startup fallback only when session_bootstrap is unavailable. " +
+    "When session_bootstrap is available, do not substitute this tool for the first-turn bootstrap. " +
     "Three levels available:\n" +
     "- **quick**: Just the latest project state — keywords and open TODOs (~50 tokens)\n" +
     "- **standard**: Project state plus recent session summaries and decisions (~200 tokens, recommended)\n" +
@@ -137,7 +138,7 @@ export const SESSION_LOAD_CONTEXT_TOOL: Tool = {
       level: {
         type: "string",
         enum: ["quick", "standard", "deep"],
-        description: "How much context to load: 'quick' (just TODOs), 'standard' (recommended — includes recent summaries), or 'deep' (full history). Default: standard.",
+        description: "How much context to load: 'quick' (just TODOs), 'standard' (recommended — includes recent summaries), or 'deep' (full history). Omit to use the Prism dashboard's Context Depth setting (safe fallback: standard).",
       },
       role: {
         type: "string",
@@ -166,6 +167,43 @@ export const SESSION_LOAD_CONTEXT_TOOL: Tool = {
       },
     },
     required: ["project", "toolAction", "toolSummary"],
+  },
+};
+
+// ─── Hook-free Session Bootstrap ──────────────────────────────
+
+export const SESSION_BOOTSTRAP_TOOL: Tool = {
+  name: "session_bootstrap",
+  description:
+    "IMPORTANT: On the first user turn of every conversation, including a greeting, call this tool exactly once " +
+    "with an empty object before any user-facing response. Do not substitute session_load_context when this tool is available. " +
+    "This starts a Prism-backed conversation without host hooks. " +
+    "Prism reads the dashboard's Auto-Load Projects, Context Depth (quick/standard/deep), developer name, and default role, " +
+    "then returns the greeting and correctly scoped prior-session context. Emit no preamble. Print the complete tool result " +
+    "verbatim as the entire first-turn startup display, before any optional answer. Do not summarize, paraphrase, rename " +
+    "headings, reformat, or omit any returned section. Preserve its order and line content. For a greeting-only prompt, " +
+    "stop after the verbatim startup display. Do not guess or pass a project or depth. Prism returns a stable " +
+    "conversation_id in structuredContent; reuse it for session_save_ledger, session_save_handoff, and " +
+    "session_detect_drift throughout this conversation without adding it to the visible greeting.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      conversation_id: {
+        type: "string",
+        description: "Optional stable key for this conversation. When omitted, Prism generates one and returns it in structuredContent.",
+      },
+      prompt: {
+        type: "string",
+        description: "Optional initial user prompt for prompt-routed skill selection.",
+      },
+    },
+    required: [],
   },
 };
 
@@ -1516,12 +1554,17 @@ export const SESSION_TASK_ROUTE_TOOL: Tool = {
   name: "session_task_route",
   description:
     "Analyze a coding task and recommend whether it should be handled by the host " +
-    "cloud model or delegated to the local claw-code-agent (Qwen3).\n\n" +
+    "cloud model or delegated to Prism's local memory-aware worker (Qwen3). " +
+    "The `claw` target value is retained for API compatibility.\n\n" +
     "**How to use:**\n" +
-    "1. Call this tool BEFORE writing code or executing a complex task\n" +
+    "1. Call this tool before delegating a bounded subtask\n" +
     "2. Read the `target` field in the response\n" +
-    "3. If target is `claw`, call `claw_run_task` with the task description\n" +
+    "3. If target is `claw`, call the returned `recommended_tool` (`prism_infer`) " +
+    "with `recommended_args`\n" +
     "4. If target is `host`, handle the task yourself\n\n" +
+    "Bounded high-complexity inference may still target `claw`; the forwarded 1-10 " +
+    "complexity selects 4B/9B/27B inside `prism_infer`. Architecture, security, " +
+    "host-tool workflows, and other reserved judgment remain on `host`.\n\n" +
     "**v7.1.0/v7.2.0:** Uses deterministic keyword/scope heuristics.\n" +
     "When a project is specified, routing is enhanced by analyzing past experience events " +
     "(success/failure/correction) to adjust confidence scores based on historical outcomes.",
@@ -2065,12 +2108,20 @@ export function isVerifyBehaviorArgs(a: unknown): a is {
 export const INFERENCE_METRICS_TOOL: Tool = {
   name: "inference_metrics",
   description:
-    "Returns the current session's local-model inference metrics — call count, " +
-    "local vs cloud split, token totals, per-model breakdown, and average latency. " +
-    "Read-only, no arguments. Reflects prism_infer delegation usage only, not the " +
-    "host model's (Claude's) own token spend (use /cost for that).",
+    "Returns local-model inference metrics — call count, local vs cloud split, " +
+    "token totals, per-model breakdown, and average latency. period: 'session' " +
+    "(default) reports this MCP process's prism_infer delegation only. period: " +
+    "'all' imports the Synalux VS Code panel spool and reports persisted MCP + " +
+    "panel usage across restarts, including the panel local-serve rate. This does " +
+    "not include the host model's (Claude's) own token spend (use /cost for that).",
   inputSchema: {
     type: "object",
-    properties: {},
+    properties: {
+      period: {
+        type: "string",
+        enum: ["session", "all"],
+        description: "Metrics window: 'session' (this MCP process) or 'all' (durable MCP + VS Code panel ledger).",
+      },
+    },
   },
 };

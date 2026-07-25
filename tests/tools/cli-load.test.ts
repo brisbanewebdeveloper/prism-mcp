@@ -18,6 +18,20 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("commander", () => {
+  class Command {
+    name(): this { return this; }
+    description(): this { return this; }
+    version(): this { return this; }
+    command(): this { return this; }
+    option(): this { return this; }
+    requiredOption(): this { return this; }
+    action(): this { return this; }
+    async parseAsync(): Promise<this> { return this; }
+  }
+  return { Command };
+});
+
 // ─── Mock storage ───────────────────────────────────────────────
 const mockLoadContext = vi.fn();
 const mockStorage = {
@@ -44,6 +58,7 @@ vi.mock("../../src/storage/configStorage.js", () => ({
     return mockSettings[key] ?? defaultValue;
   }),
   initConfigStorage: vi.fn(async () => {}),
+  refreshConfigStorageCache: vi.fn(async () => {}),
 }));
 
 // ─── Mock git state ─────────────────────────────────────────────
@@ -107,6 +122,7 @@ import { getStorage, closeStorage } from "../../src/storage/index.js";
 import { getSetting } from "../../src/storage/configStorage.js";
 import { sessionLoadContextHandler } from "../../src/tools/ledgerHandlers.js";
 import { getCurrentGitState } from "../../src/utils/git.js";
+import { buildLoadJsonOutput } from "../../src/cli.js";
 
 // ─── Test Data ──────────────────────────────────────────────────
 const MOCK_HANDOFF_DATA = {
@@ -321,6 +337,127 @@ describe("CLI Load — JSON Mode", () => {
     const output = { agent_name: agentName || null };
 
     expect(output.agent_name).toBeNull();
+  });
+
+  it("emits no ledger history at quick depth even when storage includes history fields", () => {
+    const output = buildLoadJsonOutput("test-project", {
+      ...MOCK_HANDOFF_DATA,
+      session_history: [{ summary: "must stay hidden" }],
+    }, "quick", {
+      agentName: "Dmitri",
+      gitHash: "abc1234",
+      gitBranch: "main",
+      packageVersion: "9.2.1",
+    });
+
+    expect(output).toHaveProperty("recent_ledger");
+    expect(output.recent_ledger).toEqual([]);
+  });
+
+  it("serializes at most five canonical recent_sessions at standard depth", () => {
+    const output = buildLoadJsonOutput("test-project", {
+      ...MOCK_HANDOFF_DATA,
+      recent_sessions: Array.from({ length: 7 }, (_, index) => ({
+        summary: `Standard session ${index}`,
+        decisions: [`Standard decision ${index}`],
+        session_date: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00Z`,
+      })),
+      session_history: [{ summary: "deep field must not win" }],
+    }, "standard", {
+      agentName: "Dmitri",
+      gitHash: "abc1234",
+      gitBranch: "main",
+      packageVersion: "9.2.1",
+    });
+
+    expect(output.recent_ledger).toHaveLength(5);
+    expect(output.recent_ledger.map((entry) => entry.summary)).toEqual([
+      "Standard session 0",
+      "Standard session 1",
+      "Standard session 2",
+      "Standard session 3",
+      "Standard session 4",
+    ]);
+    expect(output.recent_ledger[0]).toMatchObject({
+      decisions: ["Standard decision 0"],
+      created_at: "2026-07-01T12:00:00Z",
+    });
+  });
+
+  it("omits greeting-only handoff and ledger rows from JSON output", () => {
+    const output = buildLoadJsonOutput("prism-mcp", {
+      last_summary: "[VSCode] Hello! How can I assist you today?",
+      recent_sessions: [
+        { summary: "Hi! 👋", session_date: "2026-07-22T12:00:00Z" },
+        { summary: "Fixed duplicate greeting memory", session_date: "2026-07-21T12:00:00Z" },
+      ],
+    }, "standard", {
+      agentName: "Dmitri",
+      gitHash: "abc1234",
+      gitBranch: "main",
+      packageVersion: "9.2.1",
+    });
+
+    expect(output.handoff[0].last_summary).toBeNull();
+    expect(output.recent_ledger.map((entry) => entry.summary)).toEqual([
+      "Fixed duplicate greeting memory",
+    ]);
+  });
+
+  it("serializes at most fifty canonical session_history entries at deep depth", () => {
+    const output = buildLoadJsonOutput("test-project", {
+      ...MOCK_HANDOFF_DATA,
+      recent_sessions: [{ summary: "recent field must not win" }],
+      session_history: Array.from({ length: 55 }, (_, index) => ({
+        summary: `Deep session ${index}`,
+        decisions: [`Deep decision ${index}`],
+        created_at: `2026-06-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+      })),
+    }, "deep", {
+      agentName: "Dmitri",
+      gitHash: "abc1234",
+      gitBranch: "main",
+      packageVersion: "9.2.1",
+    });
+
+    expect(output.recent_ledger).toHaveLength(50);
+    expect(output.recent_ledger[0].summary).toBe("Deep session 0");
+    expect(output.recent_ledger[49].summary).toBe("Deep session 49");
+    expect(output.recent_ledger.some((entry) => entry.summary === "recent field must not win")).toBe(false);
+  });
+
+  it("keeps recent_ledger compatibility while using level-specific precedence and deep legacy fallback", () => {
+    const metadata = {
+      agentName: "Dmitri",
+      gitHash: "abc1234",
+      gitBranch: "main",
+      packageVersion: "9.2.1",
+    };
+    const mixed = {
+      ...MOCK_HANDOFF_DATA,
+      recent_sessions: [{ summary: "Standard source" }],
+      session_history: [{ summary: "Deep source" }],
+    };
+
+    expect(buildLoadJsonOutput("test-project", mixed, "standard", metadata).recent_ledger[0].summary)
+      .toBe("Standard source");
+    expect(buildLoadJsonOutput("test-project", mixed, "deep", metadata).recent_ledger[0].summary)
+      .toBe("Deep source");
+    expect(buildLoadJsonOutput("test-project", {
+      ...MOCK_HANDOFF_DATA,
+      recent_sessions: [{ summary: "Legacy deep fallback" }],
+      session_history: undefined,
+    }, "deep", metadata).recent_ledger[0].summary).toBe("Legacy deep fallback");
+
+    const output = buildLoadJsonOutput("test-project", mixed, "deep", metadata);
+    expect(Object.keys(output)).toEqual([
+      "agent_name",
+      "handoff",
+      "recent_ledger",
+      "git_hash",
+      "git_branch",
+      "pkg_version",
+    ]);
   });
 });
 

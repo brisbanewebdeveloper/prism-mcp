@@ -2,6 +2,316 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.2.6] - 2026-07-22 — Safe Host Configuration Reads
+
+### Fixed
+- Replaced check-then-read handling for Claude, Cursor, Gemini, and Codex
+  configuration files with descriptor-based reads and file-identity checks,
+  closing the host-config TOCTOU window while preserving supported symlinked
+  dotfiles.
+- Dangling configuration symlinks now fail loudly instead of being mistaken
+  for missing files, and Prism installation receipts cannot overwrite a
+  planted symlink target.
+
+### Tests
+- Added cross-host regressions for dangling symlinks and installation-receipt
+  symlink protection alongside the existing symlink-preservation and
+  concurrent-edit coverage.
+
+## [20.2.5] - 2026-07-22 — Release Integrity and Dependency Security
+
+### Fixed
+- Updated transitive dependency overrides so clean installs resolve patched
+  Hono, `body-parser`, `fast-uri`, `protobufjs`, Sharp, and `tar` releases;
+  `npm audit --audit-level=high` now reports zero vulnerabilities.
+- Replaced the i18n workflow's direct push to protected `main` with a
+  deterministic generated-document verification gate. Translation drift now
+  fails CI without bypassing required branch checks.
+- Made the six-platform CLI matrix portable: one Linux lane installs and
+  verifies the optional Prism Browser runtime, Windows uses `USERPROFILE` for
+  native skill materialization, Unix-only mode assertions stay Unix-only, and
+  known libSQL test-handle cleanup behavior no longer masks passing behavior.
+- Republished the 20.2.4 session-memory reliability changes from the final,
+  CI-repaired source after the original npm artifact raced the repair commit.
+
+### Tests
+- Verified the complete Vitest suite, TypeScript build, dependency import
+  smoke tests, clean audit, deterministic i18n generation, and npm package
+  contents before release.
+
+## [20.2.4] - 2026-07-22 — Reliable, Substantive Session Memory
+
+### Fixed
+- Greeting-only assistant replies are no longer written to the session ledger.
+- Existing greeting-only rows are filtered from quick, standard, and deep
+  context without deleting history or hiding rows with decisions, TODOs, files,
+  or non-session event types.
+- Direct MCP `session_bootstrap` and `prism bootstrap` use one bounded local
+  last-good snapshot when Synalux has a transient rate, network, timeout, or
+  server failure. Permanent authorization and validation failures remain loud,
+  and later writes keep using the configured cloud backend.
+- Identical concurrent context reads share one portal request without caching
+  completed responses, reducing startup bursts while keeping later reads fresh.
+
+### Tests
+- Added regressions for observed VS Code greeting rows, immutable context
+  filtering, transient-vs-permanent startup failures, local snapshot reuse,
+  cloud-write preservation, concurrent read coalescing, and all five native
+  host registration paths.
+
+## [20.2.2] - 2026-07-21 — Automatic Tier Skill Sync
+
+### Added
+- Complete Synalux skill-manifest synchronization at `prism connect`, MCP
+  startup, `session_load_context`, and a five-minute refresh interval.
+- Native package materialization under `~/.agents/skills`, including complete
+  multi-file packages, atomic replacement, ownership markers, recovery, and
+  bounded cross-process locking.
+- One canonical local-first orchestration policy for Claude Code, Claude
+  Desktop, Cursor, Gemini CLI, and Codex. MCP initialize instructions carry it
+  to every host; native instruction files reinforce it where supported.
+- Memory-aware local workers: `prism_infer` accepts `project`,
+  `context_depth`, and `conversation_id`, then loads bounded
+  quick/standard/deep project history as untrusted historical data.
+
+### Changed
+- Platform skill activation now intersects the current manifest entitlement;
+  dashboard writes cannot shadow the managed platform namespace.
+- Free clients receive exactly the protected 12-skill foundation. Paid tiers
+  receive the portal's current subscribed routing set.
+- `prism connect` performs a one-time exact-match removal of legacy Prism-owned
+  Claude lifecycle hooks. User hooks remain untouched; native skills and
+  server-side reminders now own startup, sync, handoff, and drift behavior.
+- Recognized legacy Prism startup sections in `~/CLAUDE.md` are retired only
+  after native skill sync succeeds; all other global instructions are retained.
+- Claude Code receives a small ownership-marked native `~/CLAUDE.md` block
+  because live acceptance proved MCP metadata and skill discovery alone do not
+  reliably trigger a first-turn tool call.
+- Local delegation is now the default, with an explicit setting/environment
+  opt-out. `session_task_route` returns the real `prism_infer` executor and
+  bounded arguments instead of the nonexistent `claw_run_task` tool.
+- `session_task_route` forwards a deterministic complexity hint but does not
+  choose a model. `prism_infer` centrally selects 4B/9B/27B using complexity,
+  memory/context fit, installed models, live RAM, entitlements, and explicit
+  caller overrides.
+- `prism connect` disables Codex and Gemini native fan-out. Codex retains a
+  capped Terra/low fallback profile for an explicit future re-enable; Claude
+  Code's fallback subagent model is pinned to Sonnet.
+
+### Fixed
+- Codex no longer needs a second restart after `prism connect`: the command
+  waits until entitled native skills exist before returning.
+- MCP metadata now selects `session_bootstrap({})` on the first turn instead of
+  overriding native startup with a hardcoded `session_load_context` depth.
+- Native bootstrap responses no longer re-inline the tier snapshot already
+  installed by `prism connect`, avoiding 100 KB+ duplicate first-turn payloads.
+- Downgrades prune only Prism-managed native and database entries; custom or
+  locally modified skills are preserved and reported as conflicts.
+- Failed, partial, invalid, or unauthenticated paid snapshots retain last-good
+  state and fail loudly instead of silently changing entitlement.
+
+### Tests
+- Added tier-matrix, first-launch CLI, upgrade/downgrade, atomic rollback,
+  ownership-conflict, lock-recovery, auth-refresh, dashboard-policy, and
+  package-content regression coverage.
+- Added exact legacy-hook migration coverage for success, sync failure,
+  disabled sync, dry-run, idempotence, malformed settings, and near matches.
+- Added cross-host policy, native setting preservation, router-to-executor,
+  memory-depth, historical-data escaping, and explicit opt-out coverage.
+
+## [20.2.1] - 2026-07-20 — Subscription-Aware Memory
+
+### Changed
+- `PRISM_STORAGE=auto` now uses Synalux memory only when the portal confirms
+  `session_memory_unlimited`; portal-confirmed Free accounts stay on local
+  SQLite, while Standard, Advanced, and Enterprise use Synalux memory.
+- `prism connect` preserves an explicit `auto`, `local`, `synalux`, or
+  `supabase` storage choice independently of the Synalux API key.
+
+### Fixed
+- Entitlement outages fail closed instead of silently selecting another
+  backend and splitting session history.
+- Credentials injected after module initialization are now visible to the
+  entitlement and JWT clients.
+
+### Tests
+- Added tier-matrix, entitlement-provenance, explicit-storage, forced-local,
+  runtime-credential, and process-level `prism connect` regression coverage.
+- Made Codex host discovery and SQLite ledger cleanup portable across the
+  Linux, macOS, and Windows CI matrix.
+
+## [20.2.0] - 2026-07-20 — Host Auto-Registration
+
+### Added
+- **`prism connect`** — Detects Claude Code, Claude Desktop on macOS, Windows,
+  and Linux, Cursor, Gemini CLI, and Codex, then registers the installed Prism server
+  using absolute runtime and package paths. Supports `--host`, `--all`, and
+  write-free `--dry-run` operation.
+- **Safe managed refreshes** — `--refresh` updates only entries previously
+  created by Prism, allowing a validated Synalux API key to be added later
+  without overwriting custom configuration.
+
+### Changed
+- Host configuration uses atomic writes, preserves symlinked config files,
+  detects concurrent edits observed before atomic replacement, and leaves
+  existing `prism` or `prism-mcp`
+  registrations untouched by default.
+- Codex registration respects `CODEX_HOME` and preserves existing TOML while
+  owning only a clearly marked `mcp_servers.prism-mcp` block.
+- Onboarding and IDE setup now direct users through the single `prism connect`
+  path instead of maintaining separate generated snippets.
+
+### Tests
+- Added cross-platform registration coverage for idempotency, refresh,
+  dry-run, application detection, invalid JSON/TOML, symlinks, and concurrent
+  host writes.
+
+## [20.1.0] - 2026-07-20 — 🧭 Failure Contract, Oversize Prompts, Ctx Gate, Entitlements Provenance
+
+Local-first plan v2 Phase 1 complete (§5.2–§5.5). Every terminal path of
+`prism_infer` is now observable, oversize prompts are no longer blanket-refused,
+silent prompt truncation is structurally impossible, and degraded entitlement
+resolution is visible and optionally fail-loud.
+
+### Added
+- **Failure contract (`escalation: 'serve' | 'report'`)** — §5.2. Default
+  `'serve'` keeps legacy behavior. Under `'report'`, safety refusals return a
+  typed `{gate_outcome: {status:'refused'}, output:''}` result instead of
+  throwing, and every serve carries a structured
+  `gate_outcome {status: success|degraded|refused, reason, served_anyway}`.
+  The gate-fail-without-cloud path previously served degraded output with NO
+  flag at all — now marked on both `quality_gate_failed` and `gate_outcome`.
+  Infra exhaustion still throws in both modes (an infrastructure failure is
+  not a refusal). Refused results never touch the session accumulators —
+  they previously would have counted as local serves and inflated
+  cloud-tokens-saved.
+- **Layer-1 oversize verdict `UNCERTAIN_LENGTH`** — §5.3. Prompts >4000 chars
+  previously got a blanket UNCERTAIN → reserved handling → with cloud off,
+  every big benign prompt was refused. Now: the deterministic keyword floor
+  scans the FULL text first (reserved vocabulary anywhere short-circuits to
+  OBVIOUS_RESERVED with no classifier call), then a bounded head+middle+tail
+  excerpt is classified. A clean excerpt yields the distinct UNCERTAIN_LENGTH
+  verdict, which routes LOCAL with an audit marker. Semantic UNCERTAIN still
+  gets full reserved handling. The keyword floor also gains previously-missing
+  vocabulary (basket/prone/supine/two-person holds, holding-the-client-down,
+  rage episode).
+- **Per-tier ctx gate (`ctx_insufficient`)** — §5.4. MODEL_TIERS context values
+  are now aligned with the LIVE Modelfile `num_ctx` (verified inverted from
+  the old table: 27b/9b bake 4096, 4b/2b bake 32768 — the old config was
+  wrong on 3 of 4 tiers). The tier walk skips tiers whose ctx cannot hold the
+  prompt; if no tier fits, cloud receives the FULL prompt when allowed,
+  otherwise a loud error with the per-tier trail. Ollama previously truncated
+  over-ctx prompts silently and answered from the fragment.
+- **Entitlements provenance + strict mode** — §5.5. `PrismEntitlements.source`
+  distinguishes `'portal'` (real data, incl. portal-confirmed free) from
+  `'unconfigured'` (no key — free is correct) from `'fallback_free'` (portal
+  configured but unreachable — free clamps were ASSUMED). New
+  `strict_entitlements: true` arg fails loud on `fallback_free` instead of
+  silently running under assumed limits. `fallback_free` never enters the
+  5-min cache (recovery is immediate); a 25s negative cache caps retry cost
+  during outages. Every result carries `entitlements_source`.
+
+### Fixed
+- Ledger rows now carry the structured `gate_outcome` and `refusal_reason`
+  (columns pre-provisioned in 20.0.7); serve-mode keyword-backstop refusals
+  now write a ledger row (previously silent).
+- Stale "cached 1hr" entitlements docs corrected (resolution was already
+  per-call with a 5-min cache).
+
+### Tests
+- 70+ new tests across four suites: three-terminal-path contract fixtures with
+  drift guard, oversize excerpt/keyword-floor coverage (incl. an explicit
+  pinned-residual fixture), ctx-gate tier skipping with never-silent-truncation
+  proof, entitlements provenance per resolution path, negative-cache window,
+  strict-mode contract. Full suite 108 files / 3200+ tests green. Each plan
+  item shipped through an adversarial review pass; all confirmed findings
+  fixed in the same commits.
+
+## [20.0.8] - 2026-07-20 — Fix: verify_behavior MCP result contract
+
+### Fixed
+- **`verify_behavior` crashed on every invocation** — the handler
+  (`src/tools/behavioralVerifierHandler.ts`) returned a bare
+  `Promise<string>` instead of a `CallToolResult` object
+  (`{ content: [{ type: "text", text }] }`). The MCP SDK (^1.27.1) strictly
+  validates tool results and rejected the string at the root:
+  `-32602 Invalid tools/call result: expected object, received string`.
+  The bug shipped with the tool's introducing commit and had no test
+  coverage, so it went unnoticed until the tool was invoked against a
+  strict-validating SDK. The scenario text is now wrapped in a content
+  array (`verifyBehaviorHandler` → `buildScenarioText`); all fail-closed
+  branches (portal unreachable, missing JWT, non-OK response, malformed
+  JSON) are preserved.
+
+### Added
+- **`tests/behavioralVerifierContract.test.ts`** — contract regression test
+  asserting `verify_behavior` returns `{ content: [{ type: "text", text }] }`,
+  not a bare string. Fails against the string-returning bug, passes with
+  the fix.
+- **`tests/behavioralVerifierPaths.test.ts`** — fail-closed-path tests
+  pinning that the safety gate never skips: no-config, no-JWT, portal
+  error, and malformed-JSON branches all return a valid result object.
+
+## [20.0.7] - 2026-07-18 — 🛡️ Reserved-Content Safety + Skills Auth + Persistent Delegation Metrics
+
+### Security
+- **Reserved-content escalation is now Claude-or-refuse** — reserved clinical
+  content (restraint / seclusion / physical-management class) refused by local
+  Layer-1 could previously be escalated to the portal cascade and served by a
+  SMALLER model (2B / OpenRouter) than the one that refused it. The client now
+  sends `reserved: true` on escalation; the portal routes such requests to
+  Claude directly or refuses — never a small local tier, on any plan.
+- **Defense in depth** — if an unpatched portal still answers a reserved turn
+  from an `ollama-*` / `openrouter-*` backend, the client refuses to serve it.
+- **Typed refusals** — `ReservedRefusalError` with
+  `refusal_reason='layer1_reserved'` lets callers distinguish a safety refusal
+  from an infrastructure failure. Refusals are recorded in the metrics ledger
+  with zero prompt content.
+- **Credentialed portal fetches hardened** — `redirect: 'error'` on the skill
+  resolve path (matches the existing `synaluxJwt` standard).
+
+### Added
+- **Skills JWT auth fallback** — when `PRISM_SKILLS_TOKEN` is absent,
+  `skillRouting` exchanges `PRISM_SYNALUX_API_KEY` for a JWT (same per-user
+  identity as inference). Fixes machines that resolved paid entitlements for
+  inference but silently `tier=free` for skill delivery — the cause of
+  behavioral skills (e.g. `local-inference-first`) never reaching sessions.
+  Bounded 4s exchange; 401-invalidate + single retry; static token keeps
+  precedence.
+- **Persistent inference-metrics ledger** — append-only `infer_metrics` table
+  in `prism-config.db` records every `prism_infer` call (backend, mode, tier,
+  tokens, latency, RAM, gate outcome, refusal reason). The in-memory session
+  counters previously reset with every server restart, making long-term
+  local-vs-cloud delegation unmeasurable. `inference_metrics` tool gains
+  `period: 'session' | 'all'`. Test-suite writes are sandboxed via
+  `PRISM_DATA_DIR`; `safety_gate` calls are never persisted.
+- **Skill-delivery budgeting** — `session_load_context` skill assembly now
+  honors the caller's `max_tokens`: protected skills always inline in full
+  (the documented floor), prompt-matched skills next, remaining skills by
+  priority within a 60% tranche of the budget (the rest is reserved for
+  session history/briefing), and everything else is listed in an overflow
+  manifest — never silently dropped. Fixes paid-tier resolutions (~114KB
+  measured) exceeding host tool-result caps, which caused the whole response
+  to be file-diverted with the agent receiving nothing.
+- **Per-skill routing metadata** — the portal resolve response now carries
+  `{name, priority, protected, category}` per skill and the client consumes
+  it (older portals fall back safely to name-only behavior).
+
+### Fixed
+- 3 review rounds (2 adversarial multi-agent) caught before release: protected
+  flags fabricated client-side (floor was dead code), skill budget saturating
+  the whole response budget (zero history delivered), offline floor defeated
+  by dedupe, ledger rows from test suites polluting the production DB, silent
+  permanent ledger disable on one transient init failure, and a mode column
+  that would have been NULL forever.
+
+### Release notes
+- **20.0.6** (2026-07-15) was published from the same tree as 20.0.5
+  (`gitHead d53b641`) with no code changes and no changelog entry — treat it
+  as a republish of 20.0.5. 20.0.7 is the first release containing the
+  changes above, plus the sync-skills leak-guard fix and CLA action pin from
+  #98.
+
 ## [19.3.1] - 2026-07-06 — Cloud Tokens Saved Metric + Gemini Host Verification
 
 ### Added
