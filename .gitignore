@@ -107,7 +107,7 @@ __pycache__/
 results.json
 
 # Private evaluation and routing assets
-# Canonical home: synalux-private/prism-training/from-public-prism/
+# Canonical copies are maintained outside this public repository.
 /scripts/eval-layer1.mjs
 /tests/benchmarks/
 /tests/codingRoutingMatrix.test.ts
