@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [20.2.9] - 2026-07-26 — Reproducible npm Releases
+## [20.2.9] - 2026-07-26 — Reliable Releases and Sessions
 
 ### Fixed
 - npm publication now fails before building when the checkout contains
@@ -30,6 +30,15 @@ All notable changes to this project will be documented in this file.
   Prism's local config without requiring a key copied into host configuration. A packaged
   `prism verify-behavior` fallback preserves the real fail-closed scenario when
   a host's long-lived MCP transport has closed.
+- Long-lived MCP servers now probe idle transports and exit cleanly when the
+  client channel is gone, allowing native hosts to restart Prism instead of
+  repeatedly returning `Transport closed`.
+- Synalux handoff saves now unwrap and validate the portal's authoritative OCC
+  result, persist authenticated history snapshots before short-lived clients
+  exit, and fail loudly on malformed success envelopes.
+- Optional semantic-index initialization can no longer turn a successfully
+  persisted ledger, handoff, or experience into a false save failure. Responses
+  now distinguish primary persistence from optional indexing.
 
 ### Tests
 - Added regressions proving clean committed checkouts may publish while
@@ -41,6 +50,9 @@ All notable changes to this project will be documented in this file.
   prunes the former release gate from every Prism-managed native skill root.
 - Added CLI fallback and OAuth-only behavioral-verifier regressions so a dead
   MCP channel cannot be replaced with a self-authored scenario.
+- Added healthy, rejected, timed-out, and closed MCP transport checks; current
+  and legacy Synalux handoff-envelope contracts; awaited snapshot behavior; and
+  optional-index initialization failure coverage.
 
 ## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
 
