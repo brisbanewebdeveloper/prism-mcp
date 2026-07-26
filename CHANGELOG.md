@@ -29,7 +29,8 @@ All notable changes to this project will be documented in this file.
 - Behavioral verification now honors subscription credentials loaded from
   Prism's local config without requiring a key copied into host configuration. A packaged
   `prism verify-behavior` fallback preserves the real fail-closed scenario when
-  a host's long-lived MCP transport has closed.
+  a host's long-lived MCP transport has closed, and malformed portal responses
+  now fail closed instead of being treated as permission to skip verification.
 - Long-lived MCP servers now probe idle transports and exit cleanly when the
   client channel is gone, allowing native hosts to restart Prism instead of
   repeatedly returning `Transport closed`.

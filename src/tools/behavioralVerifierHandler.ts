@@ -94,12 +94,23 @@ async function buildScenarioText(
             return FALLBACK_SCENARIO;
         }
 
-        const data = (await res.json()) as VerifyBehaviorResult;
+        const data: unknown = await res.json();
+        if (!isVerifyBehaviorResult(data)) {
+            console.error("[verify-behavior] ⚠️ portal returned a malformed response — fail-closed");
+            return FALLBACK_SCENARIO;
+        }
         return formatResult(data);
     } catch (err) {
         console.error(`[verify-behavior] ⚠️ VERIFICATION FAILED: ${(err as Error).message} — using generic fallback`);
         return FALLBACK_SCENARIO;
     }
+}
+
+function isVerifyBehaviorResult(value: unknown): value is VerifyBehaviorResult {
+    return typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        typeof (value as { requires_verification?: unknown }).requires_verification === "boolean";
 }
 
 function formatResult(data: VerifyBehaviorResult): string {

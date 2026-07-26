@@ -140,11 +140,17 @@ describe("verify_behavior — fail-closed branches (safety gate must never skip)
         expect(text).toContain("OFFLINE MODE");
     });
 
-    it("malformed portal JSON (missing requires_verification) → treated as non-behavioral, still an object", async () => {
-        vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { unexpected: "shape" })));
+    it.each([
+        { unexpected: "shape" },
+        null,
+        [],
+        "not-an-object",
+        { requires_verification: "false" },
+    ])("malformed portal JSON fails closed with a verification scenario", async (body) => {
+        vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, body)));
 
         const text = expectToolResult(await verifyBehaviorHandler(ARGS));
-        const parsed = JSON.parse(text);
-        expect(parsed.requires_verification).toBe(false);
+        expect(text).toContain("OFFLINE MODE");
+        expect(text).toContain("Before editing this file, answer ALL of these");
     });
 });
