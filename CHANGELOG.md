@@ -40,6 +40,9 @@ All notable changes to this project will be documented in this file.
 - Optional semantic-index initialization can no longer turn a successfully
   persisted ledger, handoff, or experience into a false save failure. Responses
   now distinguish primary persistence from optional indexing.
+- The Python coding gate now ignores Windows Store command aliases that never
+  start the parser, preventing valid same-tier code repairs from being rejected
+  as syntax errors on Windows.
 
 ### Tests
 - Added regressions proving clean committed checkouts may publish while
@@ -54,6 +57,8 @@ All notable changes to this project will be documented in this file.
 - Added healthy, rejected, timed-out, and closed MCP transport checks; current
   and legacy Synalux handoff-envelope contracts; awaited snapshot behavior; and
   optional-index initialization failure coverage.
+- Added a Windows interpreter-selection regression that distinguishes an
+  unavailable command alias from a parser-confirmed Python syntax failure.
 
 ## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
 

@@ -78,8 +78,10 @@ const TRAILING_PROSE_LINE_RE =
 const TRAILING_URL_LINE_RE = /^https?:\/\/\S+$/i;
 const PYTHON_INVALID_DEF_RE =
     /(?:^|\n)\s*(?:async\s+)?def\s+[A-Za-z_]\w*\s*:/m;
+const PYTHON_READY_SENTINEL = "PRISM_PYTHON_READY";
 const PYTHON_AST_SCRIPT =
-    "import ast,sys; tree=ast.parse(sys.stdin.read()); compile(tree, '<prism-coding-gate>', 'exec')";
+    `import ast,sys; print('${PYTHON_READY_SENTINEL}', flush=True); ` +
+    "tree=ast.parse(sys.stdin.read()); compile(tree, '<prism-coding-gate>', 'exec')";
 const PYTHON_COMMANDS = ["python3", "python"] as const;
 const PYTHON_CHILDREN_KEYS_UNPACK_RE =
     /\bfor\s+[A-Za-z_]\w*\s*,\s*child(?:_node)?\s+in\s+(?:sorted\(\s*)?[A-Za-z_][\w.]*\.children\.keys\(\)\s*\)?\s*:/;
@@ -388,6 +390,12 @@ function pythonSyntaxFailure(code: string): string | undefined {
             windowsHide: true,
         });
         if (parsed.error && (parsed.error as NodeJS.ErrnoException).code === "ENOENT") {
+            continue;
+        }
+        const parserStarted = parsed.stdout
+            ?.split(/\r?\n/)
+            .includes(PYTHON_READY_SENTINEL) === true;
+        if (!parserStarted) {
             continue;
         }
         return parsed.status === 0 ? undefined : "python_syntax_error";
