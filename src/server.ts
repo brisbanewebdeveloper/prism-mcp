@@ -40,6 +40,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { monitorMcpTransport } from "./mcpTransportHealth.js";
 import { buildVSCodePrompt } from "./aba-protocol.js";
 import {
   CallToolRequestSchema,
@@ -1406,7 +1407,15 @@ export async function startServer() {
   // Register graceful shutdown handlers (SIGTERM, SIGINT, SIGHUP, stdin close).
   // The stdin close handler is critical — when MCP clients disconnect, they
   // often just close the pipe without sending a signal, leaving zombie processes.
-  registerShutdownHandlers();
+  const requestShutdown = registerShutdownHandlers();
+  monitorMcpTransport(server, {
+    onFailure: (reason, error) => {
+      if (error) {
+        console.error(`[Prism] MCP transport health check failed: ${error.message}`);
+      }
+      requestShutdown(reason);
+    },
+  });
 
   // Pre-warm storage AFTER connecting — fired async so we never block the
   // stdio handshake. Supabase REST initialization can take 500ms–5s; blocking

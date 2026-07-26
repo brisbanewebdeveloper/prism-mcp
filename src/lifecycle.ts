@@ -180,7 +180,7 @@ export function acquireLock() {
 /**
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
-export function registerShutdownHandlers() {
+export function registerShutdownHandlers(): (reason: string) => void {
   let shuttingDown = false;
 
   const shutdown = async (reason: string) => {
@@ -266,4 +266,8 @@ export function registerShutdownHandlers() {
   process.stdin.on("close", () => {
     shutdown("CLIENT_DISCONNECTED_STDIN_CLOSED");
   });
+
+  return (reason: string) => {
+    void shutdown(reason);
+  };
 }
