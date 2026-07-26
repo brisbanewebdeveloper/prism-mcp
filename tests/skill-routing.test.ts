@@ -128,14 +128,15 @@ describe('skill routing — backward compat', () => {
     expect(typeof OFFLINE_FALLBACK.projects).toBe('object');
   });
 
-  it('pins the 12 protected free-tier universals including ABA', () => {
+  it('pins the 13 protected free-tier universals including the staging gate', () => {
     const protectedNames = OFFLINE_FALLBACK.universal
       .filter((entry) => typeof entry !== 'string' && entry.protected)
       .map((entry) => typeof entry === 'string' ? entry : entry.name);
-    expect(protectedNames).toHaveLength(12);
-    expect(OFFLINE_FALLBACK.universal).toHaveLength(12);
+    expect(protectedNames).toHaveLength(13);
+    expect(OFFLINE_FALLBACK.universal).toHaveLength(13);
     expect(OFFLINE_FALLBACK.universal.every((entry) => typeof entry !== 'string' && entry.protected)).toBe(true);
     expect(protectedNames).toContain('aba-precision-protocol');
+    expect(protectedNames).toContain('current-staging-acceptance');
     expect(protectedNames).not.toContain('bcba_ai_assistant');
   });
 

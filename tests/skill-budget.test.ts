@@ -71,17 +71,17 @@ describe('assembleSkillBlock', () => {
     expect(r.inlined[0]).toBe('bcba');
   });
 
-  it('realistic v23 shape: 12 protected (real size spread) + 19 tail under the standard budget', () => {
-    // Real v23 protected sizes (repo-measured, chars): floor totals ~36k —
+  it('realistic v26 shape: 13 protected (real size spread) + 19 tail under the standard budget', () => {
+    // Real v26 protected sizes (repo-measured, chars): floor stays below 39k —
     // deliberately larger than the 8,400-char skill tranche (60% of 14k).
-    const protSizes = [2512, 2219, 5067, 1547, 1938, 2260, 1699, 2216, 7150, 3975, 4069, 1476];
+    const protSizes = [2513, 2173, 5000, 1619, 1462, 2092, 1896, 1683, 2186, 7066, 3913, 3354, 4035];
     const entries: SkillEntryForBudget[] = protSizes.map((n, i) =>
       entry({ name: `prot${i}`, protected: true, priority: i, content: K(n) }));
     for (let i = 0; i < 19; i++) entries.push(entry({ name: `tail${i}`, priority: 100 + i, content: K(4000) }));
     const r = assembleSkillBlock(entries, 8400);
-    expect(r.inlined.filter(n => n.startsWith('prot')).length).toBe(12); // floor holds over budget
+    expect(r.inlined.filter(n => n.startsWith('prot')).length).toBe(13); // floor holds over budget
     expect(r.inlined.filter(n => n.startsWith('tail')).length).toBe(0);  // tail waits for budget
     expect(r.overflow.length).toBe(19);                                  // flood prevented, all named
-    expect(r.block.length).toBeLessThan(45_000);                         // vs 114KB unbudgeted
+    expect(r.block.length).toBeLessThan(44_000);                         // preserves >1k headroom
   });
 });

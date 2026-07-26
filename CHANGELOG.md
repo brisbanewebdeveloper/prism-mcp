@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
+
 ### Added
 - Added caller-supplied `allowed_tools` and `route_guard: auto|local` controls
   to direct `prism_infer` route mode.
@@ -11,6 +13,9 @@ All notable changes to this project will be documented in this file.
   while retaining a fully local override and local enforcement on every tier.
   Advertised custom host tools remain local instead of being sent to the
   seven-tool Synalux correction endpoint.
+- Added `current-staging-acceptance` to the protected universal skill floor.
+  `prism connect` materializes it for every supported native host and session
+  startup reports it alongside the existing evidence-first guardrail.
 
 ### Fixed
 - Canonical Prism tool-call envelopes no longer fail the generic quality gate
@@ -21,6 +26,8 @@ All notable changes to this project will be documented in this file.
 ### Tests
 - Added parser, advertised-registry, fallback, entitlement, argument-integrity,
   JWT-refresh, HTTP-boundary, and known routing-failure regressions.
+- Added free-tier manifest, native-host materialization, offline injection,
+  startup reporting, and protected-budget regressions for the acceptance gate.
 
 ## [20.2.7] - 2026-07-25 — Reliable Cross-Process Session Saves
 

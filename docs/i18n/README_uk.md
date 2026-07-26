@@ -148,10 +148,13 @@ that would require a host lifecycle hook, launcher, extension, or Prism-owned
 panel. Context loading itself remains complete even when a host shortens the
 visible reply.
 
-Free accounts receive the protected 12-skill foundation. Paid accounts receive
-the current subscribed routing set. Upgrades install newly entitled packages;
-downgrades remove only Prism-owned packages while preserving local skills and
-locally modified conflicts.
+Free accounts receive the protected 13-skill foundation. It includes
+`current-staging-acceptance`, the strict completion extension of
+`evidence-first-protocol`: agents must use the exact current staging artifact
+and inspect every case and screenshot before reporting acceptance. Paid
+accounts receive the current subscribed routing set. Upgrades install newly
+entitled packages; downgrades remove only Prism-owned packages while preserving
+local skills and locally modified conflicts.
 
 When upgrading an older Claude Code installation, `prism connect` removes only
 the exact Prism-owned startup, skill-sync, handoff, and drift hook actions from

@@ -154,6 +154,8 @@ describe("subscription-tier skill manifest sync", () => {
     for (const nativeRoot of [agentsSkillsDir, claudeCodeSkillsDir, cursorSkillsDir]) {
       expect(await readFile(join(nativeRoot, "prism-startup", "SKILL.md"), "utf8"))
         .toContain("name: prism-startup");
+      expect(await readFile(join(nativeRoot, "current-staging-acceptance", "SKILL.md"), "utf8"))
+        .toContain("name: current-staging-acceptance");
     }
   });
 

@@ -52,6 +52,7 @@ export const REQUIRED_PROTECTED_SKILL_NAMES = [
   'pre-commit-protocol',
   'pre-push-audit',
   'implementation-integrity-audit',
+  'current-staging-acceptance',
   'local-inference-first',
 ] as const;
 

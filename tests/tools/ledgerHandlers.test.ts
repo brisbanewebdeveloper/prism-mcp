@@ -664,11 +664,12 @@ describe("ledgerHandlers", () => {
       expect(text).not.toContain("ABA PRECISION PROTOCOL");
     });
 
-    it("offline fallback injects only the protected floor, including ABA", async () => {
+    it("offline fallback injects the protected ABA and current-staging gates", async () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
         if (key === "skill:aba-precision-protocol") return "ABA PROTECTED FLOOR";
+        if (key === "skill:current-staging-acceptance") return "CURRENT STAGING PROTECTED FLOOR";
         if (key === "skill:bcba_ai_assistant") return "UNPROTECTED BCBA";
         return "";
       });
@@ -677,6 +678,7 @@ describe("ledgerHandlers", () => {
         const result = await sessionLoadContextHandler({ project: "offline-protected-floor" });
         const text = result.content[0].text as string;
         expect(text).toContain("ABA PROTECTED FLOOR");
+        expect(text).toContain("CURRENT STAGING PROTECTED FLOOR");
         expect(text).not.toContain("UNPROTECTED BCBA");
       } finally {
         globalThis.fetch = originalFetch;
