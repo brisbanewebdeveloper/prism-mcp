@@ -748,38 +748,47 @@ describe("runInfer — cloud fallback", () => {
         });
     });
 
-    it("keeps a paid plan local when its authoritative route_guard feature is disabled", async () => {
-        const localOutput = [
-            "<|tool_call|>",
-            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
-            "<|tool_call_end|>",
-        ].join("\n");
-        const callRouteGuard = vi.fn();
-        const entitlements: PrismEntitlements = {
-            ...ENTERPRISE_ENTITLEMENTS,
-            features: {
-                ...ENTERPRISE_ENTITLEMENTS.features,
-                route_guard: false,
-            },
-        };
+    it.each([
+        ["disabled", false],
+        ["omitted", undefined],
+    ] as const)(
+        "keeps a paid plan local when its authoritative route_guard feature is %s",
+        async (_state, routeGuardFeature) => {
+            const localOutput = [
+                "<|tool_call|>",
+                '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+                "<|tool_call_end|>",
+            ].join("\n");
+            const callRouteGuard = vi.fn();
+            const features = { ...ENTERPRISE_ENTITLEMENTS.features };
+            if (routeGuardFeature === undefined) {
+                delete features.route_guard;
+            } else {
+                features.route_guard = routeGuardFeature;
+            }
+            const entitlements: PrismEntitlements = {
+                ...ENTERPRISE_ENTITLEMENTS,
+                features,
+            };
 
-        const result = await runInfer(args({
-            mode: "route",
-            model_ceiling: "9b",
-        }), makeDeps({
-            entitlements,
-            callLocal: async () => ({ ok: true as const, text: localOutput }),
-            callRouteGuard,
-        }));
+            const result = await runInfer(args({
+                mode: "route",
+                model_ceiling: "9b",
+            }), makeDeps({
+                entitlements,
+                callLocal: async () => ({ ok: true as const, text: localOutput }),
+                callRouteGuard,
+            }));
 
-        expect(callRouteGuard).not.toHaveBeenCalled();
-        expect(result.output).toBe(localOutput);
-        expect(result.route_guard).toMatchObject({
-            source: "local",
-            action: "preserved",
-            final_tool: "knowledge_search",
-        });
-    });
+            expect(callRouteGuard).not.toHaveBeenCalled();
+            expect(result.output).toBe(localOutput);
+            expect(result.route_guard).toMatchObject({
+                source: "local",
+                action: "preserved",
+                final_tool: "knowledge_search",
+            });
+        },
+    );
 
     it("keeps an advertised custom host tool local instead of sending it to the seven-tool portal guard", async () => {
         const localOutput = [
