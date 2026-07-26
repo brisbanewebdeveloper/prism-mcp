@@ -26,6 +26,10 @@ All notable changes to this project will be documented in this file.
   initialize instructions for Cursor and Claude Desktop. Screenshot proof now
   explicitly requires the active agent to inspect the issue-specific visible
   state itself instead of asking the user to verify it.
+- Behavioral verification now honors subscription credentials loaded from
+  Prism's local config without requiring a key copied into host configuration. A packaged
+  `prism verify-behavior` fallback preserves the real fail-closed scenario when
+  a host's long-lived MCP transport has closed.
 
 ### Tests
 - Added regressions proving clean committed checkouts may publish while
@@ -35,6 +39,8 @@ All notable changes to this project will be documented in this file.
   install the release-only staging gate.
 - Added all-host instruction contracts plus same-tier refresh coverage that
   prunes the former release gate from every Prism-managed native skill root.
+- Added CLI fallback and OAuth-only behavioral-verifier regressions so a dead
+  MCP channel cannot be replaced with a self-authored scenario.
 
 ## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
 

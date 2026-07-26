@@ -2083,7 +2083,8 @@ export const VERIFY_BEHAVIOR_TOOL: Tool = {
     "Call BEFORE editing behavioral source files (API routes, ordering logic, billing, auth, migrations). " +
     "Returns a domain-specific scenario you must answer to demonstrate understanding of the end-user impact. " +
     "Example: editing a KDS route returns 'A cook has a 3-item ticket. One item is voided. What should the cook see?' " +
-    "Answer the scenario concretely before proceeding with the edit.",
+    "Answer the scenario concretely before proceeding with the edit. If the MCP transport is unavailable, use the " +
+    "packaged `prism verify-behavior` CLI fallback; never fabricate a replacement scenario.",
   inputSchema: {
     type: "object",
     properties: {
