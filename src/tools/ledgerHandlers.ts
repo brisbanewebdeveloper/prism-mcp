@@ -433,41 +433,48 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
 
   // ─── Fire-and-forget embedding generation ───
+  let embeddingQueued = false;
   if (result) {
     const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          // Build atomic patch — float32 + TurboQuant in ONE DB update
-          const patchData: Record<string, unknown> = {
-            embedding: JSON.stringify(embedding),
-          };
+      try {
+        const embeddingPromise = getLLMProvider().generateEmbedding(embeddingText);
+        embeddingQueued = true;
+        embeddingPromise
+          .then(async (embedding) => {
+            // Build atomic patch — float32 + TurboQuant in ONE DB update
+            const patchData: Record<string, unknown> = {
+              embedding: JSON.stringify(embedding),
+            };
 
-          // TurboQuant: compress alongside float32 (non-fatal)
-          try {
-            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-            const compressor = getDefaultCompressor();
-            const compressed = compressor.compress(embedding);
-            const buf = serialize(compressed);
+            // TurboQuant: compress alongside float32 (non-fatal)
+            try {
+              const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
+              const compressor = getDefaultCompressor();
+              const compressed = compressor.compress(embedding);
+              const buf = serialize(compressed);
 
-            patchData.embedding_compressed = buf.toString("base64");
-            patchData.embedding_format = `turbo${compressor.bits}`;
-            patchData.embedding_turbo_radius = compressed.radius;
-            debugLog(`[session_save_ledger] TurboQuant compressed: ${buf.length} bytes (${(3072 / buf.length).toFixed(1)}× ratio)`);
-          } catch (turboErr: any) {
-            console.error(`[session_save_ledger] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
-          }
+              patchData.embedding_compressed = buf.toString("base64");
+              patchData.embedding_format = `turbo${compressor.bits}`;
+              patchData.embedding_turbo_radius = compressed.radius;
+              debugLog(`[session_save_ledger] TurboQuant compressed: ${buf.length} bytes (${(3072 / buf.length).toFixed(1)}× ratio)`);
+            } catch (turboErr: any) {
+              console.error(`[session_save_ledger] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
+            }
 
-          // Single atomic DB update for all embedding data
-          await storage.patchLedger(entryId, patchData);
-          debugLog(`[session_save_ledger] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err.message}`);
-        });
+            // Single atomic DB update for all embedding data
+            await storage.patchLedger(entryId, patchData);
+            debugLog(`[session_save_ledger] Embedding saved for entry ${entryId}`);
+          })
+          .catch((err) => {
+            console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          });
+      } catch (err) {
+        console.error(`[session_save_ledger] Embedding provider initialization failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -546,7 +553,9 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         (todos?.length ? `TODOs: ${todos.length} items\n` : "") +
         (files_changed?.length ? `Files changed: ${files_changed.length}\n` : "") +
         (decisions?.length ? `Decisions: ${decisions.length}\n` : "") +
-        `📊 Embedding generation queued for semantic search.` +
+        (embeddingQueued
+          ? `📊 Embedding generation queued for semantic search.`
+          : `📊 Primary history saved; optional semantic indexing was not queued.`) +
         metricsBlock +
         resolverNote,
     }],
@@ -747,9 +756,11 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   // ─── Success: handoff created or updated ───
   const newVersion = data.version;
 
-  // ─── TIME MACHINE: Auto-snapshot for time travel (fire-and-forget) ───
+  // ─── TIME MACHINE: Auto-snapshot for time travel ───
   // Every successful save creates a snapshot so the user can revert later.
-  // We don't await — this should never block the success response.
+  // Await the attempt so short-lived CLI/MCP transports cannot exit before the
+  // snapshot reaches storage. Failure stays non-fatal because the primary
+  // handoff has already been durably saved.
   if (data.status === "created" || data.status === "updated") {
     const snapshotEntry = {
       project,
@@ -762,12 +773,15 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
       active_branch: active_branch ?? null,
       version: newVersion,
     };
-    storage.saveHistorySnapshot(snapshotEntry).catch(err =>
-      console.error(`[session_save_handoff] History snapshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
-    );
+    try {
+      await storage.saveHistorySnapshot(snapshotEntry);
+    } catch (err) {
+      console.error(`[session_save_handoff] History snapshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ─── Fire-and-forget embedding generation (enables semantic search on handoffs) ───
+  let embeddingQueued = false;
   if (data.status === "created" || data.status === "updated") {
     const embeddingText = [
       last_summary || "",
@@ -776,32 +790,38 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
     ].filter(Boolean).join("\n");
 
     if (embeddingText.trim()) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          const patchData: Record<string, unknown> = {
-            embedding: JSON.stringify(embedding),
-          };
+      try {
+        const embeddingPromise = getLLMProvider().generateEmbedding(embeddingText);
+        embeddingQueued = true;
+        embeddingPromise
+          .then(async (embedding) => {
+            const patchData: Record<string, unknown> = {
+              embedding: JSON.stringify(embedding),
+            };
 
-          try {
-            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-            const compressor = getDefaultCompressor();
-            const compressed = compressor.compress(embedding);
-            const buf = serialize(compressed);
+            try {
+              const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
+              const compressor = getDefaultCompressor();
+              const compressed = compressor.compress(embedding);
+              const buf = serialize(compressed);
 
-            patchData.embedding_compressed = buf.toString("base64");
-            patchData.embedding_format = `turbo${compressor.bits}`;
-            patchData.embedding_turbo_radius = compressed.radius;
-            debugLog(`[session_save_handoff] TurboQuant compressed: ${buf.length} bytes`);
-          } catch (turboErr: any) {
-            console.error(`[session_save_handoff] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
-          }
+              patchData.embedding_compressed = buf.toString("base64");
+              patchData.embedding_format = `turbo${compressor.bits}`;
+              patchData.embedding_turbo_radius = compressed.radius;
+              debugLog(`[session_save_handoff] TurboQuant compressed: ${buf.length} bytes`);
+            } catch (turboErr: any) {
+              console.error(`[session_save_handoff] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
+            }
 
-          await storage.patchHandoff(project, PRISM_USER_ID, patchData);
-          debugLog(`[session_save_handoff] Embedding saved for project "${project}"`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_handoff] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-        });
+            await storage.patchHandoff(project, PRISM_USER_ID, patchData);
+            debugLog(`[session_save_handoff] Embedding saved for project "${project}"`);
+          })
+          .catch((err) => {
+            console.error(`[session_save_handoff] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          });
+      } catch (err) {
+        console.error(`[session_save_handoff] Embedding provider initialization failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -941,7 +961,9 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
       (last_summary ? `Last summary: ${last_summary}\n` : "") +
       (open_todos?.length ? `Open TODOs: ${open_todos.length} items\n` : "") +
       (active_branch ? `Active branch: ${active_branch}\n` : "") +
-      `📊 Embedding generation queued for semantic search.\n` +
+      (embeddingQueued
+        ? `📊 Embedding generation queued for semantic search.\n`
+        : `📊 Primary history saved; optional semantic indexing was not queued.\n`) +
       metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`);
@@ -2263,16 +2285,20 @@ export async function sessionSaveExperienceHandler(args: unknown) {
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          await storage.patchLedger(entryId, {
-            embedding: JSON.stringify(embedding),
+      try {
+        getLLMProvider().generateEmbedding(embeddingText)
+          .then(async (embedding) => {
+            await storage.patchLedger(entryId, {
+              embedding: JSON.stringify(embedding),
+            });
+            debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
+          })
+          .catch((err) => {
+            console.error(`[session_save_experience] Embedding failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           });
-          debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_experience] Embedding failed (non-fatal): ${err.message}`);
-        });
+      } catch (err) {
+        console.error(`[session_save_experience] Embedding provider initialization failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 

@@ -20,6 +20,7 @@
  *   Methods migrated to portal:
  *     - saveLedger        → POST /api/v1/prism/memory  action=save_ledger
  *     - saveHandoff       → POST /api/v1/prism/memory  action=save_handoff
+ *     - saveHistorySnapshot → POST /api/v1/prism/memory  action=save_history_snapshot
  *     - loadContext       → POST /api/v1/prism/memory  action=load_context
  *     - searchKnowledge   → POST /api/v1/prism/memory  action=search
  *     - softDeleteLedger  → POST /api/v1/prism/memory  action=forget_memory (Phase 3 Tier A)
@@ -265,7 +266,48 @@ export class SynaluxStorage extends SupabaseStorage {
       role: handoff.role,
       expected_version: expectedVersion ?? undefined,
     });
-    return (result.handoff ?? result) as SaveHandoffResult;
+    const candidate = Object.prototype.hasOwnProperty.call(result, "result")
+      ? result.result
+      : Object.prototype.hasOwnProperty.call(result, "handoff")
+        ? result.handoff
+        : result;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("[SynaluxStorage] Invalid save_handoff response: missing result");
+    }
+
+    const value = candidate as Record<string, unknown>;
+    if (value.status === "conflict" && Number.isSafeInteger(value.current_version)) {
+      return {
+        status: "conflict",
+        current_version: value.current_version as number,
+      };
+    }
+    if ((value.status === "created" || value.status === "updated")
+      && Number.isSafeInteger(value.version)) {
+      return {
+        status: value.status,
+        version: value.version as number,
+      };
+    }
+    // Older portal RPC wrappers returned only the new version. Preserve that
+    // rolling-upgrade contract without accepting an unversioned success.
+    if (value.status === undefined && Number.isSafeInteger(value.version)) {
+      return {
+        status: "updated",
+        version: value.version as number,
+      };
+    }
+    throw new Error("[SynaluxStorage] Invalid save_handoff response: malformed OCC result");
+  }
+
+  async saveHistorySnapshot(handoff: HandoffEntry, branch: string = "main"): Promise<void> {
+    await this.portalPost("/api/v1/prism/memory", {
+      action: "save_history_snapshot",
+      project: handoff.project,
+      version: handoff.version,
+      snapshot: handoff,
+      branch,
+    });
   }
 
   // ─── Context ─────────────────────────────────────────────────

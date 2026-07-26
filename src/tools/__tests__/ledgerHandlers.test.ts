@@ -174,6 +174,7 @@ vi.mock("../../../src/utils/vaultExporter.js", () => ({
 
 import { getStorage } from "../../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../../src/storage/configStorage.js";
+import { getLLMProvider } from "../../../src/utils/llm/factory.js";
 import {
   registerContextLoaded,
   requireContextLoadedForProject,
@@ -181,6 +182,7 @@ import {
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
+  sessionSaveExperienceHandler,
   sessionLoadContextHandler,
   sessionForgetMemoryHandler,
   sessionExportMemoryHandler,
@@ -193,6 +195,7 @@ import {
 const mockGetStorage = vi.mocked(getStorage);
 const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
+const mockGetLLMProvider = vi.mocked(getLLMProvider);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -304,6 +307,20 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Session ledger saved");
       expect(result.content[0].text).toContain("test-project");
       expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it("still returns persisted ledger success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Session ledger saved");
+      expect(result.content[0].text).toContain("Implemented feature X");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
     });
 
     it("passes sanitized summary to storage", async () => {
@@ -468,6 +485,25 @@ describe("ledgerHandlers", () => {
       // Warning is prepended to the success text
       expect(result.content[0].text).toContain("[advisory] Operating boundaries updated");
       expect(result.content[0].text).toContain("✅ Session ledger saved");
+    });
+  });
+
+  describe("sessionSaveExperienceHandler", () => {
+    it("still returns persisted experience success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveExperienceHandler({
+        project: "test-project",
+        event_type: "success",
+        context: "Verifying history persistence",
+        action: "Saved a structured experience",
+        outcome: "The primary write completed",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Experience recorded");
     });
   });
 
@@ -757,6 +793,24 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("expected_version: 1");
     });
 
+    it("still returns persisted success when optional embedding provider initialization throws", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 16 });
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveHandoffHandler({
+        ...validArgs,
+        expected_version: 15,
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 16");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
+    });
+
     it("passes sanitized summary to storage", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
       await sessionSaveHandoffHandler({
@@ -795,11 +849,42 @@ describe("ledgerHandlers", () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 3 });
       await sessionSaveHandoffHandler(validArgs);
 
-      // saveHistorySnapshot is called fire-and-forget
       expect(storage.saveHistorySnapshot).toHaveBeenCalledTimes(1);
       const snapshotArg = storage.saveHistorySnapshot.mock.calls[0]![0] as Record<string, unknown>;
       expect(snapshotArg.project).toBe("test-project");
       expect(snapshotArg.version).toBe(3);
+    });
+
+    it("waits for the history snapshot attempt before reporting handoff success", async () => {
+      let releaseSnapshot!: () => void;
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      }));
+
+      let settled = false;
+      const pending = sessionSaveHandoffHandler(validArgs).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(storage.saveHistorySnapshot).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+
+      releaseSnapshot();
+      const result = await pending;
+      expect(settled).toBe(true);
+      expect(result.isError).toBe(false);
+    });
+
+    it("keeps the durable handoff successful when its optional history snapshot fails", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockRejectedValueOnce(new Error("history unavailable"));
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 4");
     });
 
     // --- OCC (Optimistic Concurrency Control) ---
