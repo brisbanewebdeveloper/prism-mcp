@@ -31,6 +31,7 @@ import {
 import { runBrowserCli } from './browserCli.js';
 import { filterPrismMemoryContext } from './utils/memoryQuality.js';
 import { isRecoverableStartupStorageError } from './utils/startupRecovery.js';
+import { verifyBehaviorHandler } from './tools/behavioralVerifierHandler.js';
 
 const program = new Command();
 
@@ -144,6 +145,59 @@ program
   .command('bootstrap')
   .description('Print the canonical dashboard-configured first-turn Prism greeting')
   .action(runBootstrapCommand);
+
+interface VerifyBehaviorCliOptions {
+  file: string;
+  summary: string;
+  project?: string;
+  workspaceId?: string;
+}
+
+/**
+ * One-shot fallback for hosts whose long-lived MCP transport has closed.
+ * This calls the canonical handler, including its authenticated portal path
+ * and fail-closed offline scenario; it never asks the host to invent one.
+ */
+export async function runVerifyBehaviorCommand(
+  options: VerifyBehaviorCliOptions,
+): Promise<void> {
+  try {
+    const baseUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
+      process.env.SYNALUX_BASE_URL?.trim() ||
+      (await getSetting('PRISM_SYNALUX_BASE_URL', '')).trim() ||
+      (await getSetting('SYNALUX_BASE_URL', '')).trim() ||
+      'https://synalux.ai';
+    const apiKey = process.env.PRISM_SYNALUX_API_KEY?.trim() ||
+      (await getSetting('PRISM_SYNALUX_API_KEY', '')).trim();
+    process.env.PRISM_SYNALUX_BASE_URL = baseUrl.replace(/\/+$/, '');
+    if (apiKey) process.env.PRISM_SYNALUX_API_KEY = apiKey;
+
+    const result = await verifyBehaviorHandler({
+      file_path: options.file,
+      change_summary: options.summary,
+      ...(options.project ? { project: options.project } : {}),
+      ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+    });
+    const output = result.content
+      ?.map((part) => part?.text)
+      .filter(Boolean)
+      .join('\n') || '';
+    if (!output) throw new Error('verify_behavior returned no scenario');
+    console.log(output);
+  } catch (err) {
+    console.error(`Behavioral verification failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+}
+
+program
+  .command('verify-behavior')
+  .description('Get the behavioral edit scenario when an MCP transport is unavailable')
+  .requiredOption('--file <path>', 'Path of the file about to be edited')
+  .requiredOption('--summary <text>', 'Brief description of the intended change')
+  .option('--project <project>', 'Project identifier for workspace-scoped scenarios')
+  .option('--workspace-id <id>', 'Workspace ID for custom scenarios')
+  .action(runVerifyBehaviorCommand);
 
 // Parsed by the direct dispatch at the bottom so all Python CLI flags pass
 // through unchanged. Registering it here keeps the command visible in help.

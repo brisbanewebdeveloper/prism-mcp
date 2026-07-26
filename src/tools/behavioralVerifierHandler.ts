@@ -9,7 +9,7 @@
  * verification challenge rather than skipping verification.
  */
 
-import { PRISM_SYNALUX_BASE_URL, SYNALUX_CONFIGURED } from "../config.js";
+import { PRISM_SYNALUX_BASE_URL } from "../config.js";
 import { getSynaluxJwt } from "../utils/synaluxJwt.js";
 import { debugLog } from "../utils/logger.js";
 
@@ -57,7 +57,13 @@ export async function verifyBehaviorHandler(
 async function buildScenarioText(
     args: VerifyBehaviorArgs,
 ): Promise<string> {
-    if (!SYNALUX_CONFIGURED || !PRISM_SYNALUX_BASE_URL) {
+    const baseUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
+        process.env.SYNALUX_BASE_URL?.trim() ||
+        PRISM_SYNALUX_BASE_URL;
+    // OAuth/JWT-backed installs intentionally do not copy a long-lived API key
+    // into host configuration. A valid portal URL is enough to attempt the
+    // short-lived JWT flow; getSynaluxJwt() remains the fail-closed auth gate.
+    if (!baseUrl) {
         return FALLBACK_SCENARIO;
     }
 
@@ -68,7 +74,7 @@ async function buildScenarioText(
     }
 
     try {
-        const url = `${PRISM_SYNALUX_BASE_URL}/api/v1/prism/verify-behavior`;
+        const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/prism/verify-behavior`;
         const res = await fetch(url, {
             method: "POST",
             headers: {
