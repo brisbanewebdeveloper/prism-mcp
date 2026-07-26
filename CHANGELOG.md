@@ -23,7 +23,9 @@ All notable changes to this project will be documented in this file.
   12-guardrail protected floor plus hook-free startup.
 - Delivered the same compact evidence workflow through managed startup
   instructions for Claude Code, Gemini CLI, and Codex, and through MCP
-  initialize instructions for Cursor and Claude Desktop.
+  initialize instructions for Cursor and Claude Desktop. Screenshot proof now
+  explicitly requires the active agent to inspect the issue-specific visible
+  state itself instead of asking the user to verify it.
 
 ### Tests
 - Added regressions proving clean committed checkouts may publish while

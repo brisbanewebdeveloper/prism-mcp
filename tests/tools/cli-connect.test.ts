@@ -78,6 +78,8 @@ function expectEvidenceWorkflowPolicy(instructions: string): void {
   expect(instructions).toContain("## Prism evidence workflow");
   expect(instructions).toContain("one trustworthy correlated reproduction is enough");
   expect(instructions).toContain("Inspect every artifact used to support the claim");
+  expect(instructions).toContain("active agent must open it and compare its visible state");
+  expect(instructions).toContain("do not ask the user to verify it");
   expect(instructions).toContain("screenshot is an observation, not absolute truth");
 }
 
