@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Handoff history snapshots now retain the effective role and active branch,
+  and save responses distinguish a durable primary handoff from a failed
+  optional time-travel snapshot.
+
 ## [20.2.9] - 2026-07-26 — Reliable Releases and Sessions
 
 ### Fixed

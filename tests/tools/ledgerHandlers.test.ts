@@ -1627,12 +1627,16 @@ describe("ledgerHandlers", () => {
 
     it("saves history snapshot after successful save", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 3 });
-      await sessionSaveHandoffHandler(validArgs);
+      await sessionSaveHandoffHandler({ ...validArgs, role: "dev" });
 
       expect(storage.saveHistorySnapshot).toHaveBeenCalledTimes(1);
       const snapshotArg = storage.saveHistorySnapshot.mock.calls[0][0];
       expect(snapshotArg.project).toBe("test-project");
       expect(snapshotArg.version).toBe(3);
+      expect(storage.saveHistorySnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ project: "test-project", role: "dev", version: 3 }),
+        "main",
+      );
     });
 
     it("waits for the history snapshot attempt before reporting handoff success", async () => {
@@ -1654,6 +1658,7 @@ describe("ledgerHandlers", () => {
       const result = await pending;
       expect(settled).toBe(true);
       expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Versioned history snapshot saved");
     });
 
     it("keeps the durable handoff successful when its optional history snapshot fails", async () => {
@@ -1665,6 +1670,8 @@ describe("ledgerHandlers", () => {
       expect(result.isError).toBe(false);
       expect(result.content[0].text).toContain("Handoff updated");
       expect(result.content[0].text).toContain("version: 4");
+      expect(result.content[0].text).toContain("versioned history snapshot was not saved");
+      expect(result.content[0].text).toContain("Check memory_history");
     });
 
     // --- OCC (Optimistic Concurrency Control) ---

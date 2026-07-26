@@ -774,6 +774,7 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   // Await the attempt so short-lived CLI/MCP transports cannot exit before the
   // snapshot reaches storage. Failure stays non-fatal because the primary
   // handoff has already been durably saved.
+  let historySnapshotSaved = false;
   if (data.status === "created" || data.status === "updated") {
     const snapshotEntry = {
       project,
@@ -784,10 +785,12 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
       keywords: keywords ?? null,
       key_context: key_context ?? null,
       active_branch: active_branch ?? null,
+      role: effectiveRole,
       version: newVersion,
     };
     try {
-      await storage.saveHistorySnapshot(snapshotEntry);
+      await storage.saveHistorySnapshot(snapshotEntry, active_branch ?? "main");
+      historySnapshotSaved = true;
     } catch (err) {
       console.error(`[session_save_handoff] History snapshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -959,6 +962,9 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   }
 
   const metricsBlock = formatInferenceMetrics();
+  const historySnapshotLine = historySnapshotSaved
+    ? `🕘 Versioned history snapshot saved.\n`
+    : `⚠️ Primary handoff saved, but its versioned history snapshot was not saved. Check memory_history before relying on time travel.\n`;
 
   // Build response text based on whether a CRDT merge occurred
   const responseText = (_saveHandoffGateWarning ? `⚠️ ${_saveHandoffGateWarning}\n\n` : "") +
@@ -966,6 +972,7 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
     ? `🔄 Auto-merged conflict for "${project}" (v${expected_version} → v${newVersion})\n` +
       `Strategy: ${JSON.stringify(mergeStrategy)}\n` +
       (last_summary ? `Summary: ${last_summary}\n` : "") +
+      historySnapshotLine +
       metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`
@@ -974,6 +981,7 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
       (last_summary ? `Last summary: ${last_summary}\n` : "") +
       (open_todos?.length ? `Open TODOs: ${open_todos.length} items\n` : "") +
       (active_branch ? `Active branch: ${active_branch}\n` : "") +
+      historySnapshotLine +
       (embeddingQueued
         ? `📊 Embedding generation queued for semantic search.\n`
         : `📊 Primary history saved; optional semantic indexing was not queued.\n`) +
