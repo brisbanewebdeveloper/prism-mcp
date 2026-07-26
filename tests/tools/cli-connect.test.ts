@@ -50,7 +50,7 @@ import {
   computeSkillManifestGeneration,
   type SkillManifest,
 } from "../../src/skillManifestSync.js";
-import { REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
+import { FREE_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 
 const tempHomes: string[] = [];
 
@@ -72,6 +72,13 @@ function expectLocalFirstPolicy(instructions: string): void {
   expect(instructions).toContain("use Prism's local worker before any host-native or background subagent");
   expect(instructions).toContain("Never create host-native or background subagents for routine work");
   expect(instructions).toContain("A host-native subagent is a last resort: at most one, no nesting");
+}
+
+function expectEvidenceWorkflowPolicy(instructions: string): void {
+  expect(instructions).toContain("## Prism evidence workflow");
+  expect(instructions).toContain("one trustworthy correlated reproduction is enough");
+  expect(instructions).toContain("Inspect every artifact used to support the claim");
+  expect(instructions).toContain("screenshot is an observation, not absolute truth");
 }
 
 function expectPosixMode(path: string, mode: number): void {
@@ -112,7 +119,7 @@ function readTomlConfig(path: string): Record<string, any> {
 }
 
 function freeManifest(): SkillManifest {
-  const skills = REQUIRED_NATIVE_SKILL_NAMES.map((name, priority) => {
+  const skills = FREE_NATIVE_SKILL_NAMES.map((name, priority) => {
     const content = `---\nname: ${name}\n---\n# ${name}\n`;
     const digest = createHash("sha256").update(content).digest("hex");
     return {
@@ -457,6 +464,7 @@ describe("prism connect", () => {
     expect(configured).toContain("`Prism startup failure` and stop");
     expectVerbatimStartupContract(configured);
     expectLocalFirstPolicy(configured);
+    expectEvidenceWorkflowPolicy(configured);
     expect(configureClaudeNativeStartup(homeDir)).toMatchObject({ status: "unchanged" });
     writeFileSync(canonicalPath, configured.replace("your first action must be", "your first action may be"));
     expect(configureClaudeNativeStartup(homeDir, true)).toMatchObject({ status: "would-refresh" });
@@ -545,6 +553,7 @@ describe("prism connect", () => {
     expect(configured).toContain("`Prism startup failure` and stop");
     expectVerbatimStartupContract(configured);
     expectLocalFirstPolicy(configured);
+    expectEvidenceWorkflowPolicy(configured);
     expect(configured).not.toContain("# Startup — MANDATORY");
     expect(configured.slice(configured.indexOf("# Paths"))).toBe("# Paths\n\n- Keep this user rule.\n");
     expectPosixMode(instructionPath, 0o640);
@@ -631,6 +640,7 @@ describe("prism connect", () => {
     expectPosixMode(instructionPath, 0o640);
     expectVerbatimStartupContract(configured);
     expectLocalFirstPolicy(configured);
+    expectEvidenceWorkflowPolicy(configured);
 
     expect(configureCodexNativeStartup(homeDir, false, undefined, env))
       .toMatchObject({ status: "unchanged" });
@@ -1764,8 +1774,11 @@ describe("prism connect", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("Synalux skills: free tier");
       expect(readFileSync(join(
+        homeDir, ".agents", "skills", "prism-startup", "SKILL.md",
+      ), "utf8")).toContain("name: prism-startup");
+      expect(existsSync(join(
         homeDir, ".agents", "skills", "aba-precision-protocol", "SKILL.md",
-      ), "utf8")).toContain("name: aba-precision-protocol");
+      ))).toBe(false);
     } finally {
       server.close();
       await once(server, "close");
@@ -1868,19 +1881,26 @@ describe("prism connect", () => {
       expect(result.stdout).toContain("Gemini CLI: refreshed local-first policy; native agents disabled");
       expect(result.stdout).toContain("Codex: refreshed hard local-first agent limits");
 
-      // Codex and Gemini CLI share the Agent Skills standard root. Cursor also
-      // receives its native user-level mirror so startup is discoverable.
+      // Free Codex and Gemini CLI share only the public startup package in the
+      // Agent Skills standard root. Cursor receives the same native mirror.
       expect(readFileSync(join(
-        homeDir, ".agents", "skills", "aba-precision-protocol", "SKILL.md",
-      ), "utf8")).toContain("name: aba-precision-protocol");
+        homeDir, ".agents", "skills", "prism-startup", "SKILL.md",
+      ), "utf8")).toContain("name: prism-startup");
       expect(readFileSync(join(
-        homeDir, ".cursor", "skills", "aba-precision-protocol", "SKILL.md",
-      ), "utf8")).toContain("name: aba-precision-protocol");
+        homeDir, ".cursor", "skills", "prism-startup", "SKILL.md",
+      ), "utf8")).toContain("name: prism-startup");
       // Claude Code has a separate native discovery root and gets a fully
       // Prism-managed copy. Claude Desktop has no local filesystem target.
       expect(readFileSync(join(
-        homeDir, ".claude", "skills", "aba-precision-protocol", "SKILL.md",
-      ), "utf8")).toContain("name: aba-precision-protocol");
+        homeDir, ".claude", "skills", "prism-startup", "SKILL.md",
+      ), "utf8")).toContain("name: prism-startup");
+      for (const nativeRoot of [
+        join(homeDir, ".agents", "skills"),
+        join(homeDir, ".cursor", "skills"),
+        join(homeDir, ".claude", "skills"),
+      ]) {
+        expect(existsSync(join(nativeRoot, "aba-precision-protocol", "SKILL.md"))).toBe(false);
+      }
       const claudeDesktopSkillsDir = process.platform === "darwin"
         ? join(homeDir, "Library", "Application Support", "Claude", "skills")
         : process.platform === "win32"
@@ -1904,6 +1924,7 @@ describe("prism connect", () => {
       expect(canonicalClaudeInstructions).toContain("`Prism startup failure` and stop");
       expectVerbatimStartupContract(canonicalClaudeInstructions);
       expectLocalFirstPolicy(canonicalClaudeInstructions);
+      expectEvidenceWorkflowPolicy(canonicalClaudeInstructions);
       expect(readFileSync(cursorHooks, "utf8")).toBe(cursorHookSentinel);
       expect(JSON.stringify(readConfig(geminiSettings).hooks)).toBe(geminiHooksBefore);
       expect(readConfig(geminiSettings).experimental.enableAgents).toBe(false);
@@ -1913,6 +1934,7 @@ describe("prism connect", () => {
       expect(configuredGeminiInstructions).toContain("# Paths\n\n- Keep this user rule.\n");
       expectVerbatimStartupContract(configuredGeminiInstructions);
       expectLocalFirstPolicy(configuredGeminiInstructions);
+      expectEvidenceWorkflowPolicy(configuredGeminiInstructions);
       expect(readFileSync(geminiAgents, "utf8")).toBe(geminiAgentsSentinel);
       const configuredCodexInstructions = readFileSync(codexInstructions, "utf8");
       expect(configuredCodexInstructions.startsWith(`${codexInstructionsSentinel}\n`)).toBe(true);
@@ -1920,6 +1942,7 @@ describe("prism connect", () => {
       expect(configuredCodexInstructions).toContain("`session_bootstrap({})`, exactly once");
       expectVerbatimStartupContract(configuredCodexInstructions);
       expectLocalFirstPolicy(configuredCodexInstructions);
+      expectEvidenceWorkflowPolicy(configuredCodexInstructions);
       expect(readTomlConfig(join(codexHome, "config.toml"))).toMatchObject({
         features: { multi_agent: false },
         agents: {

@@ -105,6 +105,7 @@ import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
 import { recordInvocation } from "./utils/analytics.js";
 import { BOUNDARIES_TEXT } from "./boundaries/boundaries.js";
 import { triggerSkillManifestSync } from "./skillManifestSync.js";
+import { EVIDENCE_WORKFLOW_POLICY_TEXT } from "./evidenceWorkflowPolicy.js";
 import { LOCAL_FIRST_POLICY_TEXT } from "./localFirstPolicy.js";
 
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
@@ -438,6 +439,7 @@ export const PRISM_SERVER_INSTRUCTIONS =
   `Reuse the conversation_id returned by session_bootstrap in structuredContent for those saves and for ` +
   `session_detect_drift, the 60-minute goal-alignment drift check. Do not add the id to the visible greeting.\n\n` +
   `${LOCAL_FIRST_POLICY_TEXT}\n\n` +
+  `${EVIDENCE_WORKFLOW_POLICY_TEXT}\n\n` +
   `Architecture: session_save_ledger and session_save_handoff require context loaded by session_bootstrap ` +
   `or session_load_context when a conversation_id is supplied. ${BOUNDARIES_TEXT} ` +
   `All cloud inference routes through the Synalux portal for billing, tier-gating, and audit.`;

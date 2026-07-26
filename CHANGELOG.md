@@ -12,10 +12,27 @@ All notable changes to this project will be documented in this file.
   silently diverging from their reviewed Git source.
 - Repacked the guarded-routing and native-acceptance release from its clean,
   tested commit.
+- Removed the release-only `current-staging-acceptance` procedure from the
+  protected startup floor. Ordinary coding sessions now rely on the phased
+  `evidence-first-protocol`: one correlated reproduction during iteration,
+  with strict artifact inspection reserved for completion, push, and release.
+- Restricted unauthenticated and Free native manifests to the public hook-free
+  startup package. Full protected skill files now require an authenticated paid
+  entitlement, and Free startup no longer advertises paid package names.
+- Realigned paid offline and native manifest contracts with the portal's
+  12-guardrail protected floor plus hook-free startup.
+- Delivered the same compact evidence workflow through managed startup
+  instructions for Claude Code, Gemini CLI, and Codex, and through MCP
+  initialize instructions for Cursor and Claude Desktop.
 
 ### Tests
 - Added regressions proving clean committed checkouts may publish while
   modified tracked files and untracked source files fail closed.
+- Added regressions proving Free/native manifests install only public startup,
+  never retain paid packages on a verified downgrade, and do not require or
+  install the release-only staging gate.
+- Added all-host instruction contracts plus same-tier refresh coverage that
+  prunes the former release gate from every Prism-managed native skill root.
 
 ## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
 

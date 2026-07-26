@@ -188,7 +188,7 @@ const SKILL_SYNC_STATUS_LABELS: Record<SkillSyncResult["status"], string> = {
 interface NativeSkillManifestSnapshot {
   names: string[];
   tier: string;
-  source: "validated-partial" | "committed" | "protected-fallback";
+  source: "validated-partial" | "committed" | "tier-fallback";
   syncStatus: SkillSyncResult["status"];
   conflicts: string[];
 }
@@ -208,30 +208,43 @@ function parseNativeSkillNames(value: string): string[] {
 async function resolveNativeSkillManifestSnapshot(
   syncResult: SkillSyncResult,
 ): Promise<NativeSkillManifestSnapshot> {
-  const { REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
+  const { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
   const [storedNamesValue, storedTierValue] = await Promise.all([
     getSetting("skill_manifest:names", "[]"),
     getSetting("skill_manifest:tier", ""),
   ]);
-  const partialNames = syncResult.status === "partial" && Array.isArray(syncResult.entitledNames)
-    ? syncResult.entitledNames.filter((name): name is string =>
+  const partialNamesInput = syncResult.status === "partial" && Array.isArray(syncResult.entitledNames)
+    ? syncResult.entitledNames
+    : null;
+  const partialProvided = partialNamesInput !== null;
+  const partialNames = partialNamesInput
+    ? partialNamesInput.filter((name): name is string =>
       typeof name === "string" && NATIVE_SKILL_NAME.test(name))
     : [];
   const storedNames = parseNativeSkillNames(storedNamesValue);
-  const names = partialNames.length > 0
-    ? [...new Set(partialNames)]
-    : storedNames.length > 0
-      ? storedNames
-      : [...REQUIRED_NATIVE_SKILL_NAMES];
-  const source: NativeSkillManifestSnapshot["source"] = partialNames.length > 0
-    ? "validated-partial"
-    : storedNames.length > 0
-      ? "committed"
-      : "protected-fallback";
   const candidateTier = syncResult.status === "partial" ? syncResult.tier : storedTierValue || syncResult.tier;
   const tier = typeof candidateTier === "string" && SYNALUX_TIERS.has(candidateTier)
     ? candidateTier
     : "free";
+  const tierFallbackNames = tier === "free"
+    ? FREE_NATIVE_SKILL_NAMES
+    : REQUIRED_NATIVE_SKILL_NAMES;
+  const freeNames = new Set<string>(FREE_NATIVE_SKILL_NAMES);
+  const namesForTier = (names: string[]) => tier === "free"
+    ? names.filter((name) => freeNames.has(name))
+    : names;
+  const entitledPartialNames = namesForTier([...new Set(partialNames)]);
+  const entitledStoredNames = namesForTier(storedNames);
+  const names = partialProvided
+    ? entitledPartialNames.length > 0 ? entitledPartialNames : [...tierFallbackNames]
+    : entitledStoredNames.length > 0
+      ? entitledStoredNames
+      : [...tierFallbackNames];
+  const source: NativeSkillManifestSnapshot["source"] = partialProvided
+    ? "validated-partial"
+    : entitledStoredNames.length > 0
+      ? "committed"
+      : "tier-fallback";
   return {
     names,
     tier,
@@ -289,10 +302,10 @@ async function buildNativeSystemReadyBlock(
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}`;
   }
-  if (snapshot.source === "protected-fallback") {
+  if (snapshot.source === "tier-fallback") {
     return `> **Prism System Ready**\n>\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
-      `> - 🛡️ **Protected fallback names:** ${formatBoundedSkillNames(coreSkills, "fallback")}\n` +
+      `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}`;
   }

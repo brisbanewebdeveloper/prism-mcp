@@ -70,6 +70,10 @@ describe("Prism startup tool contract", () => {
     expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/Prism local-first orchestration/i);
     expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/Never create host-native or background subagents for routine work/i);
     expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/A host-native subagent is a last resort: at most one, no nesting/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/Prism evidence workflow/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/one trustworthy correlated reproduction is enough/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/Inspect every artifact used to support the claim/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/screenshot is an observation, not absolute truth/i);
   });
 
   it.each([

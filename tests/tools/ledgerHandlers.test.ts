@@ -209,7 +209,7 @@ import {
   sessionViewImageHandler,
   sanitizeMemoryInput,
 } from "../../src/tools/ledgerHandlers.js";
-import { REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
+import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 import {
   registerContextLoaded,
   requireContextLoadedForProject,
@@ -664,12 +664,11 @@ describe("ledgerHandlers", () => {
       expect(text).not.toContain("ABA PRECISION PROTOCOL");
     });
 
-    it("offline fallback injects the protected ABA and current-staging gates", async () => {
+    it("free offline fallback never injects paid protected skill content", async () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
         if (key === "skill:aba-precision-protocol") return "ABA PROTECTED FLOOR";
-        if (key === "skill:current-staging-acceptance") return "CURRENT STAGING PROTECTED FLOOR";
         if (key === "skill:bcba_ai_assistant") return "UNPROTECTED BCBA";
         return "";
       });
@@ -677,9 +676,27 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "offline-protected-floor" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA PROTECTED FLOOR");
-        expect(text).toContain("CURRENT STAGING PROTECTED FLOOR");
+        expect(text).not.toContain("ABA PROTECTED FLOOR");
+        expect(text).not.toContain("CURRENT STAGING PROTECTED FLOOR");
         expect(text).not.toContain("UNPROTECTED BCBA");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("paid offline fallback may use a committed paid protected manifest", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "enterprise";
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill:aba-precision-protocol") return "ABA PAID FLOOR";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "offline-paid-floor" });
+        expect(result.content[0].text).toContain("ABA PAID FLOOR");
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -696,6 +713,7 @@ describe("ledgerHandlers", () => {
         ],
       }), { status: 200, headers: { "content-type": "application/json" } }));
       mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "standard";
         if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
         if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
         if (key === "skill:stale-paid-skill") return "STALE PAID";
@@ -729,8 +747,9 @@ describe("ledgerHandlers", () => {
         "skill:stale-paid-skill": "STALE PAID CONTENT",
       };
       const concurrentlyCommittedFreeState: Record<string, string> = {
-        "skill_manifest:names": JSON.stringify(["aba-precision-protocol"]),
-        "skill:aba-precision-protocol": "ABA FREE FLOOR",
+        "skill_manifest:tier": "free",
+        "skill_manifest:names": JSON.stringify(["prism-startup"]),
+        "skill:prism-startup": "PUBLIC STARTUP",
       };
       mockGetSetting.mockImplementation(async (key: string, defaultValue = "") => processCache[key] ?? defaultValue);
       // Simulates awaitSkillManifestSync taking its five-minute lastResult path:
@@ -750,7 +769,7 @@ describe("ledgerHandlers", () => {
         expect(mockRefreshConfigStorageCache).toHaveBeenCalledTimes(1);
         expect(mockAwaitSkillManifestSync.mock.invocationCallOrder[0])
           .toBeLessThan(mockRefreshConfigStorageCache.mock.invocationCallOrder[0]);
-        expect(text).toContain("ABA FREE FLOOR");
+        expect(text).not.toContain("ABA FREE FLOOR");
         expect(text).not.toContain("STALE PAID CONTENT");
       } finally {
         globalThis.fetch = originalFetch;
@@ -771,7 +790,7 @@ describe("ledgerHandlers", () => {
         status: "partial",
         tier: "free",
         generation: "a".repeat(64),
-        entitledNames: ["aba-precision-protocol"],
+        entitledNames: ["prism-startup"],
         installed: [], updated: [], pruned: [], conflicts: [],
         error: "config DB apply incomplete",
       }));
@@ -788,7 +807,7 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "partial-db-failure" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA CURRENT FLOOR");
+        expect(text).not.toContain("ABA CURRENT FLOOR");
         expect(text).not.toContain("STALE PAID CONTENT");
       } finally {
         globalThis.fetch = originalFetch;
@@ -798,11 +817,11 @@ describe("ledgerHandlers", () => {
     it("does not inject an unentitled legacy platform skill selected as the role", async () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        loaded: ["aba-precision-protocol"], skipped: [], routing_version: 42, tier: "free",
-        skills: [{ name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" }],
+        loaded: [], skipped: [], routing_version: 42, tier: "free", skills: [],
       }), { status: 200, headers: { "content-type": "application/json" } }));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
         if (key === "skill:paid-role") return "LEGACY PAID ROLE";
         return "";
@@ -811,7 +830,7 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "legacy-paid-role", role: "paid-role" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA ENTITLED");
+        expect(text).not.toContain("ABA ENTITLED");
         expect(text).not.toContain("LEGACY PAID ROLE");
       } finally {
         globalThis.fetch = originalFetch;
@@ -822,7 +841,8 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "user_skill:qa") return "USER QA ROLE";
         if (key === "skill:qa") return "LEGACY PLATFORM QA";
         return "";
@@ -842,6 +862,7 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "enterprise";
         if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
         if (key === "user_skill:aba-precision-protocol") return "USER OVERRIDE";
         if (key === "skill:aba-precision-protocol") return "OFFICIAL ABA GUARDRAIL";
@@ -864,7 +885,8 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "user_skill:qa") return "FRESH USER QA ROLE";
         if (key === "skill:qa") return "LEGACY PLATFORM QA";
         return "";
@@ -1231,7 +1253,9 @@ describe("ledgerHandlers", () => {
       expect(text).toContain("Last work on prism-mcp");
       expect(text).toContain("Last work on portal");
       expect(text).toContain("Earlier prism-mcp session");
-      expect(text).toContain("Protected fallback names");
+      expect(text).toContain("Fallback skill names");
+      expect(text).toContain("prism-startup");
+      expect(text).not.toContain("evidence-first-protocol");
       expect(text).not.toContain("NATIVE_SKILL_BODY_MUST_NOT_BE_INLINED");
       expect(text.length).toBeLessThan(10_000);
       expect(storage.loadContext).toHaveBeenCalledTimes(2);
@@ -1275,7 +1299,8 @@ describe("ledgerHandlers", () => {
     it.each(BOOTSTRAP_TIER_DEPTH_CASES)(
       "uses the synchronized $tier manifest for the $depth structured greeting",
       async ({ tier, tierSkills, depth }) => {
-        const manifestNames = [...REQUIRED_NATIVE_SKILL_NAMES, ...tierSkills];
+        const nativeFloor = tier === "free" ? FREE_NATIVE_SKILL_NAMES : REQUIRED_NATIVE_SKILL_NAMES;
+        const manifestNames = [...nativeFloor, ...tierSkills];
         mockAwaitSkillManifestSync.mockResolvedValueOnce({
           status: "unchanged",
           tier,
@@ -1313,7 +1338,14 @@ describe("ledgerHandlers", () => {
         expect(text).toContain("automatic from Synalux · current · committed manifest");
         expect(text).toContain("Open TODOs");
         expect(text).toContain("Session Version");
-        for (const coreSkill of REQUIRED_NATIVE_SKILL_NAMES) expect(text).toContain(coreSkill);
+        for (const coreSkill of nativeFloor) expect(text).toContain(coreSkill);
+        if (tier === "free") {
+          for (const paidCoreSkill of REQUIRED_NATIVE_SKILL_NAMES) {
+            if (!FREE_NATIVE_SKILL_NAMES.includes(paidCoreSkill as typeof FREE_NATIVE_SKILL_NAMES[number])) {
+              expect(text).not.toContain(paidCoreSkill);
+            }
+          }
+        }
         for (const tierSkill of tierSkills) {
           expect(text).toContain(tierSkill);
           if (tierSkill.endsWith("-super-skill")) {
@@ -1333,7 +1365,7 @@ describe("ledgerHandlers", () => {
     );
 
     it("uses a validated partial downgrade instead of stale committed paid skills", async () => {
-      const currentFreeNames = [...REQUIRED_NATIVE_SKILL_NAMES];
+      const currentFreeNames = [...FREE_NATIVE_SKILL_NAMES];
       mockAwaitSkillManifestSync.mockResolvedValueOnce({
         status: "partial",
         tier: "free",
