@@ -24,6 +24,8 @@ export interface PrismEntitlements {
     features: {
         cloud_fallback: boolean;
         grounding_verifier: boolean;
+        /** Private deterministic correction for direct route-mode drafts. */
+        route_guard?: boolean;
         knowledge_search_unlimited: boolean;
         session_memory_unlimited: boolean;
         analytics_dashboard: boolean;
@@ -52,6 +54,7 @@ export const FREE_ENTITLEMENTS: PrismEntitlements = {
     features: {
         cloud_fallback: false,
         grounding_verifier: false,
+        route_guard: false,
         knowledge_search_unlimited: false,
         session_memory_unlimited: false,
         analytics_dashboard: false,

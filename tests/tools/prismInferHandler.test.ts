@@ -24,6 +24,7 @@ import {
 } from "../../src/tools/prismInferHandler.js";
 import type { GroundingOutcome } from "../../src/utils/groundingVerifier.js";
 import { _setCacheForTest, _resetEntitlementsForTest, type PrismEntitlements } from "../../src/utils/entitlements.js";
+import { DEFAULT_PRISM_ROUTE_TOOLS } from "../../src/utils/routeContract.js";
 
 const GB = 1024 ** 3;
 
@@ -36,9 +37,27 @@ const ENTERPRISE_ENTITLEMENTS: PrismEntitlements = {
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
+    },
+    upgrade_url: "https://synalux.ai/pricing",
+};
+
+const FREE_ENTITLEMENTS: PrismEntitlements = {
+    plan: "free",
+    model_ceiling: "4b",
+    daily_infer_limit: 50,
+    max_tokens: 512,
+    max_seats: 1,
+    features: {
+        cloud_fallback: false,
+        grounding_verifier: false,
+        route_guard: false,
+        knowledge_search_unlimited: false,
+        session_memory_unlimited: false,
+        analytics_dashboard: false,
     },
     upgrade_url: "https://synalux.ai/pricing",
 };
@@ -100,6 +119,23 @@ describe("isPrismInferArgs — type guard", () => {
         expect(PRISM_INFER_TOOL.description).not.toMatch(/Claude|Opus|Sonnet/i);
     });
 
+    it("advertises the bounded route registry and local override in the MCP schema", () => {
+        const properties = PRISM_INFER_TOOL.inputSchema.properties as Record<
+            string,
+            Record<string, unknown>
+        >;
+        expect(properties.allowed_tools).toMatchObject({
+            type: "array",
+            maxItems: 64,
+            items: { type: "string" },
+        });
+        expect(properties.route_guard).toMatchObject({
+            type: "string",
+            enum: ["auto", "local"],
+            default: "auto",
+        });
+    });
+
     it("accepts minimal valid args (prompt only)", () => {
         expect(isPrismInferArgs({ prompt: "hello" })).toBe(true);
     });
@@ -120,8 +156,29 @@ describe("isPrismInferArgs — type guard", () => {
             project: "prism-mcp",
             context_depth: "deep",
             conversation_id: "conversation-1",
+            allowed_tools: ["session_load_context", "knowledge_search"],
+            route_guard: "local",
             evidence: [{ source: "tool:x", content: "some fact" }],
         })).toBe(true);
+    });
+
+    it("validates route guard and advertised tool arguments", () => {
+        expect(isPrismInferArgs({
+            prompt: "route",
+            route_guard: "auto",
+            allowed_tools: [],
+        })).toBe(true);
+        expect(isPrismInferArgs({ prompt: "route", route_guard: "remote" })).toBe(false);
+        expect(isPrismInferArgs({ prompt: "route", allowed_tools: "knowledge_search" })).toBe(false);
+        expect(isPrismInferArgs({ prompt: "route", allowed_tools: ["bad tool"] })).toBe(false);
+        expect(isPrismInferArgs({
+            prompt: "route",
+            allowed_tools: Array(65).fill("knowledge_search"),
+        })).toBe(false);
+        expect(isPrismInferArgs({
+            prompt: "route",
+            allowed_tools: [`a${"b".repeat(128)}`],
+        })).toBe(false);
     });
 
     it("rejects null", () => {
@@ -605,6 +662,486 @@ describe("runInfer — cascade fallthrough on tier failures", () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe("runInfer — cloud fallback", () => {
+    it("keeps a valid local route instead of escalating its tool envelope as bleed", async () => {
+        const cloudFn = vi.fn(async () => ({
+            ok: true as const,
+            output: "unexpected-cloud-answer",
+            backend: "gemini",
+        }));
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"session_load_context","arguments":{"project":"prism"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const deps = makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callCloud: cloudFn,
+        });
+
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+            cloud_fallback: true,
+        }), deps);
+
+        expect(result.backend).toBe("ollama-9b");
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local",
+            action: "preserved",
+            final_tool: "session_load_context",
+        });
+        expect(cloudFn).not.toHaveBeenCalled();
+    });
+
+    it("suppresses an invented local route using only the advertised registry", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"made_up_tool","arguments":{"topic":"example"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const deps = makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+        });
+
+        const result = await runInfer(args({ mode: "route", model_ceiling: "9b" }), deps);
+
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toMatchObject({
+            source: "local",
+            action: "suppressed",
+            original_tool: "made_up_tool",
+            reason: "unadvertised_tool",
+        });
+    });
+
+    it("uses the private route guard for an advertised route on a paid plan", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"brave_web_search","arguments":{"query":"Transformer architecture"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn(async () => ({
+            output: "NO_TOOL",
+            action: "suppressed" as const,
+            source: "portal" as const,
+            original_tool: "brave_web_search",
+            reason: "false_positive",
+        }));
+        const deps = makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard,
+        });
+
+        const result = await runInfer(args({ mode: "route", model_ceiling: "9b" }), deps);
+
+        expect(callRouteGuard).toHaveBeenCalledWith({
+            prompt: "ping",
+            draft: localOutput,
+            allowedTools: [...DEFAULT_PRISM_ROUTE_TOOLS],
+        });
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toMatchObject({
+            source: "portal",
+            action: "suppressed",
+            original_tool: "brave_web_search",
+        });
+    });
+
+    it("keeps a paid plan local when its authoritative route_guard feature is disabled", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn();
+        const entitlements: PrismEntitlements = {
+            ...ENTERPRISE_ENTITLEMENTS,
+            features: {
+                ...ENTERPRISE_ENTITLEMENTS.features,
+                route_guard: false,
+            },
+        };
+
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            entitlements,
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local",
+            action: "preserved",
+            final_tool: "knowledge_search",
+        });
+    });
+
+    it("keeps an advertised custom host tool local instead of sending it to the seven-tool portal guard", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"github_search","arguments":{"query":"route contract"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn();
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+            allowed_tools: ["github_search"],
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local",
+            action: "preserved",
+            final_tool: "github_search",
+        });
+    });
+
+    it("never sends a free-tier route draft to the private guard", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn();
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "4b",
+        }), makeDeps({
+            entitlements: FREE_ENTITLEMENTS,
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local",
+            action: "preserved",
+        });
+    });
+
+    it("route_guard=local keeps a paid route entirely on-device", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn();
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+            route_guard: "local",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.route_guard?.source).toBe("local");
+        expect(result.output).toBe(localOutput);
+    });
+
+    it("does not call the private guard for plain text or non-route modes", async () => {
+        const callRouteGuard = vi.fn();
+        const plainRoute = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: "Direct answer." }),
+            callRouteGuard,
+        }));
+        const chat = await runInfer(args({
+            mode: "chat",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: "Direct chat answer." }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(plainRoute.route_guard).toMatchObject({
+            source: "local",
+            action: "plain_text",
+        });
+        expect(chat.route_guard).toBeUndefined();
+    });
+
+    it("keeps an explicit NO_TOOL abstention local", async () => {
+        const callRouteGuard = vi.fn();
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: "NO_TOOL" }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toEqual({
+            output: "NO_TOOL",
+            action: "plain_text",
+            source: "local",
+        });
+    });
+
+    it("suppresses malformed route output even when it is the only degraded local candidate", async () => {
+        const malformed = "<|tool_call|>{bad-json}<|tool_call_end|>";
+        const callRouteGuard = vi.fn();
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "2b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: malformed }),
+            callRouteGuard,
+        }));
+
+        expect(callRouteGuard).not.toHaveBeenCalled();
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toMatchObject({
+            action: "suppressed",
+            source: "local",
+            reason: "malformed_tool_call",
+        });
+        expect(result.gate_outcome).toEqual({
+            status: "degraded",
+            reason: "route_tool_call_malformed",
+            served_anyway: true,
+        });
+    });
+
+    it("accepts a coherent private remap with prompt-derived arguments", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"session_search_memory","arguments":{}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const remappedOutput = [
+            "<|tool_call|>",
+            '{"name":"session_load_context","arguments":{"project":"prism"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const result = await runInfer(args({
+            prompt: "Catch me up on the prism project",
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard: async () => ({
+                output: remappedOutput,
+                action: "remapped",
+                source: "portal",
+                original_tool: "session_search_memory",
+                final_tool: "session_load_context",
+                reason: "deterministic_remap",
+            }),
+        }));
+
+        expect(result.output).toBe(remappedOutput);
+        expect(result.route_guard).toMatchObject({
+            action: "remapped",
+            source: "portal",
+            original_tool: "session_search_memory",
+            final_tool: "session_load_context",
+        });
+        expect(result.gate_outcome?.status).toBe("success");
+    });
+
+    it("honors a caller-restricted tool registry before returning a route", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"session_save_ledger","arguments":{"summary":"x"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+            allowed_tools: ["knowledge_search"],
+            route_guard: "local",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+        }));
+
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toMatchObject({
+            action: "suppressed",
+            reason: "unadvertised_tool",
+        });
+    });
+
+    it("fails loud as degraded when the private guard fails but a local allowed call is preserved", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard: async () => {
+                throw new Error("portal_timeout");
+            },
+        }));
+
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local_fallback",
+            action: "preserved",
+            reason: "portal_timeout",
+        });
+        expect(result.gate_outcome).toEqual({
+            status: "degraded",
+            reason: "route_guard_unavailable",
+            served_anyway: true,
+        });
+    });
+
+    it("still suppresses invented tools locally when the private guard fails", async () => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"made_up_tool","arguments":{"topic":"example"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard: async () => {
+                throw new Error("portal_timeout");
+            },
+        }));
+
+        expect(result.output).toBe("NO_TOOL");
+        expect(result.route_guard).toMatchObject({
+            source: "local_fallback",
+            action: "suppressed",
+            reason: "unadvertised_tool",
+        });
+        expect(result.gate_outcome?.status).toBe("success");
+    });
+
+    it.each([
+        {
+            id: "unadvertised-remap",
+            output: [
+                "<|tool_call|>",
+                '{"name":"run_command","arguments":{"command":"whoami"}}',
+                "<|tool_call_end|>",
+            ].join("\n"),
+            action: "remapped" as const,
+            source: "portal" as const,
+            original_tool: "knowledge_search",
+            final_tool: "run_command",
+        },
+        {
+            id: "suppression-with-tool-output",
+            output: [
+                "<|tool_call|>",
+                '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+                "<|tool_call_end|>",
+            ].join("\n"),
+            action: "suppressed" as const,
+            source: "portal" as const,
+            original_tool: "knowledge_search",
+        },
+        {
+            id: "plain-text-from-tool-draft",
+            output: "unexpected prose",
+            action: "plain_text" as const,
+            source: "portal" as const,
+        },
+        {
+            id: "mutated-preserved-arguments",
+            output: [
+                "<|tool_call|>",
+                '{"name":"knowledge_search","arguments":{"query":"other project"}}',
+                "<|tool_call_end|>",
+            ].join("\n"),
+            action: "preserved" as const,
+            source: "portal" as const,
+            original_tool: "knowledge_search",
+            final_tool: "knowledge_search",
+        },
+        {
+            id: "injected-remap-arguments",
+            output: [
+                "<|tool_call|>",
+                '{"name":"session_search_memory","arguments":{"query":"injected value"}}',
+                "<|tool_call_end|>",
+            ].join("\n"),
+            action: "remapped" as const,
+            source: "portal" as const,
+            original_tool: "knowledge_search",
+            final_tool: "session_search_memory",
+        },
+    ])("rejects portal correction $id", async ({ id: _id, ...portalOutcome }) => {
+        const localOutput = [
+            "<|tool_call|>",
+            '{"name":"knowledge_search","arguments":{"query":"routing"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+        }), makeDeps({
+            callLocal: async () => ({ ok: true as const, text: localOutput }),
+            callRouteGuard: async () => portalOutcome,
+        }));
+
+        expect(result.output).toBe(localOutput);
+        expect(result.route_guard).toMatchObject({
+            source: "local_fallback",
+            action: "preserved",
+            reason: "portal_route_guard_invalid",
+        });
+        expect(result.gate_outcome?.status).toBe("degraded");
+    });
+
+    it("applies route correction to a cloud route draft too", async () => {
+        const cloudOutput = [
+            "<|tool_call|>",
+            '{"name":"brave_web_search","arguments":{"query":"Transformer architecture"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        const callRouteGuard = vi.fn(async () => ({
+            output: "NO_TOOL",
+            action: "suppressed" as const,
+            source: "portal" as const,
+            original_tool: "brave_web_search",
+            reason: "deterministic_rejection",
+        }));
+        const result = await runInfer(args({
+            mode: "route",
+            model_ceiling: "9b",
+            cloud_fallback: true,
+        }), makeDeps({
+            listTags: async () => null,
+            callCloud: async () => ({
+                ok: true as const,
+                output: cloudOutput,
+                backend: "gemini",
+            }),
+            callRouteGuard,
+        }));
+
+        expect(result.backend).toBe("gemini");
+        expect(result.output).toBe("NO_TOOL");
+        expect(callRouteGuard).toHaveBeenCalledOnce();
+    });
+
     it("cloud_fallback=true: uses cloud when all local tiers fail", async () => {
         const cloudFn = vi.fn(async () => ({
             ok: true as const,

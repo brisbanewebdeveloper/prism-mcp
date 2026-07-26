@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Added caller-supplied `allowed_tools` and `route_guard: auto|local` controls
+  to direct `prism_infer` route mode.
+- Added authenticated deterministic route correction for subscribed callers,
+  while retaining a fully local override and local enforcement on every tier.
+  Advertised custom host tools remain local instead of being sent to the
+  seven-tool Synalux correction endpoint.
+
+### Fixed
+- Canonical Prism tool-call envelopes no longer fail the generic quality gate
+  as chat-style tool-call bleed.
+- Malformed and unadvertised route calls are suppressed before reaching a
+  host, and invalid portal corrections cannot replace tool arguments.
+
+### Tests
+- Added parser, advertised-registry, fallback, entitlement, argument-integrity,
+  JWT-refresh, HTTP-boundary, and known routing-failure regressions.
+
 ## [20.2.7] - 2026-07-25 — Reliable Cross-Process Session Saves
 
 ### Fixed

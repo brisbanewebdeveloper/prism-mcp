@@ -3,7 +3,7 @@
 > **v19.0.0** — Local-first cognitive memory engine for AI agents.
 >
 > Persistent sessions, semantic search, behavioral verification, PHI compliance,
-> and an open-weight model fleet (2B–32B) for offline tool-routing.
+> and an open-weight model fleet (2B–27B) for offline tool-routing.
 
 ---
 
@@ -265,10 +265,10 @@ For offline tool-routing via `prism_infer`:
 |-----|------|------|---------------|-----------|
 | `prism-coder:2b` | Qwen 3.5-4B Q3_K_M | 2.3 GB | 99.1% | Free (mobile) |
 | `prism-coder:4b` | Qwen 3.5-4B Q4_K_M | 3.4 GB | 100% | Free |
-| `prism-coder:14b` | — | 8.4 GB | 100% | Standard+ |
-| `prism-coder:32b` | — | 16 GB | 100% | Advanced+ |
+| `prism-coder:9b` | Qwen 3.5-9B | 5.8 GB | 100% | Standard+ automatic routing |
+| `prism-coder:27b` | Qwen 3.5-27B | 16 GB | 100% | Advanced+ automatic routing |
 
-Prism auto-detects both namespaced (`dcostenco/prism-coder:14b`) and bare (`prism-coder:14b`)
+Prism auto-detects both namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`)
 Ollama tags.
 
 ### 5.4 Configuration Priority
@@ -497,14 +497,17 @@ No network calls for storage, no cloud LLM for compaction. SQLite only.
 
 ### 9.5 Tier-Based Enforcement (v17+)
 
-`prism_infer` gates model ceiling, max tokens, daily limits, and cloud fallback
-by subscription plan:
+`prism_infer` gates its automatic model ceiling, max tokens, daily limits,
+private route correction, and cloud fallback by subscription plan:
 
-| Plan | Model ceiling | Cloud fallback |
-|------|---------------|----------------|
-| Free | Up to 4B, local only | No |
-| Standard | Up to 14B | No |
-| Advanced | Up to 32B | Claude Sonnet fallback |
+| Plan | Automatic model ceiling | Route correction | Cloud fallback |
+|------|-------------------------|------------------|----------------|
+| Free | Up to 4B, local only | Local advertised-tool contract | No |
+| Standard | Up to 9B | Synalux deterministic guard | Gemini 3.6 Flash |
+| Advanced / Enterprise | Up to 27B | Synalux deterministic guard | Gemini 3.6 Flash |
+
+These ceilings govern automatic `prism_infer` routing. They do not prevent a
+user from running any downloaded model directly through local Ollama.
 
 Flat-rate seat caps via `max_seats` per plan.
 

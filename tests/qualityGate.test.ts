@@ -372,10 +372,21 @@ describe("passesQualityGate", () => {
         expect(r.reason).toBe("empty_response");
     });
 
-    it("route: bleed check still fires on short bleed output", () => {
+    it("route: a canonical Prism tool-call envelope is valid routing output", () => {
+        const output = [
+            "<|tool_call|>",
+            '{"name":"session_load_context","arguments":{"project":"prism"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        expect(passesQualityGate(output, false, undefined, "route")).toEqual({
+            pass: true,
+        });
+    });
+
+    it("route: a malformed tool-call envelope fails the contract", () => {
         const r = passesQualityGate("<|tool_call|>x<|tool_call_end|>", false, undefined, "route");
         expect(r.pass).toBe(false);
-        expect(r.reason).toBe("tool_call_bleed");
+        expect(r.reason).toBe("route_tool_call_malformed");
     });
 
     it("no mode (default): 'Hi' fails — backward-compatible with code/chat callers", () => {

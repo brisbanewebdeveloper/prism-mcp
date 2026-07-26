@@ -40,18 +40,28 @@ const FREE: PrismEntitlements = { ...FREE_ENTITLEMENTS };
 
 const STANDARD: PrismEntitlements = {
     plan: "standard",
-    model_ceiling: "14b",
+    model_ceiling: "9b",
     daily_infer_limit: 200,
     max_tokens: 1024,
     max_seats: 1,
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
     },
     upgrade_url: "https://synalux.ai/pricing",
+};
+
+const ADVANCED: PrismEntitlements = {
+    ...STANDARD,
+    plan: "advanced",
+    model_ceiling: "27b",
+    daily_infer_limit: 2_000,
+    max_tokens: 2_048,
+    max_seats: 5,
 };
 
 // All prism tier tags installed under their bare names so resolveOllamaName
@@ -390,7 +400,7 @@ describe("§5.4 — ctx gate", () => {
 
     it("skips under-ctx tiers with reason ctx_insufficient and serves from a fitting tier", async () => {
         const deps = mockDeps({
-            entitlements: STANDARD,
+            entitlements: ADVANCED,
             freemem: bigRam,
             callLayer1: vi.fn(async () => "UNCERTAIN_LENGTH" as const),
         });
@@ -437,7 +447,7 @@ describe("§5.4 — ctx gate", () => {
     });
 
     it("normal-size prompts are unaffected by the ctx gate", async () => {
-        const deps = mockDeps({ entitlements: STANDARD, freemem: bigRam });
+        const deps = mockDeps({ entitlements: ADVANCED, freemem: bigRam });
         const r = await runInfer({ ...baseArgs, model_ceiling: "27b" }, deps);
         expect(r.attempts.filter(a => a.reason === "ctx_insufficient")).toHaveLength(0);
         expect(r.backend).toBe("ollama-27b");

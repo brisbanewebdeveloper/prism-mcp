@@ -25,6 +25,10 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
 - **Local-first inference** — bounded work is routed through local Ollama models
   first, with automatic 2B/4B/9B/27B selection based on installed models,
   available RAM, context fit, and subscription entitlements.
+- **Route-output enforcement** — route mode returns only well-formed calls to
+  tools the host actually advertised. Standard and higher plans can add
+  authenticated deterministic correction; `route_guard: "local"` keeps the
+  prompt and draft entirely on-device.
 - **One setup for every agent** — `prism connect` configures Claude Code,
   Claude Desktop, Cursor, Gemini CLI, and Codex while preserving unrelated
   settings.
@@ -448,10 +452,15 @@ The free tier runs entirely on your machine. Paid tiers add cloud sync through t
 | Inference | Local Ollama models | Local models + Gemini 3.6 Flash fallback |
 | API keys required | None | Synalux subscription key |
 | Web search / scrape | Not included | Via Synalux portal (provider keys server-side) |
-| What leaves your machine | Nothing | Memory text + file paths + search queries, sent to the portal over TLS (PHI-redacted before transit) |
+| What leaves your machine | Nothing | Memory text, file paths, search queries, and inference prompts/drafts when their cloud feature is used, sent to the portal over TLS. Cloud memory writes are PHI-redacted; inference and route requests are transient. |
 | Works offline | ✅ | Local features yes; sync/cloud no |
 
-**Handling sensitive data.** All cloud writes pass through automatic redaction (SSNs, dates of birth, medical record numbers, phone numbers, emails, and clinical identifiers are stripped before transit). For regulated workloads, run the **local tier** for full air-gap, or use **Enterprise** which includes a HIPAA Business Associate Agreement.
+**Handling sensitive data.** Cloud memory writes pass through automatic
+redaction (SSNs, dates of birth, medical record numbers, phone numbers, emails,
+and clinical identifiers are stripped before storage). Cloud inference and
+route correction send the request over TLS for processing and do not store it
+as Prism memory; use `route_guard: "local"` or the **local tier** for a full
+air-gap. **Enterprise** includes a HIPAA Business Associate Agreement.
 
 ---
 
@@ -460,6 +469,14 @@ The free tier runs entirely on your machine. Paid tiers add cloud sync through t
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on BFCL function-calling and 100% on an internal 15-problem coding eval at $0 inference cost.
 
 `prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
+
+Every route-mode result is parsed locally and checked against `allowed_tools`
+before it reaches the host. Malformed or unadvertised calls become `NO_TOOL`.
+With `route_guard: "auto"` (the default), Standard and higher plans also send
+a well-formed draft for one of Prism's seven trained tools—or an unadvertised
+draft that may need correction—to Synalux for authenticated deterministic
+correction. Advertised custom host tools remain local. Set
+`route_guard: "local"` for a fully on-device route path.
 
 | Model | Ollama tag | Size | [BFCL](https://gorilla.cs.berkeley.edu/blogs/12_bfcl_v3_multi_turn.html) Accuracy | Role | Automatic routing tier |
 |---|---|---|---|---|---|
@@ -486,17 +503,25 @@ query → prism-coder:9b (local router, default)
 
 ### Multi-Layer Verification
 
-Every tool-grounded answer on paid tiers passes through deterministic L3 routing rules and an NLI grounding verifier before reaching the user. Free-tier users get the deterministic gates (L1, L3-Tool, L3-Tier0) without the model-based NLI check.
+Route output and evidence-grounded answers use separate gates. Every tier gets
+the local route parser and advertised-tool registry; Standard and higher plans
+can add the private deterministic route correction. Evidence verification is
+opt-in (or automatic when evidence is supplied) and remains separate from route
+selection.
 
 | Layer | What | Model | Cost |
 |---|---|---|---|
 | **L1** | Crisis/medical safety gate | None (regex) | 0 ms |
-| **L3-Tool** | Tool name remap + false-positive rejection | None (deterministic) | 0 ms |
+| **L3-Registry** | Envelope validation + advertised-tool enforcement (all tiers) | None | 0 ms |
+| **L3-Route** | Authenticated deterministic route correction (Standard+) | None | Network latency |
 | **L3-Tier0** | Integer grounding (set membership) | None (deterministic) | 0 ms |
 | **L3-Tier2** | NLI verifier (claim → ENTAILED/NEUTRAL/CONTRADICTED) | prism-coder:2b | ~200 ms |
 | **L4** | Hallucination judge (opt-out for clinical) | prism-coder:4b | ~500 ms |
 
-Fail-closed on the verified path: when the grounding verifier runs (Standard tier and up), timeout, ambiguity, or missing evidence yields a refusal, not pass-through. Free-tier users get the deterministic L1/L3-Tool gates but not the NLI verifier.
+Fail-closed on the verified path: when the grounding verifier runs, timeout,
+ambiguity, or missing evidence yields a refusal, not pass-through. If the paid
+route correction is unavailable, the local registry still blocks malformed
+and unadvertised calls and reports an allowed preserved route as degraded.
 
 ---
 
