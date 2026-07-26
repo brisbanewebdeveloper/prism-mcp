@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [20.2.9] - 2026-07-26 — Reproducible npm Releases
+
+### Fixed
+- npm publication now fails before building when the checkout contains
+  uncommitted or untracked files, preventing immutable registry artifacts from
+  silently diverging from their reviewed Git source.
+- Repacked the guarded-routing and native-acceptance release from its clean,
+  tested commit.
+
+### Tests
+- Added regressions proving clean committed checkouts may publish while
+  modified tracked files and untracked source files fail closed.
+
 ## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
 
 ### Added
