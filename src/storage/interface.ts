@@ -152,6 +152,13 @@ export interface SpreadingActivationOptions {
 export interface KnowledgeSearchResult {
   count: number;
   results: unknown[];
+  /**
+   * How the backend matched. 'strict' = every query term matched.
+   * 'relaxed' = no exact match existed, so these are the closest entries
+   * and must not be presented as exact hits. 'unfiltered' = no query text.
+   * Undefined for backends that don't report it (local SQLite, older portals).
+   */
+  match_mode?: "strict" | "relaxed" | "unfiltered" | "none";
 }
 
 /**

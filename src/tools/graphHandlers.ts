@@ -112,6 +112,29 @@ import {
   PRISM_HDC_POLICY_FALLBACK_THRESHOLD,
   PRISM_HDC_POLICY_CLARIFY_THRESHOLD,
 } from "../config.js";
+
+/**
+ * Header line for knowledge_search results.
+ *
+ * A 'relaxed' match_mode means no entry matched every query term — the portal
+ * widened the search and returned the closest entries. Wording those the same
+ * as an exact hit is how a best-effort guess gets read as a confirmed answer,
+ * so the distinction is stated in the text the agent actually sees.
+ *
+ * Exported so the wording is covered by a test that exercises this function
+ * rather than a copy of it.
+ */
+export function formatKnowledgeHeader(
+  resultCount: number,
+  matchMode?: string,
+): string {
+  if (matchMode === "relaxed") {
+    return `🧠 No exact match. ${resultCount} closest ${resultCount === 1 ? "entry" : "entries"} ` +
+      `(widened search — treat as leads, not confirmed answers):`;
+  }
+  return `🧠 Found ${resultCount} knowledge entries:`;
+}
+
 export async function knowledgeSearchHandler(args: unknown) {
   if (!isKnowledgeSearchArgs(args)) {
     throw new Error("Invalid arguments for knowledge_search");
@@ -204,7 +227,7 @@ export async function knowledgeSearchHandler(args: unknown) {
   // Phase 1: Wrap in contentBlocks array for optional trace attachment
   const contentBlocks: Array<{ type: string; text: string }> = [{
     type: "text",
-    text: `🧠 Found ${resultCount} knowledge entries:\n\n${JSON.stringify(data.results, null, 2)}`,
+    text: `${formatKnowledgeHeader(resultCount, data.match_mode)}\n\n${JSON.stringify(data.results, null, 2)}`,
   }];
 
   // Phase 1: Attach MemoryTrace with strategy="keyword" and timing data

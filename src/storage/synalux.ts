@@ -36,7 +36,7 @@
 import { SupabaseStorage } from "./supabase.js";
 import { debugLog } from "../utils/logger.js";
 import { PRISM_SYNALUX_BASE_URL, PRISM_SYNALUX_API_KEY } from "../config.js";
-import { KnowledgeSearchRequestSchema } from "./portalContracts.js";
+import { KnowledgeSearchRequestSchema, KnowledgeSearchResponseSchema } from "./portalContracts.js";
 import type {
   LedgerEntry,
   HandoffEntry,
@@ -445,9 +445,27 @@ export class SynaluxStorage extends SupabaseStorage {
       scope: resolveKnowledgeScope(params.scope),
     });
     const result = await this.portalPost("/api/v1/prism/memory", wireBody as Record<string, unknown>);
+
+    // Validate the RESPONSE against the shared contract, not just the request.
+    // Before this, only the outgoing shape was checked — so a portal-side
+    // field rename would have gone unnoticed on both sides, which is exactly
+    // the 2026-05-24 class of incident this file exists to prevent.
+    // safeParse (not parse) on purpose: drift must be loud, but it must not
+    // take knowledge_search offline. The build-time contract test is what
+    // fails hard; at runtime we log and degrade to lenient extraction.
+    const validated = KnowledgeSearchResponseSchema.safeParse(result);
+    if (!validated.success) {
+      console.error(
+        "[synalux] knowledge_search response failed contract validation — " +
+        "portal and client may have drifted: " +
+        JSON.stringify(validated.error.issues.map(i => ({ path: i.path, code: i.code }))),
+      );
+    }
+
     const count = typeof result.count === "number" ? result.count : 0;
     const results = Array.isArray(result.results) ? result.results : [];
-    return { count, results } as KnowledgeSearchResult;
+    const matchMode = validated.success ? validated.data.match_mode : undefined;
+    return { count, results, match_mode: matchMode } as KnowledgeSearchResult;
   }
 
   // ─── Time Travel ─────────────────────────────────────────────
