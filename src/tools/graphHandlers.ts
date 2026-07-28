@@ -135,6 +135,42 @@ export function formatKnowledgeHeader(
   return `🧠 Found ${resultCount} knowledge entries:`;
 }
 
+
+/**
+ * Header + per-hit scoring for session_search_memory results.
+ *
+ * Exported so wording is covered by tests that call the shipped functions —
+ * a lesson from the knowledge_search match_mode fix, whose first tests
+ * mirrored the logic and would have passed while the handler regressed.
+ *
+ * Hybrid detection is per-row: portal fusion (weighted RRF, measured 59%
+ * blind hit@1 vs 45% semantic-only) annotates each row with semantic_rank /
+ * lexical_rank. Any row carrying lexical_rank means the lexical arm ran, so
+ * calling the results "semantically similar" would misstate how they were
+ * found — and a lexical-only rescue has NO similarity score at all, which
+ * previously rendered as "N/A similar".
+ */
+export function isHybridSearchResults(results: unknown[]): boolean {
+  return results.some((r) => (r as any)?.lexical_rank !== undefined && (r as any)?.lexical_rank !== null);
+}
+
+export function searchResultsHeader(count: number, hybrid: boolean): string {
+  return hybrid
+    ? `🧠 Found ${count} matching sessions (hybrid retrieval — semantic meaning + exact terms):`
+    : `🧠 Found ${count} semantically similar sessions:`;
+}
+
+export function formatHitScore(r: any): string {
+  const sim = typeof r.similarity === "number" ? `${(r.similarity * 100).toFixed(1)}% similar` : null;
+  const sem = r.semantic_rank !== undefined && r.semantic_rank !== null ? `sem#${r.semantic_rank + 1}` : null;
+  const lex = r.lexical_rank !== undefined && r.lexical_rank !== null ? `lex#${r.lexical_rank + 1}` : null;
+  if (sem || lex) {
+    const arms = [sem, lex].filter(Boolean).join(" + ");
+    return sim ? `${sim} (${arms})` : `exact-term match (${arms})`;
+  }
+  return sim ?? "N/A similar";
+}
+
 export async function knowledgeSearchHandler(args: unknown) {
   if (!isKnowledgeSearchArgs(args)) {
     throw new Error("Invalid arguments for knowledge_search");
@@ -678,9 +714,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
 
     // Format results with similarity scores + effective importance + ACT-R
     const formatted = results.map((r: any, i: number) => {
-      const simScore = typeof r.similarity === "number"
-        ? `${(r.similarity * 100).toFixed(1)}%`
-        : "N/A";
+      const simScore = formatHitScore(r);
 
       // Dynamic importance decay (uses ACT-R internally when enabled)
       const baseImportance = r.importance ?? 0;
@@ -695,7 +729,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
         ? `  ACT-R: composite=${r._actr_composite.toFixed(3)} (B=${r._actr_Bi?.toFixed(2)}, S=${r._actr_Si?.toFixed(3)})\n`
         : "";
 
-      return `[${i + 1}] ${simScore} similar — ${r.session_date || "unknown date"}\n` +
+      return `[${i + 1}] ${simScore} — ${r.session_date || "unknown date"}\n` +
         `  Project: ${r.project}\n` +
         `  Summary: ${r.summary}\n` +
         importanceStr +
@@ -707,7 +741,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
     // Phase 1: content[0] = human-readable results (unchanged from pre-Phase 1)
     const contentBlocks: Array<{ type: string; text: string }> = [{
       type: "text",
-      text: `🧠 Found ${results.length} semantically similar sessions:\n\n${formatted}`,
+      text: `${searchResultsHeader(results.length, isHybridSearchResults(results))}\n\n${formatted}`,
     }];
 
     // Phase 1: content[1] = machine-readable MemoryTrace (only when enable_trace=true)
