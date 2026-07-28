@@ -351,8 +351,83 @@ effective_importance = base_importance × 0.95^(days_since_last_access)
 Computed at retrieval time — no cron jobs mutate the stored value. Memories that keep
 surfacing in results stay important; neglected ones naturally fade.
 
+### 6.7 Portal-Tier Embedding Write Path (v20.3)
+
+On Synalux-backed (paid) installs the embedding never touches the database
+directly — it travels through the portal as its own authenticated action:
+
+```
+save_ledger ──▶ Portal ──▶ row created, id returned
+     │
+     ▼ (fire-and-forget, non-blocking)
+generateEmbedding (provider factory, 768-dim)
+     │
+     ▼
+save_embedding { memory_id, vector } ──▶ Portal ──▶ attached to the row
+```
+
+Three properties are load-bearing:
+
+- **The save response carries the new row's id.** Embedding generation starts
+  only after the save succeeds and is keyed to that id; a response without an
+  id means no vector can ever be attached.
+- **Embedding failure never blocks the save.** A ledger write is always
+  durable first; a failed embedding degrades that row to keyword-only recall
+  until repaired (see 6.8), it does not fail the operation.
+- **The client holds no database credentials.** Local mode writes SQLite
+  directly; portal mode has exactly one path — the authenticated action —
+  and the write is verified server-side against the caller's own row.
+
+### 6.8 Embedding Coverage & Self-Repair (v20.3)
+
+Silent memory loss is the worst failure a memory product can have, so
+coverage is treated as a first-class, *honest* signal:
+
+| Signal | Behavior |
+|--------|----------|
+| `session_health_check` | Reports the **real** count of rows without vectors, from the store that holds them |
+| Portal unreachable / too old to report | Coverage is declared **unknown** — never assumed clean |
+| `session_backfill_embeddings` | Lists un-embedded rows through the same authenticated portal path and repairs them in place |
+
+The design rule: the health check may only report numbers it can verify.
+A monitoring path that cannot see the data says "could not be verified"
+instead of defaulting to zero — a fabricated clean bill is how outages
+hide.
+
+> **Not to be confused with Deep Storage Purge (6.5):** on local installs a
+> cold row's float32 vector is purged *by design* and search falls back to
+> its TurboQuant copy — that row is still recallable. Coverage here means
+> portal-tier rows that have **no vector in any form** and are therefore
+> invisible to semantic search until repaired.
+
+### 6.9 Hybrid Retrieval (v20.3, portal tier)
+
+`session_search_memory` on portal-backed installs fuses two independent
+retrieval arms server-side:
+
+| Arm | Strength | Weakness it covers for |
+|-----|----------|------------------------|
+| **Semantic** (vector similarity) | meaning across different wording | exact identifiers blur in embedding space |
+| **Lexical** (ranked exact-term) | TPNs, error strings, function names | vocabulary must overlap |
+
+Results are rank-fused and each hit reports how it was found —
+`similarity`, `semantic_rank`, `lexical_rank`, and a fused score — so a
+hit that only the lexical arm produced renders as `exact-term match`
+rather than pretending to a similarity percentage.
+
+`knowledge_search` (the keyword tool) reports `match_mode` with the same
+honesty contract: `strict` means every query term matched; `relaxed`
+means the search was widened and the results are *leads, not confirmed
+answers* — and they are labelled that way in the output.
+
+Failure modes are asymmetric by design: if the lexical arm errors, the
+semantic results serve alone; if no query text is sent, the pure-semantic
+path runs byte-identical to pre-hybrid behavior. **Local SQLite installs
+keep pure vector search** (the Tier 1–3 chain in 6.4) — hybrid requires
+the portal's lexical index.
+
 **Key files:** `src/tools/ledgerHandlers.ts`, `src/tools/graphHandlers.ts`,
-`src/storage/sqlite.ts`, `src/storage/supabase.ts`
+`src/storage/sqlite.ts`, `src/storage/supabase.ts`, `src/storage/synalux.ts`
 
 ---
 

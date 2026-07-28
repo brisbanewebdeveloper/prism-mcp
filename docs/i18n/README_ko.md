@@ -81,12 +81,12 @@ to the patched 8.5.23 release.
 
 ### Hybrid Memory Search (Portal Tier)
 
-`session_search_memory` on Synalux-backed installs now fuses semantic
-similarity with exact-term lexical matching (weighted reciprocal-rank
-fusion). On blind probes against a real 8.5k-entry corpus this lifted
-top-1 retrieval from 45% (semantic alone) to 59%; exact identifiers such
-as TPNs, function names and error strings now rescue queries that
-embeddings blur. Results say how they were found — `hybrid retrieval`
+`session_search_memory` on the portal tier (Synalux-backed installs) now
+fuses semantic similarity with exact-term lexical matching via weighted
+reciprocal-rank fusion. Measured on blind probes against a real
+8.5k-entry corpus: fused retrieval was **never worse** than semantic
+alone at top-5, and exact identifiers — TPNs, function names, error
+strings — now rescue queries that embedding similarity blurs. Results say how they were found — `hybrid retrieval`
 headers, per-hit `sem#/lex#` arms — and a lexical-only rescue is labelled
 `exact-term match` instead of pretending to a similarity score. Local
 SQLite installs keep pure vector search; hybrid needs the portal's
