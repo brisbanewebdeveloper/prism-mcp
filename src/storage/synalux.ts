@@ -468,6 +468,46 @@ export class SynaluxStorage extends SupabaseStorage {
     return { count, results, match_mode: matchMode } as KnowledgeSearchResult;
   }
 
+  /**
+   * Persist embedding data for an already-saved entry.
+   *
+   * MUST be overridden here. SupabaseStorage.patchLedger writes straight to
+   * Supabase via supabasePatch, which needs a direct SUPABASE_URL — not
+   * configured for paid-tier installs. Inheriting it meant every embedding
+   * write threw, and session_save_ledger's fire-and-forget catch swallowed
+   * the error while still reporting "Embedding generation queued". The
+   * result was 0 of 8,560 rows carrying an embedding and semantic search
+   * silently returning nothing.
+   *
+   * Only the vector is sent. embedding_compressed / embedding_format /
+   * embedding_turbo_radius are local-SQLite columns that do not exist on the
+   * portal schema; forwarding them would fail the whole write for fields the
+   * server has nowhere to put.
+   */
+  async patchLedger(id: string, data: Record<string, unknown>): Promise<void> {
+    const raw = data.embedding;
+    if (raw === undefined || raw === null) return;
+
+    // ledgerHandlers JSON-stringifies the vector before patching; accept both.
+    let vector: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        vector = JSON.parse(raw);
+      } catch {
+        throw new Error("patchLedger: embedding string is not valid JSON");
+      }
+    }
+    if (!Array.isArray(vector)) {
+      throw new Error("patchLedger: embedding must be an array");
+    }
+
+    await this.portalPost("/api/v1/prism/memory", {
+      action: "save_embedding",
+      memory_id: id,
+      embedding: vector,
+    });
+  }
+
   // ─── Time Travel ─────────────────────────────────────────────
   // Phase 3 Tier B: route memory_history through portal instead of
   // falling through to SupabaseStorage (which requires a direct
