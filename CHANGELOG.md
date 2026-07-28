@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.3.0] - 2026-07-28 — Semantic Search Restored + Hybrid Retrieval
+
+### Fixed
+- **Embedding writes were silently lost on paid tier** — three stacked faults
+  meant 0 of 8,560 ledger rows carried a vector and semantic search returned
+  nothing for every query: `save_ledger` returned no row id, `patchLedger`
+  wrote to a direct Supabase URL paid installs don't have, and the portal had
+  no action to store a vector. All three fixed; existing corpus backfilled.
+- **Health check certified the outage as healthy** — `missingEmbeddings` was
+  hardcoded to 0. It now reports the portal's real count, and says coverage
+  "could not be verified" when the portal is unreachable instead of lying.
+- **`session_backfill_embeddings` could not see what needed repairing**
+  (direct-Supabase read → NXDOMAIN). Now portal-routed; verified repairing 9
+  rows in production.
+- **`knowledge_search` returned nothing for natural-language queries** —
+  ranked relaxing search with honest `match_mode` (widened results are
+  labelled leads, not exact hits).
+
+### Added
+- **Hybrid retrieval** (portal tier): `session_search_memory` fuses semantic
+  similarity with exact-term lexical matching via weighted RRF. On blind
+  probes: never worse than semantic alone, and rescues exact-identifier
+  queries (TPNs, function names) that embeddings blur. Results state how they
+  were found (`hybrid retrieval`, per-hit `sem#/lex#`, `exact-term match`).
+  Local SQLite installs keep pure vector search.
+
 ## [Unreleased]
 
 ### Fixed
