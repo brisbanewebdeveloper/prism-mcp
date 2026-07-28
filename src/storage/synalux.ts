@@ -25,10 +25,23 @@
  *     - searchKnowledge   → POST /api/v1/prism/memory  action=search
  *     - softDeleteLedger  → POST /api/v1/prism/memory  action=forget_memory (Phase 3 Tier A)
  *     - hardDeleteLedger  → POST /api/v1/prism/memory  action=forget_memory (Phase 3 Tier A)
+ *     - searchMemory      → POST /api/v1/prism/memory  action=search_memory
+ *     - getHistory        → POST /api/v1/prism/memory  action=memory_history
+ *     - patchLedger       → POST /api/v1/prism/memory  action=save_embedding
+ *     - getEntriesMissingEmbeddings → POST /api/v1/prism/memory  action=list_missing_embeddings
  *
  *   Methods still falling through to SupabaseStorage (Phase 3 Tier B+):
- *   semantic searchMemory, save_experience direct entrypoint,
- *   compactLedger, image ops, history, hivemind, etc.
+ *   save_experience direct entrypoint, compactLedger, image ops,
+ *   hivemind, etc. Anything in this group requires a direct SUPABASE_URL
+ *   and therefore does NOT work on paid-tier installs — that is precisely
+ *   how embedding writes failed silently: patchLedger was inherited, threw
+ *   against a URL that is not configured, and the caller swallowed it.
+ *   Before relying on an inherited method, check it is actually reachable.
+ *
+ *   NOTE: this list was previously wrong — it named searchMemory and
+ *   history as falling through when both had already been overridden.
+ *   A stale routing map here sends the next reader down the wrong path,
+ *   so amend it in the same commit that moves a method.
  *   See portal/docs/PHASE_3_PORTAL_ENDPOINTS.md for the full catalog.
  * ═══════════════════════════════════════════════════════════════════
  */
@@ -508,6 +521,30 @@ export class SynaluxStorage extends SupabaseStorage {
     });
   }
 
+  /**
+   * Rows semantic search cannot find, read through the portal.
+   *
+   * The backfill tool used to reach these via inherited getLedgerEntries —
+   * a direct Supabase read paid-tier installs cannot make (NXDOMAIN), so the
+   * repair tool could never see what needed repairing. The portal endpoint
+   * ignores cursorId (it always returns the oldest missing rows, and rows
+   * gain embeddings as the backfill proceeds, so the frontier advances by
+   * itself); it is accepted here to satisfy the shared signature.
+   */
+  async getEntriesMissingEmbeddings(params: {
+    project?: string;
+    limit: number;
+    cursorId?: string;
+  }): Promise<Array<{ id: string; summary: string; decisions?: string[]; project: string }>> {
+    const result = await this.portalPost("/api/v1/prism/memory", {
+      action: "list_missing_embeddings",
+      limit: params.limit,
+      ...(params.project ? { project: params.project } : {}),
+    });
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    return entries as Array<{ id: string; summary: string; decisions?: string[]; project: string }>;
+  }
+
   // ─── Time Travel ─────────────────────────────────────────────
   // Phase 3 Tier B: route memory_history through portal instead of
   // falling through to SupabaseStorage (which requires a direct
@@ -546,8 +583,15 @@ export class SynaluxStorage extends SupabaseStorage {
       const inventory = result.inventory as Record<string, number> | undefined;
       const totalActiveEntries = typeof inventory?.ledger_entries === "number" ? inventory.ledger_entries : 0;
       const totalHandoffs = typeof inventory?.active_projects === "number" ? inventory.active_projects : 0;
+      // Hardcoding 0 here certified a 100%-missing-embeddings outage as
+      // "HEALTHY — all clean". Use the portal's real count; if the portal
+      // predates the field, report -1 so healthCheck can say "unknown"
+      // instead of lying in either direction.
+      const missingEmbeddings = typeof inventory?.ledger_missing_embeddings === "number"
+        ? inventory.ledger_missing_embeddings
+        : -1;
       return {
-        missingEmbeddings: 0,
+        missingEmbeddings,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],
         staleRollups: 0,
@@ -559,7 +603,9 @@ export class SynaluxStorage extends SupabaseStorage {
     } catch (e) {
       debugLog("[SynaluxStorage] getHealthStats failed: " + (e instanceof Error ? e.message : String(e)));
       return {
-        missingEmbeddings: 0,
+        // Portal unreachable: coverage is UNKNOWN, not zero. -1 makes the
+        // health check say so rather than certify blind.
+        missingEmbeddings: -1,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],
         staleRollups: 0,

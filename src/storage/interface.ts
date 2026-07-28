@@ -471,6 +471,21 @@ export interface StorageBackend {
    */
   getHealthStats(userId: string): Promise<HealthStats>;
 
+  /**
+   * Active ledger entries with no embedding vector, for repair.
+   *
+   * OPTIONAL with a fallback in the caller: session_backfill_embeddings
+   * previously queried via getLedgerEntries with PostgREST params, which
+   * SynaluxStorage inherits from SupabaseStorage — a direct-Supabase read
+   * that paid-tier installs cannot make (no SUPABASE_URL → NXDOMAIN). A
+   * dedicated method lets each backend answer in its own dialect.
+   */
+  getEntriesMissingEmbeddings?(params: {
+    project?: string;
+    limit: number;
+    cursorId?: string;
+  }): Promise<Array<{ id: string; summary: string; decisions?: string[]; project: string }>>;
+
   // ─── v3.0: Agent Registry Operations ──────────────────────────
 
   /**
