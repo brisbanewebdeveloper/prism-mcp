@@ -420,6 +420,14 @@ export interface StorageBackend {
    */
   searchMemory(params: {
     queryEmbedding: string; // JSON-stringified number[]
+    /**
+     * Raw query text. Optional; when a backend can use it, it enables hybrid
+     * lexical+semantic retrieval (portal fuses knowledge_search_ranked with
+     * the vector search via weighted RRF — measured 59% hit@1 vs 45% for
+     * semantic alone on blind probes, 2026-07-28). Backends without a
+     * lexical arm simply ignore it.
+     */
+    queryText?: string;
     project?: string | null;
     limit: number;
     similarityThreshold: number;

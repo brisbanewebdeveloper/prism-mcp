@@ -400,6 +400,7 @@ export class SynaluxStorage extends SupabaseStorage {
 
   async searchMemory(params: {
     queryEmbedding: string;
+    queryText?: string;
     project?: string | null;
     limit: number;
     similarityThreshold: number;
@@ -420,6 +421,8 @@ export class SynaluxStorage extends SupabaseStorage {
     const result = await this.portalPost("/api/v1/prism/memory", {
       action: "search_memory",
       project: params.project ?? undefined,
+      // Enables the portal's hybrid lexical+semantic fusion (see interface).
+      query: params.queryText || undefined,
       query_embedding: parsed,
       similarity_threshold: params.similarityThreshold,
       limit: params.limit,

@@ -503,6 +503,8 @@ export async function sessionSearchMemoryHandler(args: unknown) {
       : Math.min(limit, 20);
     const results = await storage.searchMemory({
       queryEmbedding: JSON.stringify(queryEmbedding),
+      // Portal-backed installs fuse this with lexical search (weighted RRF).
+      queryText: query,
       project: project || null,
       limit: candidateLimit,
       similarityThreshold: similarity_threshold,
