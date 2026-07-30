@@ -18,15 +18,99 @@ so a separate app or DMG is not required.
   scripts, allowing deterministic feature flags, fixtures, capability shims,
   or instrumentation for localhost tests.
 - **A constrained injection boundary.** Injection requires `--local-only`,
-  which rejects public navigation and non-loopback subrequests.
+  which rejects public navigation, non-loopback subrequests, service workers,
+  and WebSocket/EventSource/WebRTC egress.
 - **Private audit records.** The runner stores a local audit trail with private
   filesystem permissions and removes URL credentials, query strings,
-  fragments, common email/phone patterns, and injected source text.
+  fragments, common email/phone patterns, record identifiers in URL paths, and
+  injected source text.
+- **Failure signals instead of silence.** Console errors, uncaught page
+  exceptions, and failed requests are captured and attached to command output.
+  An HTTP status of 400 or higher, an empty screenshot frame, and a failed
+  assertion each produce a non-zero exit.
 
 These are orchestration and safety benefits. Prism Browser does not replace
 Playwright Test: use raw Playwright when you need its complete fixture,
 assertion, trace, project, or parallel-worker APIs. Compatibility patches are
 best effort and are not a CAPTCHA-bypass guarantee.
+
+## Assertions and exit codes
+
+A command reports `status: "ok"` only when it actually succeeded. Anything else
+(`failed`, `error`, `timeout`) marks the run, and `pipe` exits non-zero.
+
+```bash
+printf '%s\n' \
+  'open http://127.0.0.1:3000' \
+  'assert-title Dashboard' \
+  'assert-text #status Ready' \
+  'assert-count [data-row] 12' \
+  'assert-no-page-errors' \
+  | prism browser --headless --fast --fail-fast pipe
+```
+
+`eval` returns the native JSON value with its type, so results are machine
+readable:
+
+```json
+{"status": "ok", "result": {"a": 1}, "type": "dict", "serializable": true}
+```
+
+`assert-eval` is the assertion form — `eval` alone never fails a run, because a
+falsy expression is a legitimate result. Use `--fail-fast` for test runs so a
+failed navigation cannot be followed by commands that silently target the
+previous page.
+
+A trailing backslash continues a command onto the next line, which makes
+multi-line JavaScript and multi-line input text expressible. Quoted arguments
+are parsed with shell-style quoting, so `type "div > .cell" "two words"` works.
+
+## Hermetic runs
+
+Persistent profiles are convenient for interactive work and wrong for tests:
+state carries between runs and makes them order dependent. For test runs use
+
+- `--ephemeral-profile` — a throwaway profile directory, removed on exit.
+- `--storage-state PATH` — seed cookies and localStorage from a Playwright
+  storage-state file, so authenticated flows skip the login UI.
+- `save-storage PATH` — write the current state back out.
+- `--fast` — skip the human-latency emulation (per-character typing and
+  inter-action pauses), which otherwise dominates a test's wall clock.
+
+`--trace PATH`, `--video DIR`, and `--har PATH` record Playwright artifacts for
+a failing run.
+
+## Multiple pages
+
+A popup (OAuth, payment, print preview) opens a new page. `pages` lists them,
+`switch-page N` makes one active, and `close-page` disposes of it. Without
+switching, commands continue to target the original page.
+
+## Fingerprint patches
+
+`--stealth full` applies playwright-stealth, a CDP
+`Emulation.setUserAgentOverride` carrying full `userAgentMetadata`, and a
+supplementary init script. The CDP override is what keeps `navigator.userAgent`,
+`navigator.userAgentData`, and the `Sec-CH-UA` request headers consistent;
+rewriting headers through request interception does not work, because Chromium
+re-adds client hints after interception.
+
+Applied layers are verified rather than assumed. The runner probes the page for
+UA/brand/platform/webdriver agreement at startup and again after the first real
+navigation, and `--stealth full` fails with an actionable error when a requested
+layer cannot be applied. Pass `--allow-degraded-stealth` to proceed anyway, or
+`--stealth light` to skip the library layer deliberately. The `fingerprint`
+command reports the current state.
+
+These patches do not disable site isolation, client-side phishing detection, or
+popup blocking. Profiles hold live authenticated cookies, and trading away those
+mitigations for a fingerprint delta is the wrong exchange.
+
+## Profile maintenance
+
+Persistent profiles accumulate. `prism browser profiles` lists them by size and
+age; `--prune-older-than DAYS` reports what is stale and deletes it only when
+`--yes` is also passed.
 
 ## Install the local runtime
 
