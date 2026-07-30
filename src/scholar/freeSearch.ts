@@ -2,6 +2,16 @@ import * as cheerio from 'cheerio';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import TurndownService from 'turndown';
+import { lookup as dnsLookupCb } from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import { promisify } from 'node:util';
+
+const dnsLookup = promisify(dnsLookupCb) as (
+    hostname: string,
+    options: { all: true; verbatim: boolean },
+) => Promise<{ address: string; family: number }[]>;
 
 export interface FreeSearchResult {
     title: string;
@@ -180,6 +190,126 @@ export function assertSafeScrapeTarget(url: string, devMode: boolean): void {
     }
 }
 
+/** Max article HTML accepted, so a hostile endpoint cannot stream us to death. */
+const MAX_ARTICLE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Resolve a hostname and validate every address it answers with.
+ *
+ * The string checks above only see the hostname, so a name the attacker
+ * controls can pass them and still resolve to 127.0.0.1 (DNS rebinding).
+ * Returns the address to connect to, which the caller pins so the name is
+ * never resolved a second time.
+ */
+export async function resolveAndValidateHost(
+    hostname: string,
+    devMode: boolean,
+): Promise<{ address: string; family: number }[]> {
+    const bracketless = hostname.replace(/^\[|\]$/g, '');
+
+    // A literal address needs no lookup; assertSafeScrapeTarget already ruled on it.
+    if (net.isIP(bracketless) !== 0) {
+        return [{ address: bracketless, family: net.isIP(bracketless) }];
+    }
+
+    let resolved: { address: string; family: number }[];
+    try {
+        resolved = await dnsLookup(hostname, { all: true, verbatim: true });
+    } catch (err) {
+        throw new Error(`Invalid URL: could not resolve ${hostname}`);
+    }
+    if (resolved.length === 0) {
+        throw new Error(`Invalid URL: ${hostname} resolved to no addresses`);
+    }
+
+    // Reject if ANY answer is non-public. A name that resolves to both a
+    // public and a private address is the rebinding shape itself, so picking
+    // the "good" one would just make the attack racy instead of blocked.
+    for (const entry of resolved) {
+        const hostClass = classifyScrapeHost(entry.address);
+        if (hostClass === 'private') {
+            throw new Error(
+                `Invalid URL: ${hostname} resolves to a private address (${entry.address})`,
+            );
+        }
+        if (hostClass === 'loopback' && !devMode) {
+            throw new Error(
+                `Invalid URL: ${hostname} resolves to a loopback address (${entry.address})`,
+            );
+        }
+    }
+    // Every answer is validated, so returning all of them keeps Node's
+    // dual-stack fallback working. Pinning only the first would fail whenever
+    // a host's leading AAAA is unreachable, which plain fetch handles.
+    return resolved;
+}
+
+/**
+ * GET an article over a connection pinned to a pre-validated address.
+ *
+ * Node's fetch would resolve the name again inside the request, which
+ * reopens the rebinding window between our check and the connection
+ * (TOCTOU). Supplying `lookup` guarantees the socket goes to the address we
+ * validated, while the URL still supplies the Host header and TLS SNI.
+ */
+function fetchPinned(url: URL, addresses: { address: string; family: number }[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const transport = url.protocol === 'https:' ? https : http;
+        const req = transport.request(
+            url,
+            {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                },
+                // Node calls this in two shapes: with { all: true } it wants an
+                // array of { address, family } (autoSelectFamily, the default
+                // since Node 20), otherwise the (err, address, family) form.
+                // Answering the wrong one yields "Invalid IP address: undefined".
+                lookup: (_hostname: string, options: { all?: boolean }, callback: Function) => {
+                    if (options && options.all) {
+                        callback(null, addresses);
+                    } else {
+                        callback(null, addresses[0].address, addresses[0].family);
+                    }
+                },
+            },
+            (res) => {
+                const status = res.statusCode ?? 0;
+                if (status >= 300 && status < 400) {
+                    // Matches the previous redirect: 'error' behaviour — a
+                    // redirect is a second target that was never validated.
+                    res.destroy();
+                    reject(new Error(`Failed to fetch article HTML: refusing redirect (${status})`));
+                    return;
+                }
+                if (status < 200 || status >= 300) {
+                    res.destroy();
+                    reject(new Error(`Failed to fetch article HTML: ${status} ${res.statusMessage ?? ''}`.trim()));
+                    return;
+                }
+                let size = 0;
+                const chunks: Buffer[] = [];
+                res.on('data', (chunk: Buffer) => {
+                    size += chunk.length;
+                    if (size > MAX_ARTICLE_BYTES) {
+                        res.destroy();
+                        reject(new Error(`Failed to fetch article HTML: exceeded ${MAX_ARTICLE_BYTES} bytes`));
+                        return;
+                    }
+                    chunks.push(chunk);
+                });
+                res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+                res.on('error', reject);
+            },
+        );
+        req.setTimeout(15_000, () => {
+            req.destroy(new Error('Failed to fetch article HTML: timed out after 15000ms'));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 export async function scrapeArticleLocal(url: string): Promise<LocalArticle> {
     // SSRF protection: reject private/internal URLs.
     // Set PRISM_DEV_MODE=1 to allow loopback hosts during local dev (testing
@@ -188,19 +318,10 @@ export async function scrapeArticleLocal(url: string): Promise<LocalArticle> {
     const devMode = process.env.PRISM_DEV_MODE === '1' || process.env.NODE_ENV === 'development';
     assertSafeScrapeTarget(url, devMode);
 
-    const response = await fetch(url, {
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        redirect: 'error',
-        signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch article HTML: ${response.statusText}`);
-    }
-
-    const html = await response.text();
+    // Then resolve, validate every answer, and pin the connection to it.
+    const parsed = new URL(url);
+    const addresses = await resolveAndValidateHost(parsed.hostname, devMode);
+    const html = await fetchPinned(parsed, addresses);
     
     // Create a virtual DOM for Readability to traverse
     const doc = new JSDOM(html, { url });

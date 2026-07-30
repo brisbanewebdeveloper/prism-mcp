@@ -78,6 +78,21 @@ const { mockConfig, mockStorage, mockFetch } = vi.hoisted(() => {
 
 vi.mock("../../src/config.js", () => mockConfig);
 
+// scrapeArticleLocal now opens a real pinned connection rather than going
+// through global.fetch, so without this the suite would make live network
+// calls to example.com. Scraping has its own coverage in freeSearch.test.ts
+// and ssrf-*.test.ts; here it is a boundary to stub.
+vi.mock("../../src/scholar/freeSearch.js", () => ({
+  // Empty by default: with no API keys the Yahoo fallback yields nothing and
+  // the run must skip rather than save. A test needing the fallback to
+  // produce URLs overrides this explicitly.
+  searchYahooFree: vi.fn().mockResolvedValue([]),
+  scrapeArticleLocal: vi.fn().mockResolvedValue({
+    title: "Mock Article",
+    content: "Mock article body content used for synthesis.",
+  }),
+}));
+
 vi.mock("../../src/storage/index.js", () => ({
   getStorage: vi.fn().mockResolvedValue(mockStorage),
 }));
