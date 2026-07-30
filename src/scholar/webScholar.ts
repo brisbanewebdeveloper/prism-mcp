@@ -3,6 +3,7 @@ import {
   GOOGLE_SEARCH_CX, SEMANTIC_SCHOLAR_API_KEY,
   PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN, PRISM_USER_ID,
   PRISM_SCHOLAR_TOPICS, PRISM_ENABLE_HIVEMIND,
+  PRISM_SCHOLAR_SCRAPE_BUDGET_MS,
 } from "../config.js";
 import { getStorage } from "../storage/index.js";
 import { debugLog } from "../utils/logger.js";
@@ -254,15 +255,42 @@ export async function runWebScholar(overrideTopic?: string, overrideProject?: st
     await hivemindHeartbeat(`Scraping ${urls.length} articles on: ${topic}`);
 
     const scrapedTexts: string[] = [];
+    const scrapeFailures: string[] = [];
 
+    // Scrapes run sequentially with a 15s per-fetch timeout, so N URLs cost
+    // up to N * 15s. PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN is env-overridable,
+    // so bound the whole loop rather than trusting the item count.
+    // A non-finite budget (bad env value, or a test that stubs the config
+    // module wholesale) must not silently disable scraping or the budget.
+    const budgetMs = Number.isFinite(PRISM_SCHOLAR_SCRAPE_BUDGET_MS) && PRISM_SCHOLAR_SCRAPE_BUDGET_MS > 0
+      ? PRISM_SCHOLAR_SCRAPE_BUDGET_MS
+      : 60_000;
+    const scrapeDeadline = Date.now() + budgetMs;
     for (const url of urls) {
+      if (Date.now() >= scrapeDeadline) {
+        scrapeFailures.push(`${url} — skipped: ${budgetMs}ms scrape budget exhausted`);
+        continue;
+      }
       try {
         const article = await scrapeArticleLocal(url);
         scrapedTexts.push(`Source: ${url}\nTitle: ${article.title}\n\n${article.content.slice(0, 15_000)}`);
-      } catch {}
+      } catch (err) {
+        // A swallowed failure makes an empty run look identical to a good one.
+        const reason = err instanceof Error ? err.message : String(err);
+        scrapeFailures.push(`${url} — ${reason}`);
+        console.error(`[Scholar] scrape failed: ${url} — ${reason}`);
+      }
     }
 
-    if (scrapedTexts.length === 0) return "All scrapes failed";
+    if (scrapedTexts.length === 0) {
+      const detail = scrapeFailures.length
+        ? `\n${scrapeFailures.join('\n')}`
+        : ' (no URLs attempted)';
+      return `All ${urls.length} scrape(s) failed for "${topic}":${detail}`;
+    }
+    if (scrapeFailures.length > 0) {
+      console.error(`[Scholar] ${scrapeFailures.length}/${urls.length} scrapes failed for "${topic}"`);
+    }
 
     await hivemindHeartbeat(`Synthesizing ${scrapedTexts.length} articles on: ${topic}`);
     const prompt = `You are an AI research assistant. Topic: "${topic}". Read these articles and write a comprehensive report.\n\n${scrapedTexts.join("\n---\n")}`;

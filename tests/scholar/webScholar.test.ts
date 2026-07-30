@@ -47,6 +47,10 @@ const { mockConfig, mockStorage, mockFetch } = vi.hoisted(() => {
     GOOGLE_SEARCH_CX: undefined,
     SEMANTIC_SCHOLAR_API_KEY: undefined,
     PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN: 3,
+    // This mock replaces config.js wholesale, so every named export the
+    // module imports must appear here — a missing one fails ESM linking and
+    // takes the whole suite down rather than failing one assertion.
+    PRISM_SCHOLAR_SCRAPE_BUDGET_MS: 60_000,
     PRISM_USER_ID: "default",
     PRISM_SCHOLAR_TOPICS: ["ai", "agents", "mcp", "authentication"],
     PRISM_ENABLE_HIVEMIND: false,
