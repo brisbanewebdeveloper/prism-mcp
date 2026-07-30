@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.3.1] - 2026-07-29 — Prism Browser: Real Failure Signals
+
+### Fixed
+- **The stealth library had never been applied.** `Stealth(webgl_renderer=...)`
+  is not a valid keyword (it is `webgl_renderer_override`), and the exception
+  was swallowed into the audit log: 1,139 failures and 0 successes since
+  2026-04-14, while `--stealth full` reported `playwright-stealth-v2` as
+  active. Fixed, and a layer that cannot be applied now fails loudly instead
+  of degrading silently.
+- **The headless build announced itself.** `navigator.userAgentData` and the
+  `Sec-CH-UA` request header both advertised `HeadlessChrome` while the UA
+  string claimed Chrome. Identity is now set through CDP
+  `Emulation.setUserAgentOverride` with full `userAgentMetadata`; request
+  interception cannot fix client hints because Chromium re-adds them after
+  the interception point.
+- **A patch corrupted the page under test.** The
+  `Object.getOwnPropertyDescriptor` override broke descriptor reads on
+  iframes *and* on ordinary objects carrying a `contentWindow` key, was
+  readable via `toString`, and was bypassed in one line by
+  `Object.getOwnPropertyDescriptors`. Removed.
+- **`open` discarded the HTTP status**, so a 500 reported `status: ok`. It now
+  returns `http_status` and fails on 400 or higher (`--allow-http-error` opts
+  out).
+- **`--cleanup` was a no-op** in pipe and repl mode, the two modes agents use.
+- **Screenshots could collide** within the same second and were never checked
+  for an empty frame.
+- **`--local-only` did not isolate.** WebSocket, EventSource, WebRTC and
+  `sendBeacon` egress bypass request routing entirely; service workers were
+  allowed. All are blocked now, and the previously unlogged escape is audited.
+- **Audited URL paths were not sanitized**, so record identifiers in a path
+  reached a log documented as content-free. The FileVault check now fails
+  closed, and the fingerprint validator performs a real check instead of
+  recording `consistent=true` unconditionally.
+
+### Added
+- Assertions: `assert-text`, `assert-visible`, `assert-hidden`,
+  `assert-count`, `assert-url`, `assert-title`, `assert-eval`, and
+  `assert-no-page-errors`. `eval` alone cannot fail a run, because a falsy
+  result is a legitimate value.
+- Console errors, uncaught page exceptions and failed requests are captured
+  and attached to command output; `eval` returns native JSON with its type
+  rather than a Python `repr`.
+- `pages` / `switch-page` / `close-page` so popups are reachable,
+  `--ephemeral-profile` and `--storage-state` for hermetic authenticated runs,
+  `--fast`, `--fail-fast`, `--trace`, `--video`, `--har`, and
+  `profiles --prune-older-than` for profile maintenance.
+
+### Changed
+- Site isolation, client-side phishing detection and popup blocking are no
+  longer disabled, and geolocation is no longer auto-granted; profiles hold
+  live authenticated cookies.
+- `--viewport` fails loudly instead of silently falling back, and arguments
+  accept shell-style quoting so a selector may contain spaces.
+
 ## [20.3.0] - 2026-07-28 — Semantic Search Restored + Hybrid Retrieval
 
 ### Fixed

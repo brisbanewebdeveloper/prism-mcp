@@ -61,6 +61,41 @@ features.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.3.1
+
+### Prism Browser Reports Real Failures
+
+`prism browser` could not fail a test. `eval 1 === 2` returned `status: ok`
+with exit code 0, a page serving HTTP 500 reported `status: ok`, and console
+errors and uncaught page exceptions were discarded entirely. This release adds
+assertions — `assert-text`, `assert-visible`, `assert-count`, `assert-url`,
+`assert-title`, `assert-eval`, `assert-no-page-errors` — that return
+`status: failed` and a non-zero exit. `open` now reports `http_status` and
+fails on 400 or higher, screenshots are validated rather than assumed, and
+`eval` returns native JSON with its type instead of a Python `repr`.
+
+The fingerprint layer had never been applied: a wrong keyword argument made
+the stealth library throw on every launch — 1,139 failures and 0 successes
+since April — while the runner reported it as active. It is fixed, and a layer
+that cannot be applied now fails loudly. The headless build no longer
+advertises itself through `navigator.userAgentData` or the `Sec-CH-UA` header,
+and a patch that corrupted `Object.getOwnPropertyDescriptor` on every page
+under test has been removed. These remain best-effort test aids, not a
+guarantee against bot detection.
+
+`--local-only` now actually isolates: WebSocket, EventSource, WebRTC and
+`sendBeacon` egress bypass request routing and were never blocked, and service
+workers were allowed through. `--cleanup` was a no-op in the two modes agents
+use. Site isolation, phishing detection and popup blocking are no longer
+disabled by default, since these profiles hold live authenticated cookies.
+
+New for test runs: `--ephemeral-profile` and `--storage-state` for hermetic
+authenticated flows, `pages`/`switch-page` so OAuth popups are reachable,
+`--fail-fast`, `--fast`, `--trace`/`--video`/`--har`, and
+`profiles --prune-older-than` for profile maintenance.
+
+---
+
 ## What's New in v20.2.7
 
 ### Session Saves Survive Agent Restarts
