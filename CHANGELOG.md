@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.3.2] - 2026-07-30 — Web Scholar: SSRF Hardening
+
+Security release. Web Scholar fetches article URLs taken from search-engine
+output, so the target is attacker-influenceable through SEO poisoning, and
+what it scrapes is persisted into the memory corpus and passed to the
+configured LLM. A successful redirection to a local address was therefore a
+read of an internal service plus exfiltration, not just an internal request.
+
+Reachable only when scholar runs — `scholar_research`, or the background loop
+when `PRISM_SCHOLAR_ENABLED=true` — and the attacker also controls DNS or a
+search result. Upgrade if you use Web Scholar at all.
+
+### Fixed
+- **Six spellings of a local address bypassed the host guard**, which matched
+  string prefixes rather than parsing the address:
+  - `[::1]` — `URL.hostname` keeps the brackets, so the `'::1'` comparison missed
+  - `127.0.0.2` — only `127.0.0.1` was enumerated, not all of `127.0.0.0/8`
+  - `0.0.0.0` — never considered; routes to the local host
+  - `[::ffff:127.0.0.1]` — IPv4-mapped IPv6 was not decoded
+  - `localhost.` — a trailing-dot FQDN defeated the `.localhost`, `.internal`
+    and `.local` suffix checks at once, and still resolves to `127.0.0.1`
+  - `[64:ff9b::7f00:1]` — NAT64 (RFC 6052) embeds IPv4 in its low 32 bits
+- **DNS rebinding.** Every check read the URL string, so a hostname the
+  attacker controls passed them all and could still resolve to `127.0.0.1`.
+  Targets are now resolved before connecting, every returned address is
+  validated, and the request is pinned to those addresses so the name is never
+  resolved a second time — which also closes the check-to-connect window.
+- **Scrape failures were swallowed** by a bare `catch {}`, so a run that
+  fetched nothing was indistinguishable from one that worked. Failures are now
+  recorded, logged, and reported.
+
+### Added
+- Host classification additionally covers CGNAT, benchmarking, multicast and
+  reserved ranges, and IPv6 unique-local and link-local.
+- `PRISM_SCHOLAR_SCRAPE_BUDGET_MS` (default 60s) bounds the scrape loop.
+  Scrapes are sequential with a 15s per-fetch timeout and the article count is
+  env-tunable, so a raised count previously became a multi-minute stall.
+- An 8 MiB response cap, which the previous `fetch` call did not have.
+
+### Notes
+- Private, link-local and metadata ranges are refused even under
+  `PRISM_DEV_MODE=1`; that flag now only relaxes loopback.
+- A compromised resolver, and a public address that a downstream device maps
+  to something local, remain outside what a client-side guard can detect.
+
 ## [20.3.1] - 2026-07-29 — Prism Browser: Real Failure Signals
 
 ### Fixed

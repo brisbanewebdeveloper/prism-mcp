@@ -61,6 +61,40 @@ features.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.3.2
+
+### Web Scholar: SSRF Hardening
+
+Security release. Web Scholar scrapes article URLs that come from
+search-engine output, so the target is attacker-influenceable through SEO
+poisoning — and because what it scrapes is written into the memory corpus and
+passed to the configured LLM, a redirection to a local address meant reading an
+internal service *and* sending the result onward.
+
+The host guard matched string prefixes instead of parsing the address, and six
+spellings of a local address got through: `[::1]` (`URL.hostname` keeps the
+brackets), `127.0.0.2` (only `.1` was enumerated, not all of `127.0.0.0/8`),
+`0.0.0.0`, `[::ffff:127.0.0.1]`, `localhost.` (a trailing dot defeated every
+suffix check at once), and `[64:ff9b::7f00:1]` (NAT64 embeds IPv4 in its low
+bits). Host classification now parses addresses and also covers CGNAT,
+benchmarking, multicast, reserved, and IPv6 unique-local and link-local ranges.
+
+DNS rebinding is closed too. Every check read the URL string, so a hostname the
+attacker controls passed all of them and could still resolve to `127.0.0.1`.
+Targets are now resolved first, every returned address is validated, and the
+connection is pinned to those addresses so the name is never resolved a second
+time — which also shuts the window between the check and the connect.
+
+Scrape failures no longer vanish into a bare `catch {}`, a run is bounded by
+`PRISM_SCHOLAR_SCRAPE_BUDGET_MS` (default 60s) instead of stalling on a raised
+article count, and responses are capped at 8 MiB.
+
+This is reachable only when scholar actually runs — `scholar_research`, or the
+background loop under `PRISM_SCHOLAR_ENABLED=true` — and when the attacker also
+controls DNS or a search result. Upgrade if you use Web Scholar.
+
+---
+
 ## What's New in v20.3.1
 
 ### Prism Browser Reports Real Failures
