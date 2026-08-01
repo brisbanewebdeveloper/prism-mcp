@@ -144,6 +144,8 @@ vi.mock("../../../src/utils/cognitiveMemory.js", () => ({
 vi.mock("../../../src/session/sessionContext.js", () => ({
   markContextLoaded: vi.fn(),
   requireContextLoaded: vi.fn(() => null),
+  registerContextLoaded: vi.fn(() => Promise.resolve()),
+  requireContextLoadedForProject: vi.fn(() => Promise.resolve(null)),
   noteInferenceForSession: vi.fn(),
   getSessionState: vi.fn(() => null),
   noteDriftSessionStart: vi.fn(),
@@ -181,10 +183,15 @@ import { getStorage } from "../../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../../src/storage/configStorage.js";
 import { resolveProject } from "../../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../../src/storage/interface.js";
-import { requireContextLoaded, markContextLoaded } from "../../../src/session/sessionContext.js";
+import { getLLMProvider } from "../../../src/utils/llm/factory.js";
+import {
+  registerContextLoaded,
+  requireContextLoadedForProject,
+} from "../../../src/session/sessionContext.js";
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
+  sessionSaveExperienceHandler,
   sessionLoadContextHandler,
   sessionForgetMemoryHandler,
   sessionExportMemoryHandler,
@@ -198,6 +205,7 @@ const mockGetStorage = vi.mocked(getStorage);
 const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockResolveProject = vi.mocked(resolveProject);
+const mockGetLLMProvider = vi.mocked(getLLMProvider);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -319,6 +327,20 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Session ledger saved");
       expect(result.content[0].text).toContain("test-project");
       expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it("still returns persisted ledger success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Session ledger saved");
+      expect(result.content[0].text).toContain("Implemented feature X");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
     });
 
     it("passes sanitized summary to storage", async () => {
@@ -485,7 +507,7 @@ describe("ledgerHandlers", () => {
     // --- Context gate ---
 
     it("blocks save and returns structured error when context not loaded", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: true,
         error: "context_not_loaded: call session_load_context first.",
       });
@@ -498,7 +520,7 @@ describe("ledgerHandlers", () => {
     });
 
     it("passes through to storage when context is loaded (gate returns null)", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce(null);
 
       const result = await sessionSaveLedgerHandler(validArgs);
 
@@ -507,7 +529,7 @@ describe("ledgerHandlers", () => {
     });
 
     it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: false,
         warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
       });
@@ -520,6 +542,25 @@ describe("ledgerHandlers", () => {
       // Warning is prepended to the success text
       expect(result.content[0].text).toContain("[advisory] Operating boundaries updated");
       expect(result.content[0].text).toContain("✅ Session ledger saved");
+    });
+  });
+
+  describe("sessionSaveExperienceHandler", () => {
+    it("still returns persisted experience success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveExperienceHandler({
+        project: "test-project",
+        event_type: "success",
+        context: "Verifying history persistence",
+        action: "Saved a structured experience",
+        outcome: "The primary write completed",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Experience recorded");
     });
   });
 
@@ -757,22 +798,22 @@ describe("ledgerHandlers", () => {
       );
     });
 
-    // --- conversation_id / markContextLoaded ---
+    // --- conversation_id / durable context registration ---
 
-    it("calls markContextLoaded when conversation_id is provided", async () => {
+    it("registers durable context when conversation_id is provided", async () => {
       storage.loadContext.mockResolvedValue(null);
 
       await sessionLoadContextHandler({ project: "test-project", conversation_id: "conv-xyz" });
 
-      expect(vi.mocked(markContextLoaded)).toHaveBeenCalledWith("conv-xyz", "test-project", "test");
+      expect(vi.mocked(registerContextLoaded)).toHaveBeenCalledWith("conv-xyz", "test-project", "test");
     });
 
-    it("does not call markContextLoaded when conversation_id is absent", async () => {
+    it("does not register durable context when conversation_id is absent", async () => {
       storage.loadContext.mockResolvedValue(null);
 
       await sessionLoadContextHandler({ project: "test-project" });
 
-      expect(vi.mocked(markContextLoaded)).not.toHaveBeenCalled();
+      expect(vi.mocked(registerContextLoaded)).not.toHaveBeenCalled();
     });
 
     it("does not include safety banner (enforcement is in code)", async () => {
@@ -807,6 +848,24 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Handoff created");
       expect(result.content[0].text).toContain("version: 1");
       expect(result.content[0].text).toContain("expected_version: 1");
+    });
+
+    it("still returns persisted success when optional embedding provider initialization throws", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 16 });
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveHandoffHandler({
+        ...validArgs,
+        expected_version: 15,
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 16");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
     });
 
     it("passes sanitized summary to storage", async () => {
@@ -845,13 +904,51 @@ describe("ledgerHandlers", () => {
 
     it("saves history snapshot after successful save", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 3 });
-      await sessionSaveHandoffHandler(validArgs);
+      await sessionSaveHandoffHandler({ ...validArgs, role: "dev" });
 
-      // saveHistorySnapshot is called fire-and-forget
       expect(storage.saveHistorySnapshot).toHaveBeenCalledTimes(1);
       const snapshotArg = getFirstCallArg<HandoffEntry>(storage.saveHistorySnapshot);
       expect(snapshotArg.project).toBe("test-project");
       expect(snapshotArg.version).toBe(3);
+      expect(storage.saveHistorySnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ project: "test-project", role: "dev", version: 3 }),
+        "main",
+      );
+    });
+
+    it("waits for the history snapshot attempt before reporting handoff success", async () => {
+      let releaseSnapshot!: () => void;
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      }));
+
+      let settled = false;
+      const pending = sessionSaveHandoffHandler(validArgs).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(storage.saveHistorySnapshot).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+
+      releaseSnapshot();
+      const result = await pending;
+      expect(settled).toBe(true);
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Versioned history snapshot saved");
+    });
+
+    it("keeps the durable handoff successful when its optional history snapshot fails", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockRejectedValueOnce(new Error("history unavailable"));
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 4");
+      expect(result.content[0].text).toContain("versioned history snapshot was not saved");
+      expect(result.content[0].text).toContain("Check memory_history");
     });
 
     // --- OCC (Optimistic Concurrency Control) ---
@@ -965,7 +1062,7 @@ describe("ledgerHandlers", () => {
     // --- Context gate ---
 
     it("blocks handoff save and returns structured error when context not loaded", async () => {
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: true,
         error: "context_not_loaded: call session_load_context first.",
       });
@@ -979,7 +1076,7 @@ describe("ledgerHandlers", () => {
 
     it("passes through to storage when context is loaded (gate returns null)", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
-      vi.mocked(requireContextLoaded).mockReturnValueOnce(null);
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce(null);
 
       const result = await sessionSaveHandoffHandler(validArgs);
 
@@ -989,7 +1086,7 @@ describe("ledgerHandlers", () => {
 
     it("proceeds and prepends warning when gate returns { blocked: false, warning } (version drift)", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
-      vi.mocked(requireContextLoaded).mockReturnValueOnce({
+      vi.mocked(requireContextLoadedForProject).mockResolvedValueOnce({
         blocked: false,
         warning: "[advisory] Operating boundaries updated. Call session_load_context again.",
       });

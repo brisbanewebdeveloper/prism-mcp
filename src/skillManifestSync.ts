@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   applyManagedSkillManifest, getSetting, refreshConfigStorageCache,
 } from "./storage/configStorage.js";
-import { REQUIRED_NATIVE_SKILL_NAMES } from "./tools/skillRouting.js";
+import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "./tools/skillRouting.js";
 import { getSynaluxJwt, invalidateSynaluxJwt } from "./utils/synaluxJwt.js";
 
 const OWNER = "prism-skill-sync-v1";
@@ -268,16 +268,19 @@ export function validateSkillManifest(payload: unknown): SkillManifest {
       }
     }
   }
-  const requiredNames = new Set<string>(REQUIRED_NATIVE_SKILL_NAMES);
-  for (const required of REQUIRED_NATIVE_SKILL_NAMES) {
+  const requiredForTier = value.tier === "free"
+    ? FREE_NATIVE_SKILL_NAMES
+    : REQUIRED_NATIVE_SKILL_NAMES;
+  const requiredNames = new Set<string>(requiredForTier);
+  for (const required of requiredForTier) {
     const requiredSkill = skills.find((skill) => skill.name === required);
-    if (!requiredSkill) throw new Error(`manifest is missing required protected skill: ${required}`);
+    if (!requiredSkill) throw new Error(`manifest is missing required native skill: ${required}`);
     if (!requiredSkill.metadata.protected || !requiredSkill.metadata.categories.includes("universal")) {
-      throw new Error(`required skill is not protected universal: ${required}`);
+      throw new Error(`required native skill is not protected universal: ${required}`);
     }
   }
   if (value.tier === "free" && (skills.length !== requiredNames.size || skills.some((skill) => !requiredNames.has(skill.name)))) {
-    throw new Error("free manifest must contain exactly the protected skill floor");
+    throw new Error("free manifest must contain exactly the public startup package");
   }
   const normalized: SkillManifest = {
     schema_version: 1,

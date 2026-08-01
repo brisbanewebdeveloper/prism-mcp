@@ -9,7 +9,7 @@
  * verification challenge rather than skipping verification.
  */
 
-import { PRISM_SYNALUX_BASE_URL, SYNALUX_CONFIGURED } from "../config.js";
+import { PRISM_SYNALUX_BASE_URL } from "../config.js";
 import { getSynaluxJwt } from "../utils/synaluxJwt.js";
 import { debugLog } from "../utils/logger.js";
 
@@ -57,7 +57,13 @@ export async function verifyBehaviorHandler(
 async function buildScenarioText(
     args: VerifyBehaviorArgs,
 ): Promise<string> {
-    if (!SYNALUX_CONFIGURED || !PRISM_SYNALUX_BASE_URL) {
+    const baseUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
+        process.env.SYNALUX_BASE_URL?.trim() ||
+        PRISM_SYNALUX_BASE_URL;
+    // OAuth/JWT-backed installs intentionally do not copy a long-lived API key
+    // into host configuration. A valid portal URL is enough to attempt the
+    // short-lived JWT flow; getSynaluxJwt() remains the fail-closed auth gate.
+    if (!baseUrl) {
         return FALLBACK_SCENARIO;
     }
 
@@ -68,7 +74,7 @@ async function buildScenarioText(
     }
 
     try {
-        const url = `${PRISM_SYNALUX_BASE_URL}/api/v1/prism/verify-behavior`;
+        const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/prism/verify-behavior`;
         const res = await fetch(url, {
             method: "POST",
             headers: {
@@ -88,12 +94,23 @@ async function buildScenarioText(
             return FALLBACK_SCENARIO;
         }
 
-        const data = (await res.json()) as VerifyBehaviorResult;
+        const data: unknown = await res.json();
+        if (!isVerifyBehaviorResult(data)) {
+            console.error("[verify-behavior] ⚠️ portal returned a malformed response — fail-closed");
+            return FALLBACK_SCENARIO;
+        }
         return formatResult(data);
     } catch (err) {
         console.error(`[verify-behavior] ⚠️ VERIFICATION FAILED: ${(err as Error).message} — using generic fallback`);
         return FALLBACK_SCENARIO;
     }
+}
+
+function isVerifyBehaviorResult(value: unknown): value is VerifyBehaviorResult {
+    return typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        typeof (value as { requires_verification?: unknown }).requires_verification === "boolean";
 }
 
 function formatResult(data: VerifyBehaviorResult): string {

@@ -25,6 +25,10 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
 - **Local-first inference** — bounded work is routed through local Ollama models
   first, with automatic 2B/4B/9B/27B selection based on installed models,
   available RAM, context fit, and subscription entitlements.
+- **Route-output enforcement** — route mode returns only well-formed calls to
+  tools the host actually advertised. Standard and higher plans can add
+  authenticated deterministic correction; `route_guard: "local"` keeps the
+  prompt and draft entirely on-device.
 - **One setup for every agent** — `prism connect` configures Claude Code,
   Claude Desktop, Cursor, Gemini CLI, and Codex while preserving unrelated
   settings.
@@ -56,6 +60,122 @@ features.
 
 <details>
 <summary>Release history (optional)</summary>
+
+## What's New in v20.3.2
+
+### Web Scholar: SSRF Hardening
+
+Security release. Web Scholar scrapes article URLs that come from
+search-engine output, so the target is attacker-influenceable through SEO
+poisoning — and because what it scrapes is written into the memory corpus and
+passed to the configured LLM, a redirection to a local address meant reading an
+internal service *and* sending the result onward.
+
+The host guard matched string prefixes instead of parsing the address, and six
+spellings of a local address got through: `[::1]` (`URL.hostname` keeps the
+brackets), `127.0.0.2` (only `.1` was enumerated, not all of `127.0.0.0/8`),
+`0.0.0.0`, `[::ffff:127.0.0.1]`, `localhost.` (a trailing dot defeated every
+suffix check at once), and `[64:ff9b::7f00:1]` (NAT64 embeds IPv4 in its low
+bits). Host classification now parses addresses and also covers CGNAT,
+benchmarking, multicast, reserved, and IPv6 unique-local and link-local ranges.
+
+DNS rebinding is closed too. Every check read the URL string, so a hostname the
+attacker controls passed all of them and could still resolve to `127.0.0.1`.
+Targets are now resolved first, every returned address is validated, and the
+connection is pinned to those addresses so the name is never resolved a second
+time — which also shuts the window between the check and the connect.
+
+Scrape failures no longer vanish into a bare `catch {}`, a run is bounded by
+`PRISM_SCHOLAR_SCRAPE_BUDGET_MS` (default 60s) instead of stalling on a raised
+article count, and responses are capped at 8 MiB.
+
+This is reachable only when scholar actually runs — `scholar_research`, or the
+background loop under `PRISM_SCHOLAR_ENABLED=true` — and when the attacker also
+controls DNS or a search result. Upgrade if you use Web Scholar.
+
+---
+
+## What's New in v20.3.1
+
+### Prism Browser Reports Real Failures
+
+`prism browser` could not fail a test. `eval 1 === 2` returned `status: ok`
+with exit code 0, a page serving HTTP 500 reported `status: ok`, and console
+errors and uncaught page exceptions were discarded entirely. This release adds
+assertions — `assert-text`, `assert-visible`, `assert-count`, `assert-url`,
+`assert-title`, `assert-eval`, `assert-no-page-errors` — that return
+`status: failed` and a non-zero exit. `open` now reports `http_status` and
+fails on 400 or higher, screenshots are validated rather than assumed, and
+`eval` returns native JSON with its type instead of a Python `repr`.
+
+The fingerprint layer had never been applied: a wrong keyword argument made
+the stealth library throw on every launch — 1,139 failures and 0 successes
+since April — while the runner reported it as active. It is fixed, and a layer
+that cannot be applied now fails loudly. The headless build no longer
+advertises itself through `navigator.userAgentData` or the `Sec-CH-UA` header,
+and a patch that corrupted `Object.getOwnPropertyDescriptor` on every page
+under test has been removed. These remain best-effort test aids, not a
+guarantee against bot detection.
+
+`--local-only` now actually isolates: WebSocket, EventSource, WebRTC and
+`sendBeacon` egress bypass request routing and were never blocked, and service
+workers were allowed through. `--cleanup` was a no-op in the two modes agents
+use. Site isolation, phishing detection and popup blocking are no longer
+disabled by default, since these profiles hold live authenticated cookies.
+
+New for test runs: `--ephemeral-profile` and `--storage-state` for hermetic
+authenticated flows, `pages`/`switch-page` so OAuth popups are reachable,
+`--fail-fast`, `--fast`, `--trace`/`--video`/`--har`, and
+`profiles --prune-older-than` for profile maintenance.
+
+---
+
+## What's New in v20.2.7
+
+### Session Saves Survive Agent Restarts
+Prism now remembers that a conversation successfully loaded its project context
+when the MCP server restarts or another Prism process handles the next request.
+`session_save_ledger` and `session_save_handoff` no longer fail with a false
+`context_not_loaded` error in that flow.
+
+The recovery remains fail-closed: authorization is limited to the exact project
+and conversation, expires with the existing context window, and stores no
+plaintext conversation identifier. Cross-project, forged, malformed, expired,
+or future-dated receipts are still rejected. The release also updates PostCSS
+to the patched 8.5.23 release.
+
+---
+
+## What's New in v20.3.0
+
+### Hybrid Memory Search (Portal Tier)
+
+`session_search_memory` on the portal tier (Synalux-backed installs) now
+fuses semantic similarity with exact-term lexical matching via weighted
+reciprocal-rank fusion. Measured on blind probes against a real
+8.5k-entry corpus: fused retrieval was **never worse** than semantic
+alone at top-5, and exact identifiers — TPNs, function names, error
+strings — now rescue queries that embedding similarity blurs. Results say how they were found — `hybrid retrieval`
+headers, per-hit `sem#/lex#` arms — and a lexical-only rescue is labelled
+`exact-term match` instead of pretending to a similarity score. Local
+SQLite installs keep pure vector search; hybrid needs the portal's
+lexical index.
+
+## What's New in v20.2.6
+
+### Safer Configuration Updates Across Every Agent
+`prism connect` now reads Claude, Cursor, Gemini, and Codex configuration
+through a single verified file snapshot, preventing another process from
+swapping a file between Prism's safety check and its read. Supported symlinked
+dotfiles still work, while dangling or planted symlinks fail loudly instead of
+being followed or overwritten. This release also carries the patched
+dependencies and cross-platform release checks introduced in v20.2.5.
+
+Cloud fallback is now documented consistently as Gemini 3.6 Flash. Plan
+ceilings govern automatic `prism_infer` routing; direct use of any downloaded
+model through local Ollama remains free on every tier.
+
+---
 
 ## What's New in v20.2.4
 
@@ -112,10 +232,16 @@ that would require a host lifecycle hook, launcher, extension, or Prism-owned
 panel. Context loading itself remains complete even when a host shortens the
 visible reply.
 
-Free accounts receive the protected 12-skill foundation. Paid accounts receive
-the current subscribed routing set. Upgrades install newly entitled packages;
-downgrades remove only Prism-owned packages while preserving local skills and
-locally modified conflicts.
+Free accounts receive only the public hook-free `prism-startup` package; the MCP
+server still supplies a compact, non-proprietary safety and evidence contract.
+Authenticated paid accounts receive the protected behavioral and engineering
+packages plus the current subscribed routing set. The paid
+`evidence-first-protocol` keeps ordinary coding lightweight: one correlated
+reproduction is enough to begin an edit, while strict acceptance starts only
+before a completion claim, push, or release and inspects only the exact artifacts
+used as proof. Upgrades install newly entitled packages; verified downgrades
+remove only Prism-owned packages while preserving local skills and locally
+modified conflicts.
 
 When upgrading an older Claude Code installation, `prism connect` removes only
 the exact Prism-owned startup, skill-sync, handoff, and drift hook actions from
@@ -354,7 +480,7 @@ Every `prism_infer` call tracks which model handled it (local Ollama vs cloud) a
     synalux-27b: 2 calls, 1,500 tokens, avg 1,100ms
 ```
 
-**Cloud tokens saved** is the honest routing metric — it accrues only when local Ollama handles a call that would otherwise have gone to Claude or the Synalux portal. A compact version appears inline after every 5th `prism_infer` call: `📊 local 10 (83%) · cloud 2 (17%) · ~11,570 tok · avg 1,240ms · 11,570 cloud tok saved`.
+**Cloud tokens saved** is the honest routing metric — it accrues only when local Ollama handles a call that would otherwise have gone to Synalux cloud inference. A compact version appears inline after every 5th `prism_infer` call: `📊 local 10 (83%) · cloud 2 (17%) · ~11,570 tok · avg 1,240ms · 11,570 cloud tok saved`.
 
 Local calls use actual Ollama token counts (`prompt_eval_count` / `eval_count` from Ollama); cloud calls use char/4 estimates. Metrics are tracked locally — no portal dependency, no env vars, works offline. Per-call data is also forwarded to the Synalux portal as best-effort analytics (independent of the display).
 
@@ -413,13 +539,18 @@ The free tier runs entirely on your machine. Paid tiers add cloud sync through t
 | | Local tier (free) | Cloud tier (paid) |
 |---|---|---|
 | Memory storage | Local SQLite | Synalux portal (Supabase-backed) |
-| Inference | Local Ollama models | Local models + cloud fallback |
+| Inference | Local Ollama models | Local models + Gemini 3.6 Flash fallback |
 | API keys required | None | Synalux subscription key |
 | Web search / scrape | Not included | Via Synalux portal (provider keys server-side) |
-| What leaves your machine | Nothing | Memory text + file paths + search queries, sent to the portal over TLS (PHI-redacted before transit) |
+| What leaves your machine | Nothing | Memory text, file paths, search queries, and inference prompts/drafts when their cloud feature is used, sent to the portal over TLS. Cloud memory writes are PHI-redacted; inference and route requests are transient. |
 | Works offline | ✅ | Local features yes; sync/cloud no |
 
-**Handling sensitive data.** All cloud writes pass through automatic redaction (SSNs, dates of birth, medical record numbers, phone numbers, emails, and clinical identifiers are stripped before transit). For regulated workloads, run the **local tier** for full air-gap, or use **Enterprise** which includes a HIPAA Business Associate Agreement.
+**Handling sensitive data.** Cloud memory writes pass through automatic
+redaction (SSNs, dates of birth, medical record numbers, phone numbers, emails,
+and clinical identifiers are stripped before storage). Cloud inference and
+route correction send the request over TLS for processing and do not store it
+as Prism memory; use `route_guard: "local"` or the **local tier** for a full
+air-gap. **Enterprise** includes a HIPAA Business Associate Agreement.
 
 ---
 
@@ -427,14 +558,26 @@ The free tier runs entirely on your machine. Paid tiers add cloud sync through t
 
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on BFCL function-calling and 100% on an internal 15-problem coding eval at $0 inference cost.
 
-`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Claude via the Synalux portal.
+`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
 
-| Model | Ollama tag | Size | [BFCL](https://gorilla.cs.berkeley.edu/blogs/12_bfcl_v3_multi_turn.html) Accuracy | Role | Tier |
+Every route-mode result is parsed locally and checked against `allowed_tools`
+before it reaches the host. Malformed or unadvertised calls become `NO_TOOL`.
+With `route_guard: "auto"` (the default), Standard and higher plans also send
+a well-formed draft for one of Prism's seven trained tools—or an unadvertised
+draft that may need correction—to Synalux for authenticated deterministic
+correction. Advertised custom host tools remain local. Set
+`route_guard: "local"` for a fully on-device route path.
+
+| Model | Ollama tag | Size | [BFCL](https://gorilla.cs.berkeley.edu/blogs/12_bfcl_v3_multi_turn.html) Accuracy | Role | Automatic routing tier |
 |---|---|---|---|---|---|
 | Qwen3.5-4B Q3_K_M | `prism-coder:2b` | 2.3 GB | 99.1% × 3 seeds | iPhone / mobile first gate | Free |
 | Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.4 GB | 100% × 3 seeds | Verifier | Free |
 | Qwen3.5-9B (LoRA) | `prism-coder:9b` | 5.8 GB | 100% × 3 seeds | Default router | Standard+ |
 | Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16 GB | 100% × 3 seeds | Quality tier (DeltaNet, 28.5 tok/s) | Advanced+ |
+
+These tiers control automatic `prism_infer` selection, not Ollama itself. Any
+user can run any downloaded on-device model directly through Ollama on every
+plan.
 
 Weights: [huggingface.co/dcostenco](https://huggingface.co/dcostenco) (public GGUF). Latency depends on model size and hardware — see [Benchmarks](#benchmarks) to measure it on your own machine rather than trusting a printed number.
 
@@ -445,36 +588,43 @@ query → prism-coder:9b (local router, default)
       → prism-coder:4b (grounding verifier)
       → prism-coder:2b (iPhone / mobile, auto-selected by RAM)
       → prism-coder:27b (complex tasks, on demand)
-      → cloud fallback (paid tiers, for max quality)
+      → Gemini 3.6 Flash cloud fallback (paid tiers, for max quality)
 ```
 
 ### Multi-Layer Verification
 
-Every tool-grounded answer on paid tiers passes through deterministic L3 routing rules and an NLI grounding verifier before reaching the user. Free-tier users get the deterministic gates (L1, L3-Tool, L3-Tier0) without the model-based NLI check.
+Route output and evidence-grounded answers use separate gates. Every tier gets
+the local route parser and advertised-tool registry; Standard and higher plans
+can add the private deterministic route correction. Evidence verification is
+opt-in (or automatic when evidence is supplied) and remains separate from route
+selection.
 
 | Layer | What | Model | Cost |
 |---|---|---|---|
 | **L1** | Crisis/medical safety gate | None (regex) | 0 ms |
-| **L3-Tool** | Tool name remap + false-positive rejection | None (deterministic) | 0 ms |
+| **L3-Registry** | Envelope validation + advertised-tool enforcement (all tiers) | None | 0 ms |
+| **L3-Route** | Authenticated deterministic route correction (Standard+) | None | Network latency |
 | **L3-Tier0** | Integer grounding (set membership) | None (deterministic) | 0 ms |
 | **L3-Tier2** | NLI verifier (claim → ENTAILED/NEUTRAL/CONTRADICTED) | prism-coder:2b | ~200 ms |
 | **L4** | Hallucination judge (opt-out for clinical) | prism-coder:4b | ~500 ms |
 
-Fail-closed on the verified path: when the grounding verifier runs (Standard tier and up), timeout, ambiguity, or missing evidence yields a refusal, not pass-through. Free-tier users get the deterministic L1/L3-Tool gates but not the NLI verifier.
+Fail-closed on the verified path: when the grounding verifier runs, timeout,
+ambiguity, or missing evidence yields a refusal, not pass-through. If the paid
+route correction is unavailable, the local registry still blocks malformed
+and unadvertised calls and reports an allowed preserved route as degraded.
 
 ---
 
 ## Benchmarks
 
-**Reproduce every number yourself.** All evals are open-source and self-contained:
+Published benchmark numbers are concise summaries of internal deterministic
+evaluation. Evaluators, exhaustive cases, exact tier-routing matrices, and raw
+model outputs stay in the private engineering repository and are not included
+in the npm package or public source tree.
 
-```bash
-git clone https://github.com/dcostenco/prism-coder && cd prism-coder
-pip install anthropic requests
-python3 tests/benchmarks/prism-routing-100/benchmark.py --models 2b 4b 9b 27b
-```
-
-**Routing eval (115 cases, 12 categories, 3-seed mean).** Routing accuracy includes the deterministic L3 correction layer — the same rules that run in production. On this narrow tool-routing task all fleet models achieve near-perfect accuracy. Be honest with yourself about what that means: the eval is **near-saturated** for this taxonomy — it measures whether the right one of a small set of MCP tools is selected, not general capability. The useful takeaway is **offline routing reliability at zero cost**, not that a 2.3 GB model rivals a frontier model in general.
+**Routing evaluation.** On a narrow tool-selection suite, the fleet achieved
+near-saturated results across three seeds. This measures offline MCP routing
+reliability, not general model capability.
 
 | Model | Routing accuracy | Notes |
 |---|---|---|
@@ -484,90 +634,17 @@ python3 tests/benchmarks/prism-routing-100/benchmark.py --models 2b 4b 9b 27b
 
 **Memory uplift (LoCoMo-Plus, self-published).** A separate long-context dialogue benchmark ([dcostenco/Locomo-Plus](https://github.com/dcostenco/Locomo-Plus)) measures how much structured memory helps a base model retain multi-day context. Results show large gains when a model is paired with Prism memory versus running raw. Note this benchmark is authored, run, and LLM-judged by this project — treat it as a reproducible demonstration, not an independent third-party result, and run it yourself with the commands in that repo.
 
-### Code Generation Quality (27B vs Claude Opus)
+**Code generation evaluation.** In a small July 2026 deterministic execution
+check, the local 9B passed 2/3 tasks; the local 27B and Gemini 3.6 Flash each
+passed 3/3. This is a self-published regression signal, not an independent
+leaderboard or a claim of broad model equivalence.
 
-Three progressively harder Python tasks run through `prism_infer(mode:"code", think:true)` on the local 27B and compared with Claude Opus. Both produce correct, production-quality code. The 27B is slightly more verbose (docstrings, examples); Opus is slightly tighter (`__slots__`, early-exit DFS). On routine coding the 27B at $0 replaces cloud calls entirely.
+### Cloud Escalation (`cloud_fallback: true`)
 
-| Task | Local 27B | Claude Opus | Verdict |
-|------|-----------|-------------|---------|
-| Fibonacci with memoization | `@lru_cache`, ValueError on negative, docstring | Nested `_fib` to keep cache private | Both correct, equivalent |
-| LRU Cache (OrderedDict, O(1)) | `Any` keys, isinstance capacity check, `__repr__` | `Hashable` key type (more precise), same ops | Both correct, Opus marginally tighter |
-| Trie with autocomplete | `.lower()` normalization, collect+sort+slice | `__slots__` on TrieNode, early-exit DFS at limit | Both correct, Opus slightly more optimized |
-
-<details>
-<summary>Local 27B output — Trie with autocomplete (hardest task)</summary>
-
-```python
-class TrieNode:
-    def __init__(self):
-        self.children: dict[str, 'TrieNode'] = {}
-        self.is_end_of_word: bool = False
-
-class Trie:
-    def __init__(self):
-        self.root: TrieNode = TrieNode()
-
-    def insert(self, word: str) -> None:
-        node = self.root
-        for char in word.lower():
-            if char not in node.children:
-                node.children[char] = TrieNode()
-            node = node.children[char]
-        node.is_end_of_word = True
-
-    def search(self, word: str) -> bool:
-        node = self._get_node(word.lower())
-        return node is not None and node.is_end_of_word
-
-    def starts_with(self, prefix: str) -> bool:
-        return self._get_node(prefix.lower()) is not None
-
-    def autocomplete(self, prefix: str, limit: int = 5) -> list[str]:
-        node = self._get_node(prefix.lower())
-        if node is None:
-            return []
-        results: list[str] = []
-        self._collect_words(node, prefix.lower(), results)
-        results.sort()
-        return results[:limit]
-
-    def _get_node(self, key: str) -> 'TrieNode | None':
-        node = self.root
-        for char in key:
-            if char not in node.children:
-                return None
-            node = node.children[char]
-        return node
-
-    def _collect_words(self, node: TrieNode, prefix: str, results: list[str]) -> None:
-        if node.is_end_of_word:
-            results.append(prefix)
-        for char, child in sorted(node.children.items()):
-            self._collect_words(child, prefix + char, results)
-```
-
-</details>
-
-| Metric | Local 27B | Cloud (Opus) |
-|--------|-----------|-------------|
-| Latency (Trie task) | ~30s | ~8s |
-| Cost | $0 | ~$0.05 |
-| Think mode | Enabled (stripped before serving) | N/A |
-| Quality gate | Passed (no escalation needed) | N/A |
-
-### Cloud Escalation in Practice (`cloud_fallback: true`)
-
-The same three tasks with `cloud_fallback: true` — the quality gate decides whether local output is good enough or needs cloud escalation.
-
-| Task | used_cloud | Quality Gate | Latency | What happened |
-|------|:----------:|-------------|---------|---------------|
-| Fibonacci (simple) | **no** | Passed | 11s | 27B served directly, $0 |
-| LRU Cache (medium) | **no** | Passed | 21s | 27B served directly, $0 |
-| Trie (hard) | **yes** | `loop_detected` | 55s | 27B looped → gate caught it → escalated to cloud 27B |
-
-The quality gate detected repeated sentences (≥3 of the same sentence in ≥6 total) in the 27B's Trie output and escalated automatically. The cloud fallback returned clean code. On a second run of the same prompt, the 27B produced clean output without escalation — the loop is stochastic, not systematic.
-
-**Takeaway:** for ~80–90% of coding tasks, the 27B handles everything locally at $0. The quality gate + cloud escalation exists as a safety net for the remaining cases where the local model loops, truncates, or produces empty output. Paid tiers get automatic escalation; free tier gets the local result with a warning.
+Prism always tries an eligible local model first. If the quality gate detects
+an empty, truncated, think-only, or looping response, paid tiers can retry the
+request through Gemini 3.6 Flash. Free-tier routing stays local and reports the
+quality-gate outcome without making a cloud call.
 
 ---
 
@@ -618,17 +695,17 @@ and [Amazon Q Developer](https://aws.amazon.com/q/developer/pricing/).
 
 ## Plans
 
-All on-device models are free to run locally via Ollama on every tier. A subscription gates **cloud** features, higher model ceilings, and increased limits. Local model ceilings are advisory — on-device models run on your Ollama regardless of plan; the ceiling gates cloud inference and `prism_infer` routing.
+All on-device models are free to run locally via Ollama on every tier. A subscription gates **cloud** features, higher automatic-routing ceilings, and increased limits. On-device models run through your Ollama regardless of plan; the ceiling applies only to cloud inference and automatic `prism_infer` routing.
 
 | | **Free** | **Standard** $19/mo | **Advanced** $49/mo | **Enterprise** $99/mo |
 |---|---|---|---|---|
 | Seats | 1 | 1 | up to 5 | up to 25 |
-| Local model ceiling | up to 4b | up to 9b | up to 27b | up to 27b |
+| Automatic `prism_infer` ceiling | up to 4b | up to 9b | up to 27b | up to 27b |
 | Cloud inference | -- | ✅ | ✅ | ✅ (priority) |
 | Cloud Coder (Web IDE) | -- | ✅ | ✅ | ✅ (priority) |
 | Cloud search | -- | ✅ | ✅ | ✅ |
 | Max output tokens | 512 | 1,024 | 2,048 | 4,096 |
-| Cloud fallback | -- | Claude Opus 4.7 | Claude Opus 4.7 | Priority + Opus 4.7 |
+| Cloud fallback | -- | Gemini 3.6 Flash | Gemini 3.6 Flash | Gemini 3.6 Flash (priority) |
 | Grounding verifier (fact-check AI output) | -- | ✅ | ✅ | ✅ |
 | Memory sync (cloud) | -- | ✅ | ✅ | ✅ |
 | Knowledge / session memory | limited | unlimited | unlimited | unlimited |
@@ -650,12 +727,24 @@ Prism exposes 40+ MCP tools. The core memory loop:
 | `session_save_ledger` | Append an immutable session log entry |
 | `session_save_handoff` | Save live state for the next session |
 | `knowledge_search` | Semantic + keyword search over all memories |
-| `query_memory_natural` | Natural-language Q&A over the memory store |
+| `query_memory_natural` | Memory-first Q&A with a grounded live-source fallback on paid tiers |
 | `session_detect_drift` | Detect when a session has drifted from its goal |
 | `verify_behavior` | Pre-edit scenario challenge — catch bad changes before they happen |
 | `knowledge_ingest` | Teach Prism a codebase or document |
 | `prism_infer` | Local-first inference (route/chat/code modes, thinking, cloud escalation) |
 | `inference_metrics` | Session delegation or persisted MCP + VS Code panel local/cloud stats |
+
+### `query_memory_natural` — memory first, current sources when needed
+
+Ask one natural-language question instead of choosing separate memory, search,
+scrape, and inference tools. Prism searches its accumulated project memory
+first. If no useful evidence exists, paid tiers run one bounded Synalux search
+(Firecrawl, Gemini 3.6 Google Search grounding, then legacy Brave fallback),
+resolve and preserve the source URLs, scrape the leading page, and ask a
+RAM-safe local Prism Coder model to answer from that evidence. The paid-tier
+Gemini 3.6 verifier checks the draft before it is served. Reserved or uncertain
+clinical content never enters the web-grounded local path; it follows Prism's
+cloud-or-refuse safety boundary.
 
 ### `prism_infer` — local-first inference with cloud escalation
 
@@ -667,7 +756,7 @@ prism_infer({
     model_ceiling: "27b", // use the quality tier
 })
 // → 27B generates code locally ($0), with thinking for quality
-// → If quality gate fails + paid tier → auto-escalate to Claude
+// → If quality gate fails + paid tier → auto-escalate to Gemini 3.6 Flash
 ```
 
 | Mode | Think | Model | Use case |
@@ -694,7 +783,7 @@ Call `inference_metrics` anytime mid-session to see how many `prism_infer` calls
 
 The same block also appears automatically in `session_save_ledger` and `session_save_handoff` responses at session end.
 
-**Note:** The default session view tracks this MCP process's `prism_infer` delegation. The all-time view combines persisted MCP calls with Synalux VS Code panel inference. Neither view includes your host model's (Claude's) own token spend; use Claude Code's `/cost` command for that.
+**Note:** The default session view tracks this MCP process's `prism_infer` delegation. The all-time view combines persisted MCP calls with Synalux VS Code panel inference. Neither view includes the host agent's own token spend; use that host's native usage reporting when available.
 
 ### Local-model delegation (default)
 
@@ -883,7 +972,11 @@ ollama pull dcostenco/prism-coder:9b       # default router
 export LOCAL_LLM_URL=http://localhost:11434
 ```
 
-Routing is automatic: `9b → 4b → cloud fallback` on desktop/server, `2b → cloud fallback` on mobile/iPhone. For iOS or another machine on the same network, run `OLLAMA_HOST=0.0.0.0 ollama serve` and point `LOCAL_LLM_URL` at the host's IP.
+Self-hosted routing stays local: `9b → 4b` on desktop/server and `2b` on
+mobile/iPhone, with 27B available when installed and RAM-safe. Synalux-hosted
+paid tiers can use Gemini 3.6 Flash as the cloud fallback. For iOS or another
+machine on the same network, run `OLLAMA_HOST=0.0.0.0 ollama serve` and point
+`LOCAL_LLM_URL` at the host's IP.
 
 ---
 
@@ -934,7 +1027,7 @@ It reads `~/.prism-mcp/data.db` and POSTs entries to the portal. Ledger entries 
 
 | Feature | Details |
 |---------|---------|
-| Local inference | Ollama via `prism_infer`, capped at the 4B model tier |
+| Local inference | Direct Ollama use is unrestricted; automatic `prism_infer` routing selects up to 4B |
 | Session memory | Persistent sessions, handoffs, ledger — all local SQLite |
 | Knowledge search | Semantic search across session history |
 | Skills | All skills available locally (run `sync-skills.sh` to populate) |
@@ -946,7 +1039,7 @@ Everything in Free, plus:
 
 | Feature | Details |
 |---------|---------|
-| Model ceiling | Up to 27B locally + cloud cascade (9B → 27B → Claude) when local is unavailable |
+| Model ceiling | Automatic `prism_infer` routing up to 27B + Gemini 3.6 Flash fallback when local is unavailable |
 | Skill routing | Portal resolves which skills to load based on your project and prompt |
 | Cross-device memory | Supabase cloud sync — sessions survive across machines |
 | Grounding verifier | L3 NLI verification on model outputs |

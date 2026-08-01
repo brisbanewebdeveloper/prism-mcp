@@ -2,6 +2,240 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.3.2] - 2026-07-30 — Web Scholar: SSRF Hardening
+
+Security release. Web Scholar fetches article URLs taken from search-engine
+output, so the target is attacker-influenceable through SEO poisoning, and
+what it scrapes is persisted into the memory corpus and passed to the
+configured LLM. A successful redirection to a local address was therefore a
+read of an internal service plus exfiltration, not just an internal request.
+
+Reachable only when scholar runs — `scholar_research`, or the background loop
+when `PRISM_SCHOLAR_ENABLED=true` — and the attacker also controls DNS or a
+search result. Upgrade if you use Web Scholar at all.
+
+### Fixed
+- **Six spellings of a local address bypassed the host guard**, which matched
+  string prefixes rather than parsing the address:
+  - `[::1]` — `URL.hostname` keeps the brackets, so the `'::1'` comparison missed
+  - `127.0.0.2` — only `127.0.0.1` was enumerated, not all of `127.0.0.0/8`
+  - `0.0.0.0` — never considered; routes to the local host
+  - `[::ffff:127.0.0.1]` — IPv4-mapped IPv6 was not decoded
+  - `localhost.` — a trailing-dot FQDN defeated the `.localhost`, `.internal`
+    and `.local` suffix checks at once, and still resolves to `127.0.0.1`
+  - `[64:ff9b::7f00:1]` — NAT64 (RFC 6052) embeds IPv4 in its low 32 bits
+- **DNS rebinding.** Every check read the URL string, so a hostname the
+  attacker controls passed them all and could still resolve to `127.0.0.1`.
+  Targets are now resolved before connecting, every returned address is
+  validated, and the request is pinned to those addresses so the name is never
+  resolved a second time — which also closes the check-to-connect window.
+- **Scrape failures were swallowed** by a bare `catch {}`, so a run that
+  fetched nothing was indistinguishable from one that worked. Failures are now
+  recorded, logged, and reported.
+
+### Added
+- Host classification additionally covers CGNAT, benchmarking, multicast and
+  reserved ranges, and IPv6 unique-local and link-local.
+- `PRISM_SCHOLAR_SCRAPE_BUDGET_MS` (default 60s) bounds the scrape loop.
+  Scrapes are sequential with a 15s per-fetch timeout and the article count is
+  env-tunable, so a raised count previously became a multi-minute stall.
+- An 8 MiB response cap, which the previous `fetch` call did not have.
+
+### Notes
+- Private, link-local and metadata ranges are refused even under
+  `PRISM_DEV_MODE=1`; that flag now only relaxes loopback.
+- A compromised resolver, and a public address that a downstream device maps
+  to something local, remain outside what a client-side guard can detect.
+
+## [20.3.1] - 2026-07-29 — Prism Browser: Real Failure Signals
+
+### Fixed
+- **The stealth library had never been applied.** `Stealth(webgl_renderer=...)`
+  is not a valid keyword (it is `webgl_renderer_override`), and the exception
+  was swallowed into the audit log: 1,139 failures and 0 successes since
+  2026-04-14, while `--stealth full` reported `playwright-stealth-v2` as
+  active. Fixed, and a layer that cannot be applied now fails loudly instead
+  of degrading silently.
+- **The headless build announced itself.** `navigator.userAgentData` and the
+  `Sec-CH-UA` request header both advertised `HeadlessChrome` while the UA
+  string claimed Chrome. Identity is now set through CDP
+  `Emulation.setUserAgentOverride` with full `userAgentMetadata`; request
+  interception cannot fix client hints because Chromium re-adds them after
+  the interception point.
+- **A patch corrupted the page under test.** The
+  `Object.getOwnPropertyDescriptor` override broke descriptor reads on
+  iframes *and* on ordinary objects carrying a `contentWindow` key, was
+  readable via `toString`, and was bypassed in one line by
+  `Object.getOwnPropertyDescriptors`. Removed.
+- **`open` discarded the HTTP status**, so a 500 reported `status: ok`. It now
+  returns `http_status` and fails on 400 or higher (`--allow-http-error` opts
+  out).
+- **`--cleanup` was a no-op** in pipe and repl mode, the two modes agents use.
+- **Screenshots could collide** within the same second and were never checked
+  for an empty frame.
+- **`--local-only` did not isolate.** WebSocket, EventSource, WebRTC and
+  `sendBeacon` egress bypass request routing entirely; service workers were
+  allowed. All are blocked now, and the previously unlogged escape is audited.
+- **Audited URL paths were not sanitized**, so record identifiers in a path
+  reached a log documented as content-free. The FileVault check now fails
+  closed, and the fingerprint validator performs a real check instead of
+  recording `consistent=true` unconditionally.
+
+### Added
+- Assertions: `assert-text`, `assert-visible`, `assert-hidden`,
+  `assert-count`, `assert-url`, `assert-title`, `assert-eval`, and
+  `assert-no-page-errors`. `eval` alone cannot fail a run, because a falsy
+  result is a legitimate value.
+- Console errors, uncaught page exceptions and failed requests are captured
+  and attached to command output; `eval` returns native JSON with its type
+  rather than a Python `repr`.
+- `pages` / `switch-page` / `close-page` so popups are reachable,
+  `--ephemeral-profile` and `--storage-state` for hermetic authenticated runs,
+  `--fast`, `--fail-fast`, `--trace`, `--video`, `--har`, and
+  `profiles --prune-older-than` for profile maintenance.
+
+### Changed
+- Site isolation, client-side phishing detection and popup blocking are no
+  longer disabled, and geolocation is no longer auto-granted; profiles hold
+  live authenticated cookies.
+- `--viewport` fails loudly instead of silently falling back, and arguments
+  accept shell-style quoting so a selector may contain spaces.
+
+## [20.3.0] - 2026-07-28 — Semantic Search Restored + Hybrid Retrieval
+
+### Fixed
+- **Embedding writes were silently lost on paid tier** — three stacked faults
+  meant 0 of 8,560 ledger rows carried a vector and semantic search returned
+  nothing for every query: `save_ledger` returned no row id, `patchLedger`
+  wrote to a direct Supabase URL paid installs don't have, and the portal had
+  no action to store a vector. All three fixed; existing corpus backfilled.
+- **Health check certified the outage as healthy** — `missingEmbeddings` was
+  hardcoded to 0. It now reports the portal's real count, and says coverage
+  "could not be verified" when the portal is unreachable instead of lying.
+- **`session_backfill_embeddings` could not see what needed repairing**
+  (direct-Supabase read → NXDOMAIN). Now portal-routed; verified repairing 9
+  rows in production.
+- **`knowledge_search` returned nothing for natural-language queries** —
+  ranked relaxing search with honest `match_mode` (widened results are
+  labelled leads, not exact hits).
+
+### Added
+- **Hybrid retrieval** (portal tier): `session_search_memory` fuses semantic
+  similarity with exact-term lexical matching via weighted RRF. On blind
+  probes: never worse than semantic alone, and rescues exact-identifier
+  queries (TPNs, function names) that embeddings blur. Results state how they
+  were found (`hybrid retrieval`, per-hit `sem#/lex#`, `exact-term match`).
+  Local SQLite installs keep pure vector search.
+
+## [Unreleased]
+
+### Fixed
+- Handoff history snapshots now retain the effective role and active branch,
+  and save responses distinguish a durable primary handoff from a failed
+  optional time-travel snapshot.
+
+## [20.2.9] - 2026-07-26 — Reliable Releases and Sessions
+
+### Fixed
+- npm publication now fails before building when the checkout contains
+  uncommitted or untracked files, preventing immutable registry artifacts from
+  silently diverging from their reviewed Git source.
+- Repacked the guarded-routing and native-acceptance release from its clean,
+  tested commit.
+- Removed the release-only `current-staging-acceptance` procedure from the
+  protected startup floor. Ordinary coding sessions now rely on the phased
+  `evidence-first-protocol`: one correlated reproduction during iteration,
+  with strict artifact inspection reserved for completion, push, and release.
+- Restricted unauthenticated and Free native manifests to the public hook-free
+  startup package. Full protected skill files now require an authenticated paid
+  entitlement, and Free startup no longer advertises paid package names.
+- Realigned paid offline and native manifest contracts with the portal's
+  12-guardrail protected floor plus hook-free startup.
+- Delivered the same compact evidence workflow through managed startup
+  instructions for Claude Code, Gemini CLI, and Codex, and through MCP
+  initialize instructions for Cursor and Claude Desktop. Screenshot proof now
+  explicitly requires the active agent to inspect the issue-specific visible
+  state itself instead of asking the user to verify it.
+- Behavioral verification now honors subscription credentials loaded from
+  Prism's local config without requiring a key copied into host configuration. A packaged
+  `prism verify-behavior` fallback preserves the real fail-closed scenario when
+  a host's long-lived MCP transport has closed, and malformed portal responses
+  now fail closed instead of being treated as permission to skip verification.
+- Long-lived MCP servers now probe idle transports and exit cleanly when the
+  client channel is gone, allowing native hosts to restart Prism instead of
+  repeatedly returning `Transport closed`.
+- Synalux handoff saves now unwrap and validate the portal's authoritative OCC
+  result, persist authenticated history snapshots before short-lived clients
+  exit, and fail loudly on malformed success envelopes.
+- Optional semantic-index initialization can no longer turn a successfully
+  persisted ledger, handoff, or experience into a false save failure. Responses
+  now distinguish primary persistence from optional indexing.
+- The Python coding gate now ignores Windows Store command aliases that never
+  start the parser, preventing valid same-tier code repairs from being rejected
+  as syntax errors on Windows.
+
+### Tests
+- Added regressions proving clean committed checkouts may publish while
+  modified tracked files and untracked source files fail closed.
+- Added regressions proving Free/native manifests install only public startup,
+  never retain paid packages on a verified downgrade, and do not require or
+  install the release-only staging gate.
+- Added all-host instruction contracts plus same-tier refresh coverage that
+  prunes the former release gate from every Prism-managed native skill root.
+- Added CLI fallback and OAuth-only behavioral-verifier regressions so a dead
+  MCP channel cannot be replaced with a self-authored scenario.
+- Added healthy, rejected, timed-out, and closed MCP transport checks; current
+  and legacy Synalux handoff-envelope contracts; awaited snapshot behavior; and
+  optional-index initialization failure coverage.
+- Added a Windows interpreter-selection regression that distinguishes an
+  unavailable command alias from a parser-confirmed Python syntax failure.
+
+## [20.2.8] - 2026-07-26 — Guarded Routing and Native Acceptance
+
+### Added
+- Added caller-supplied `allowed_tools` and `route_guard: auto|local` controls
+  to direct `prism_infer` route mode.
+- Added authenticated deterministic route correction for subscribed callers,
+  while retaining a fully local override and local enforcement on every tier.
+  Advertised custom host tools remain local instead of being sent to the
+  seven-tool Synalux correction endpoint.
+- Added `current-staging-acceptance` to the protected universal skill floor.
+  `prism connect` materializes it for every supported native host and session
+  startup reports it alongside the existing evidence-first guardrail.
+
+### Fixed
+- Canonical Prism tool-call envelopes no longer fail the generic quality gate
+  as chat-style tool-call bleed.
+- Malformed and unadvertised route calls are suppressed before reaching a
+  host, and invalid portal corrections cannot replace tool arguments.
+
+### Tests
+- Added parser, advertised-registry, fallback, entitlement, argument-integrity,
+  JWT-refresh, HTTP-boundary, and known routing-failure regressions.
+- Added free-tier manifest, native-host materialization, offline injection,
+  startup reporting, and protected-budget regressions for the acceptance gate.
+
+## [20.2.7] - 2026-07-25 — Reliable Cross-Process Session Saves
+
+### Fixed
+- Persisted successful context-load receipts locally so
+  `session_save_ledger` and `session_save_handoff` continue to recognize the
+  active conversation after an MCP server restart or process handoff.
+- Kept context authorization scoped to the exact project and conversation,
+  bounded by the existing six-hour lifetime, and fail-closed for malformed,
+  forged, future-dated, expired, and cross-project receipts.
+- Stored only one-way scope hashes, never plaintext conversation or project
+  identifiers.
+
+### Tests
+- Added restart and sibling-process recovery coverage plus malformed, forged,
+  future-dated, expired, cross-project, storage-failure, and plaintext-leak
+  regressions.
+
+### Security
+- Updated PostCSS to 8.5.23, resolving the high-severity previous-source-map
+  path-traversal advisory and deduplicating Vite onto the patched release.
+
 ## [20.2.6] - 2026-07-22 — Safe Host Configuration Reads
 
 ### Fixed

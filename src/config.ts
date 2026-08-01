@@ -573,6 +573,12 @@ export const PRISM_SCHOLAR_INTERVAL_MS = parseInt(
 export const PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN = parseInt(
   process.env.PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN || "3", 10
 );
+// Wall-clock ceiling for a run's scrape loop. Scrapes are sequential with a
+// 15s per-fetch timeout, so without this a raised article count turns into a
+// multi-minute stall.
+export const PRISM_SCHOLAR_SCRAPE_BUDGET_MS = parseInt(
+  process.env.PRISM_SCHOLAR_SCRAPE_BUDGET_MS || "60000", 10
+);
 export const PRISM_SCHOLAR_TOPICS = (process.env.PRISM_SCHOLAR_TOPICS || "ai,agents")
   .split(",")
   .map(t => t.trim());

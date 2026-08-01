@@ -19,6 +19,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 as w
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { EVIDENCE_WORKFLOW_POLICY_LINES } from "./evidenceWorkflowPolicy.js";
 import { LOCAL_FIRST_POLICY_ID, LOCAL_FIRST_POLICY_LINES } from "./localFirstPolicy.js";
 
 export const CONNECT_HOSTS = [
@@ -155,6 +156,8 @@ const CODEX_STARTUP_BODY = [
   "block is managed by `prism connect`; do not edit it manually.",
   "",
   ...LOCAL_FIRST_POLICY_LINES,
+  "",
+  ...EVIDENCE_WORKFLOW_POLICY_LINES,
 ] as const;
 const CONNECT_STORAGE_BACKENDS = ["auto", "local", "synalux", "supabase"] as const;
 const LEGACY_CLAUDE_PROJECT_PRISM_ENTRY = {
@@ -714,6 +717,8 @@ function serializeClaudeStartupBlock(newline: string): string {
     "managed by `prism connect`; do not edit it manually.",
     "",
     ...LOCAL_FIRST_POLICY_LINES,
+    "",
+    ...EVIDENCE_WORKFLOW_POLICY_LINES,
     CLAUDE_STARTUP_MANAGED_END,
     "",
   ].join(newline);
@@ -797,6 +802,8 @@ function serializeGeminiStartupBlock(newline: string): string {
     "session_detect_drift calls. This block is managed by `prism connect`; do not edit it manually.",
     "",
     ...LOCAL_FIRST_POLICY_LINES,
+    "",
+    ...EVIDENCE_WORKFLOW_POLICY_LINES,
     GEMINI_STARTUP_MANAGED_END,
     "",
   ].join(newline);

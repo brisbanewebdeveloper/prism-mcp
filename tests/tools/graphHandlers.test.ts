@@ -20,6 +20,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Mock Dependencies ──────────────────────────────────────────
+const { mockDebugLog } = vi.hoisted(() => ({
+  mockDebugLog: vi.fn(),
+}));
+
+vi.mock("../../src/utils/logger.js", () => ({
+  debugLog: mockDebugLog,
+}));
+
 // Mock storage — synthesizeEdgesCore calls getStorage() internally
 vi.mock("../../src/storage/index.js", () => ({
   getStorage: vi.fn(),
@@ -91,6 +99,37 @@ describe("sessionSearchMemoryHandler", () => {
     expect(text).toContain("configured embedding provider");
     expect(text).toContain("Ollama");
     expect(text).toContain("No provider configured");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// KNOWLEDGE SEARCH — explicit empty-result contract
+// ═══════════════════════════════════════════════════════════════════
+
+describe("knowledgeSearchHandler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders a successful zero-row response as a memory miss", async () => {
+    const storageMock = {
+      searchKnowledge: vi.fn(async () => ({ count: 0, results: [] })),
+    };
+    (getStorage as any).mockResolvedValue(storageMock);
+
+    const out = await graphHandlers.knowledgeSearchHandler({
+      query: "unfamiliar SDK syntax",
+      project: "prism",
+      limit: 5,
+    });
+
+    expect(out.isError).toBe(false);
+    expect(out.content[0].text).toContain("No knowledge found");
+    expect(out.content[0].text).not.toContain("Found 0 knowledge entries");
+    expect(out.content).toHaveLength(1);
+    expect(mockDebugLog.mock.calls.flat().join("\n")).not.toContain(
+      "unfamiliar SDK syntax",
+    );
   });
 });
 

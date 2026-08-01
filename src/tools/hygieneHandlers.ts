@@ -132,23 +132,36 @@ export async function backfillEmbeddingsHandler(args: unknown) {
 
   const storage = await getStorage();
 
-  // Find entries missing embeddings
-  const params: Record<string, string> = {
-    "embedding": "is.null",
-    "archived_at": "is.null",
-    user_id: `eq.${PRISM_USER_ID}`,
-    order: "id.asc",
-    limit: String(safeLimit),
-    select: "id,summary,decisions,project,embedding_status,embedding_retry_count,embedding_last_attempt_at",
-  };
-  if ((args as any)._cursor_id) {
-    params.id = `gt.${(args as any)._cursor_id}`;
-  }
-  if (project) {
-    params.project = `eq.${project}`;
+  // Find entries missing embeddings. Prefer the dedicated method: the old
+  // PostgREST-param path below goes through getLedgerEntries, which
+  // SynaluxStorage inherits as a DIRECT Supabase read — paid-tier installs
+  // have no SUPABASE_URL, so that read dies with NXDOMAIN and this tool
+  // could never see what it was supposed to repair.
+  let entries: unknown[];
+  if (typeof storage.getEntriesMissingEmbeddings === "function") {
+    entries = await storage.getEntriesMissingEmbeddings({
+      limit: safeLimit,
+      ...(project ? { project } : {}),
+      ...((args as any)._cursor_id ? { cursorId: (args as any)._cursor_id } : {}),
+    });
+  } else {
+    const params: Record<string, string> = {
+      "embedding": "is.null",
+      "archived_at": "is.null",
+      user_id: `eq.${PRISM_USER_ID}`,
+      order: "id.asc",
+      limit: String(safeLimit),
+      select: "id,summary,decisions,project,embedding_status,embedding_retry_count,embedding_last_attempt_at",
+    };
+    if ((args as any)._cursor_id) {
+      params.id = `gt.${(args as any)._cursor_id}`;
+    }
+    if (project) {
+      params.project = `eq.${project}`;
+    }
+    entries = await storage.getLedgerEntries(params);
   }
 
-  const entries = await storage.getLedgerEntries(params);
   const eligibleEntries = useRetryEligibilityFilter
     ? entries.filter((entry: any) => isEmbeddingRetryEligible({
       summary: String(entry.summary ?? ""),

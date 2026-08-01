@@ -12,7 +12,7 @@
  *   4. On local fail, if cloud_fallback=true:
  *        - exchange synalux_sk_ → JWT (cached)
  *        - POST synalux portal /api/v1/prism/inference
- *        - portal runs its own cascade (9B/27B/Claude by tier)
+ *        - portal serves Gemini 3.6 Flash according to the user's tier
  *   5. Return { output, backend, model_picked, ram_free_mb, latency_ms, used_cloud }
  *
  * `prism_infer` is a thin client. It never calls Anthropic / OpenRouter
@@ -38,12 +38,25 @@ import { getEntitlements, clampCeiling, type PrismEntitlements, FREE_ENTITLEMENT
 import { ddLog } from "../utils/ddLogger.js";
 import { stripThink } from "../utils/thinkStrip.js";
 import { passesQualityGate } from "../utils/qualityGate.js";
+import {
+    applyDeterministicCodingRepairs,
+    buildCodingRepairPrompt,
+    passesCodingQualityGate,
+} from "../utils/codingQualityPolicy.js";
 import { checkInputSafety, checkOutputSafety } from "../utils/safetyGate.js";
 import { callLayer1 as defaultCallLayer1, keywordBackstop, type Layer1Verdict } from "../utils/layer1.js";
 import { recordInference, recordThinkOnlyRetry, formatInferenceMetrics, estimateTokens } from "../utils/inferenceMetrics.js";
 import { appendInferMetric } from "../storage/inferMetricsLedger.js";
 import { getStorage } from "../storage/index.js";
 import { getSetting } from "../storage/configStorage.js";
+import {
+    DEFAULT_PRISM_ROUTE_TOOLS,
+    applyLocalRouteContract,
+    isRouteToolName,
+    parseRouteOutput,
+    validatePortalRouteGuardOutcome,
+    type RouteGuardOutcome,
+} from "../utils/routeContract.js";
 
 export type InferContextDepth = "quick" | "standard" | "deep";
 
@@ -75,6 +88,8 @@ const MEMORY_HISTORY_LIMITS: Readonly<Record<InferContextDepth, number>> = {
 };
 const FAST_TASK_COMPLEXITY_MAX = 3;
 const BALANCED_TASK_COMPLEXITY_MAX = 6;
+const MAX_CODING_REPAIR_ATTEMPTS = 2;
+const MAX_ROUTE_TOOLS = 64;
 
 // ─── Tool Definition ────────────────────────────────────────────
 
@@ -85,7 +100,7 @@ export const PRISM_INFER_TOOL: Tool = {
         "Owns model selection across 27B / 9B / 4B / 2B using an explicit `model_ceiling` or " +
         "the caller's `task_complexity`, then validates loaded memory size, model context, " +
         "entitlements, installed models, and free RAM at call time. " +
-        "Falls through to the synalux portal cloud cascade (9B → 27B → Claude Opus 4.7) " +
+        "Falls through to the Synalux portal Gemini 3.6 Flash cloud fallback " +
         "only when local is unviable AND `cloud_fallback=true`. " +
         "When `project` is provided, loads the dashboard-configured quick/standard/deep handoff and bounded history " +
         "as untrusted historical context for a memory-aware local worker. " +
@@ -194,6 +209,24 @@ export const PRISM_INFER_TOOL: Tool = {
                     "In chat/code modes, prefers the 27B tier and enables <think> reasoning.",
                 default: "route",
             },
+            allowed_tools: {
+                type: "array",
+                maxItems: MAX_ROUTE_TOOLS,
+                items: { type: "string" },
+                description:
+                    "Tool names actually advertised to the route model. In route mode, " +
+                    "well-formed calls outside this registry are suppressed before return. " +
+                    "Defaults to Prism's seven trained routing tools.",
+            },
+            route_guard: {
+                type: "string",
+                enum: ["auto", "local"],
+                description:
+                    "Route-output guard. 'auto' (default) applies the local advertised-tool " +
+                    "contract and, for authenticated paid plans, the private Synalux deterministic " +
+                    "route correction. 'local' keeps the prompt and draft entirely on-device.",
+                default: "auto",
+            },
             think: {
                 type: "boolean",
                 description:
@@ -257,6 +290,10 @@ export interface PrismInferArgs {
     verifier_timeout_ms?: number;
     /** Execution mode: route (default), chat, code. */
     mode?: "route" | "chat" | "code";
+    /** Tool names actually advertised to the route model. */
+    allowed_tools?: string[];
+    /** auto = local contract + subscribed portal correction; local = on-device contract only. */
+    route_guard?: "auto" | "local";
     /** Enable thinking (<think> blocks). Default: true for chat/code, false for route. */
     think?: boolean;
     /** Session key. Same id used by session_load_context / session_save_ledger.
@@ -292,6 +329,12 @@ export function isPrismInferArgs(args: unknown): args is PrismInferArgs {
     if (a.context_depth !== undefined && !INFER_CONTEXT_DEPTHS.has(a.context_depth as InferContextDepth)) return false;
     if (a.mode !== undefined &&
         !["route", "chat", "code"].includes(a.mode as string)) return false;
+    if (a.route_guard !== undefined &&
+        !["auto", "local"].includes(a.route_guard as string)) return false;
+    if (a.allowed_tools !== undefined) {
+        if (!Array.isArray(a.allowed_tools) || a.allowed_tools.length > MAX_ROUTE_TOOLS) return false;
+        if (!a.allowed_tools.every(isRouteToolName)) return false;
+    }
     if (a.think !== undefined && typeof a.think !== "boolean") return false;
     if (a.conversation_id !== undefined && typeof a.conversation_id !== "string") return false;
     if (a.verify !== undefined && typeof a.verify !== "boolean") return false;
@@ -552,8 +595,8 @@ async function callSynaluxInference(
 
     const url = `${PRISM_SYNALUX_BASE_URL}/api/v1/prism/inference`;
     // reserved=true tells the portal this prompt was refused by local Layer-1
-    // as reserved clinical content: it must be served by Claude or refused —
-    // never by a small local model or OpenRouter (plan v2 §5.1).
+    // as reserved clinical content: it must be served by the portal's
+    // reserved-capable cloud backend or refused — never by a local model.
     const reqBody = JSON.stringify({ prompt, max_tokens: maxTokens, ...(opts?.reserved ? { reserved: true } : {}) });
     try {
         let res = await fetch(url, {
@@ -632,6 +675,85 @@ async function callSynaluxVerifier(opts: {
     return res.json() as Promise<GroundingOutcome>;
 }
 
+export async function callSynaluxRouteGuard(opts: {
+    prompt: string;
+    draft: string;
+    allowedTools: string[];
+}): Promise<RouteGuardOutcome> {
+    if (!PRISM_SYNALUX_BASE_URL) throw new Error("no_synalux_base_url");
+    if (
+        !opts.prompt.trim() ||
+        !opts.draft.trim() ||
+        opts.prompt.length > 32_000 ||
+        opts.draft.length > 32_000 ||
+        opts.allowedTools.length > MAX_ROUTE_TOOLS ||
+        !opts.allowedTools.every(isRouteToolName)
+    ) {
+        throw new Error("synalux_route_guard_request_invalid");
+    }
+
+    const invoke = async (jwt: string) => fetch(
+        `${PRISM_SYNALUX_BASE_URL}/api/v1/prism/route-guard`,
+        {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${jwt}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                prompt: opts.prompt,
+                draft: opts.draft,
+                allowed_tools: opts.allowedTools,
+            }),
+            signal: AbortSignal.timeout(5_000),
+            redirect: "error",
+        },
+    );
+
+    let jwt = await getSynaluxJwt();
+    if (!jwt) throw new Error("jwt_exchange_failed");
+    let res = await invoke(jwt);
+    if (res.status === 401) {
+        invalidateSynaluxJwt();
+        jwt = await getSynaluxJwt();
+        if (!jwt) throw new Error("jwt_refresh_failed");
+        res = await invoke(jwt);
+    }
+    if (!res.ok) throw new Error(`synalux_route_guard_http_${res.status}`);
+
+    const contentLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > 64_000) {
+        throw new Error("synalux_route_guard_malformed");
+    }
+    const reader = res.body?.getReader();
+    let rawBody = "";
+    if (!reader) {
+        rawBody = await res.text();
+        if (rawBody.length > 64_000) {
+            throw new Error("synalux_route_guard_malformed");
+        }
+    } else {
+        const decoder = new TextDecoder();
+        let bytes = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > 64_000) {
+                void reader.cancel().catch(() => undefined);
+                throw new Error("synalux_route_guard_malformed");
+            }
+            rawBody += decoder.decode(value, { stream: true });
+        }
+        rawBody += decoder.decode();
+    }
+    try {
+        return JSON.parse(rawBody) as RouteGuardOutcome;
+    } catch {
+        throw new Error("synalux_route_guard_malformed");
+    }
+}
+
 // ─── Main handler ──────────────────────────────────────────────
 
 export interface PrismInferResult {
@@ -652,6 +774,8 @@ export interface PrismInferResult {
         verifierChain: GroundingOutcome["verifierChain"];
         refusalClaim?: string;
     };
+    /** Deterministic route-output disposition. Present only in route mode. */
+    route_guard?: RouteGuardOutcome;
     /** True when local output was served despite quality gate failure (cloud unavailable/failed). */
     quality_gate_failed?: boolean;
     /** Failure contract (plan v2 §5.2) — structured terminal disposition,
@@ -688,6 +812,12 @@ export interface InferDeps {
     ollamaUrl: string;
     /** Injectable verifier for testing. When omitted, verification is skipped (portal-side). */
     callVerifier?: (opts: { draft: string; evidence: EvidenceSnippet[]; verifierModel?: string; timeoutMs?: number; ollamaUrl?: string }) => Promise<GroundingOutcome>;
+    /** Optional private route correction. Local registry enforcement runs without it. */
+    callRouteGuard?: (opts: {
+        prompt: string;
+        draft: string;
+        allowedTools: string[];
+    }) => Promise<RouteGuardOutcome>;
     /** Injectable entitlements for testing. When omitted, fetched live. */
     entitlements?: PrismEntitlements;
     /** Injectable Layer 1 classifier for testing. Defaults to callLayer1 from layer1.ts. */
@@ -787,13 +917,24 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
 
     // Verification only for paid plans (free users skip L3 grounding)
     const canVerify = ent.features.grounding_verifier;
+    // The portal entitlement is authoritative. A paid plan alone must not
+    // enable the private correction service when that feature is disabled or
+    // omitted from an older entitlement response.
+    const canUsePrivateRouteGuard = ent.features.route_guard === true;
 
     const freeBytes = deps.freemem();
     const ramFreeMb = Math.round(freeBytes / (1024 * 1024));
     const attempts: Array<{ tier: string; reason: string }> = [];
 
-    // Strip verification args if plan lacks grounding_verifier
-    const gatedArgs = canVerify ? args : { ...args, verify: false, evidence: undefined };
+    // Strip paid-only capabilities when their authoritative feature flag is
+    // absent. Forcing route_guard=local preserves the deterministic public
+    // contract without making a private network request.
+    const verificationGatedArgs = canVerify
+        ? args
+        : { ...args, verify: false, evidence: undefined };
+    const gatedArgs = canUsePrivateRouteGuard
+        ? verificationGatedArgs
+        : { ...verificationGatedArgs, route_guard: "local" as const };
 
     // §5.2 failure contract: under escalation:"report", safety refusals return
     // a typed result (output:"") instead of throwing. Infra exhaustion (no
@@ -815,7 +956,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         gate_outcome: { status: "refused", reason, served_anyway: false },
     });
 
-    debugLog(`[prism_infer] plan=${ent.plan} ceiling=${effectiveCeiling} max_tokens=${maxTokens} cloud=${allowCloud} verify=${canVerify}`);
+    debugLog(
+        `[prism_infer] plan=${ent.plan} ceiling=${effectiveCeiling} max_tokens=${maxTokens} ` +
+        `cloud=${allowCloud} verify=${canVerify} route_guard=${canUsePrivateRouteGuard}`,
+    );
 
     // Log tier enforcement to Datadog for monetization visibility
     const ceilingClamped = effectiveCeiling !== (requestedCeiling ?? ent.model_ceiling);
@@ -1079,11 +1223,106 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 );
             }
             if (result.ok) {
-                const { stripped, thinkOnly } = stripThink(result.text);
-                const output = stripped;
+                let { stripped, thinkOnly } = stripThink(result.text);
+                let output = stripped;
 
                 // Quality gate — all modes. Route uses mode-aware empty floor (length===0).
-                const gate = passesQualityGate(output, thinkOnly, result.doneReason, mode);
+                let gate = passesQualityGate(output, thinkOnly, result.doneReason, mode);
+                if (gate.pass && mode === "code") {
+                    gate = passesCodingQualityGate(args.prompt, output);
+                }
+
+                // High-precision coding failures get bounded same-tier repair
+                // attempts before cloud escalation. Multiple attempts matter
+                // when syntax repair exposes a second structural defect.
+                for (
+                    let repairAttempt = 0;
+                    repairAttempt < MAX_CODING_REPAIR_ATTEMPTS;
+                    repairAttempt++
+                ) {
+                    const codingGateFailure =
+                        !gate.pass &&
+                        mode === "code" &&
+                        (gate.reason?.startsWith("code_") === true ||
+                            gate.reason?.startsWith("python_") === true);
+                    if (!codingGateFailure) break;
+
+                    const failedReason = gate.reason ?? "code_quality";
+                    const deterministicRepair = applyDeterministicCodingRepairs(
+                        output,
+                        failedReason,
+                    );
+                    if (deterministicRepair.changes.length > 0) {
+                        output = deterministicRepair.output;
+                        gate = passesQualityGate(output, false, result.doneReason, mode);
+                        if (gate.pass) {
+                            gate = passesCodingQualityGate(args.prompt, output);
+                        }
+                        attempts.push({
+                            tier: tier.tag,
+                            reason:
+                                `code_repair_deterministic:${deterministicRepair.changes.join(",")}`,
+                        });
+                        if (gate.pass) break;
+                    }
+
+                    const repair = buildCodingRepairPrompt(args.prompt, output, failedReason);
+                    const repairSystem = args.system
+                        ? `${args.system}\n\n${repair.system}`
+                        : repair.system;
+                    const repairPromptTokens =
+                        estimateTokens(repair.prompt) +
+                        estimateTokens(repairSystem) +
+                        CTX_TEMPLATE_MARGIN;
+                    if (repairPromptTokens <= tier.ctxTokens) {
+                        attempts.push({ tier: tier.tag, reason: `code_repair:${failedReason}` });
+                        const repaired = await deps.callLocal(
+                            deps.ollamaUrl,
+                            ollamaName,
+                            repair.prompt,
+                            repairSystem,
+                            maxTokens,
+                            0,
+                            timeout,
+                            false,
+                        );
+                        if (repaired.ok) {
+                            const repairedStripped = stripThink(repaired.text);
+                            const repairedGenericGate = passesQualityGate(
+                                repairedStripped.stripped,
+                                repairedStripped.thinkOnly,
+                                repaired.doneReason,
+                                mode,
+                            );
+                            const repairedGate = repairedGenericGate.pass
+                                ? passesCodingQualityGate(args.prompt, repairedStripped.stripped)
+                                : repairedGenericGate;
+                            result = repaired;
+                            stripped = repairedStripped.stripped;
+                            thinkOnly = repairedStripped.thinkOnly;
+                            output = stripped;
+                            gate = repairedGate;
+                            if (!gate.pass) {
+                                attempts.push({
+                                    tier: tier.tag,
+                                    reason: `code_repair_failed:${gate.reason ?? "quality_gate"}`,
+                                });
+                            }
+                        } else {
+                            attempts.push({
+                                tier: tier.tag,
+                                reason: `code_repair_error:${repaired.reason}`,
+                            });
+                            break;
+                        }
+                    } else {
+                        attempts.push({
+                            tier: tier.tag,
+                            reason: "code_repair_skipped:ctx_insufficient",
+                        });
+                        break;
+                    }
+                }
                 if (!gate.pass && allowCloud) {
                     debugLog(`[prism_infer] quality gate FAIL (${gate.reason}) — escalating to cloud`);
                     attempts.push({ tier: tier.tag, reason: `quality_gate:${gate.reason}` });
@@ -1187,24 +1426,102 @@ async function applyVerification(
     deps: InferDeps,
     partial: Omit<PrismInferResult, "output" | "verification">,
 ): Promise<PrismInferResult> {
+    let routedDraft = draft;
+    let routedPartial = partial;
+    let routeGuard: RouteGuardOutcome | undefined;
+    const mode = args.mode ?? "route";
+    if (mode === "route") {
+        const allowedTools = new Set(args.allowed_tools ?? DEFAULT_PRISM_ROUTE_TOOLS);
+        const parsed = parseRouteOutput(draft);
+        const shouldUsePortal =
+            args.route_guard !== "local" &&
+            partial.plan !== "free" &&
+            deps.callRouteGuard !== undefined &&
+            parsed.kind === "tool_call" &&
+            parsed.name !== "NO_TOOL" &&
+            (
+                DEFAULT_PRISM_ROUTE_TOOLS.has(parsed.name) ||
+                !allowedTools.has(parsed.name)
+            );
+
+        if (shouldUsePortal) {
+            try {
+                const untrustedPortalOutcome = await deps.callRouteGuard!({
+                    prompt: args.prompt,
+                    draft,
+                    allowedTools: [...allowedTools],
+                });
+                const portalOutcome = validatePortalRouteGuardOutcome(
+                    untrustedPortalOutcome,
+                    draft,
+                    allowedTools,
+                    args.prompt,
+                );
+                if (!portalOutcome) {
+                    const localCheck = applyLocalRouteContract(draft, allowedTools);
+                    routeGuard = {
+                        ...localCheck,
+                        source: "local_fallback",
+                        reason: "portal_route_guard_invalid",
+                    };
+                    if (localCheck.action === "preserved") {
+                        routedPartial = {
+                            ...partial,
+                            gate_outcome: {
+                                status: "degraded",
+                                reason: "route_guard_unavailable",
+                                served_anyway: true,
+                            },
+                        };
+                    }
+                } else {
+                    routeGuard = portalOutcome;
+                }
+            } catch (error) {
+                const localFallback = applyLocalRouteContract(draft, allowedTools);
+                routeGuard = {
+                    ...localFallback,
+                    source: "local_fallback",
+                    reason: localFallback.reason ?? (
+                        error instanceof Error ? error.message : "portal_route_guard_failed"
+                    ),
+                };
+                if (localFallback.action === "preserved") {
+                    routedPartial = {
+                        ...partial,
+                        gate_outcome: {
+                            status: "degraded",
+                            reason: "route_guard_unavailable",
+                            served_anyway: true,
+                        },
+                    };
+                }
+            }
+        } else {
+            routeGuard = applyLocalRouteContract(draft, allowedTools);
+        }
+        routedDraft = routeGuard.output;
+    }
+
     // L1 output safety — intercept dangerous model-generated content
-    const safeDraft = checkOutputSafety(draft);
+    const safeDraft = checkOutputSafety(routedDraft);
 
     const shouldVerify = args.verify ?? (args.evidence !== undefined && args.evidence.length > 0);
     if (!shouldVerify || !deps.callVerifier) {
-        return { ...partial, output: safeDraft };
+        return { ...routedPartial, output: safeDraft, route_guard: routeGuard };
     }
     const verifier = deps.callVerifier;
     const outcome = await verifier({
-        draft,
+        draft: routedDraft,
         evidence: args.evidence ?? [],
         verifierModel: args.verifier_model,
         timeoutMs: args.verifier_timeout_ms,
         ollamaUrl: deps.ollamaUrl,
     });
     return {
-        ...partial,
+        ...routedPartial,
         output: checkOutputSafety(outcome.finalText),
+        route_guard: routeGuard,
         verification: {
             action: outcome.action,
             verifierChain: outcome.verifierChain,
@@ -1233,6 +1550,7 @@ export async function prismInferHandler(args: unknown): Promise<{
             callCloud: callSynaluxInference,
             ollamaUrl: PRISM_LOCAL_LLM_URL,
             callVerifier: SYNALUX_CONFIGURED ? callSynaluxVerifier : undefined,
+            callRouteGuard: SYNALUX_CONFIGURED ? callSynaluxRouteGuard : undefined,
         });
 
         debugLog(`[prism_infer] backend=${result.backend} model=${result.model_picked} latency=${result.latency_ms}ms free=${result.ram_free_mb}MB`);
@@ -1288,6 +1606,10 @@ export async function prismInferHandler(args: unknown): Promise<{
                 ? ` ent_source=${result.entitlements_source}`
                 : "") +
             (result.verification ? ` verify=${result.verification.action}` : "") +
+            (result.route_guard
+                ? ` route_guard=${result.route_guard.source}:${result.route_guard.action}` +
+                    (result.route_guard.reason ? `:${result.route_guard.reason}` : "")
+                : "") +
             (prepared.memory ? ` memory=${prepared.memory.project}:${prepared.memory.depth}` : "") +
             (result.attempts.length ? ` attempts=${JSON.stringify(result.attempts)}` : "");
 

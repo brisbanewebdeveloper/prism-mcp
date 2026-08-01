@@ -185,7 +185,7 @@ const SKILL_SYNC_STATUS_LABELS: Record<SkillSyncResult["status"], string> = {
 interface NativeSkillManifestSnapshot {
   names: string[];
   tier: string;
-  source: "validated-partial" | "committed" | "protected-fallback";
+  source: "validated-partial" | "committed" | "tier-fallback";
   syncStatus: SkillSyncResult["status"];
   conflicts: string[];
 }
@@ -205,30 +205,43 @@ function parseNativeSkillNames(value: string): string[] {
 async function resolveNativeSkillManifestSnapshot(
   syncResult: SkillSyncResult,
 ): Promise<NativeSkillManifestSnapshot> {
-  const { REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
+  const { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
   const [storedNamesValue, storedTierValue] = await Promise.all([
     getSetting("skill_manifest:names", "[]"),
     getSetting("skill_manifest:tier", ""),
   ]);
-  const partialNames = syncResult.status === "partial" && Array.isArray(syncResult.entitledNames)
-    ? syncResult.entitledNames.filter((name): name is string =>
+  const partialNamesInput = syncResult.status === "partial" && Array.isArray(syncResult.entitledNames)
+    ? syncResult.entitledNames
+    : null;
+  const partialProvided = partialNamesInput !== null;
+  const partialNames = partialNamesInput
+    ? partialNamesInput.filter((name): name is string =>
       typeof name === "string" && NATIVE_SKILL_NAME.test(name))
     : [];
   const storedNames = parseNativeSkillNames(storedNamesValue);
-  const names = partialNames.length > 0
-    ? [...new Set(partialNames)]
-    : storedNames.length > 0
-      ? storedNames
-      : [...REQUIRED_NATIVE_SKILL_NAMES];
-  const source: NativeSkillManifestSnapshot["source"] = partialNames.length > 0
-    ? "validated-partial"
-    : storedNames.length > 0
-      ? "committed"
-      : "protected-fallback";
   const candidateTier = syncResult.status === "partial" ? syncResult.tier : storedTierValue || syncResult.tier;
   const tier = typeof candidateTier === "string" && SYNALUX_TIERS.has(candidateTier)
     ? candidateTier
     : "free";
+  const tierFallbackNames = tier === "free"
+    ? FREE_NATIVE_SKILL_NAMES
+    : REQUIRED_NATIVE_SKILL_NAMES;
+  const freeNames = new Set<string>(FREE_NATIVE_SKILL_NAMES);
+  const namesForTier = (names: string[]) => tier === "free"
+    ? names.filter((name) => freeNames.has(name))
+    : names;
+  const entitledPartialNames = namesForTier([...new Set(partialNames)]);
+  const entitledStoredNames = namesForTier(storedNames);
+  const names = partialProvided
+    ? entitledPartialNames.length > 0 ? entitledPartialNames : [...tierFallbackNames]
+    : entitledStoredNames.length > 0
+      ? entitledStoredNames
+      : [...tierFallbackNames];
+  const source: NativeSkillManifestSnapshot["source"] = partialProvided
+    ? "validated-partial"
+    : entitledStoredNames.length > 0
+      ? "committed"
+      : "tier-fallback";
   return {
     names,
     tier,
@@ -286,10 +299,10 @@ async function buildNativeSystemReadyBlock(
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}`;
   }
-  if (snapshot.source === "protected-fallback") {
+  if (snapshot.source === "tier-fallback") {
     return `> **Prism System Ready**\n>\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
-      `> - 🛡️ **Protected fallback names:** ${formatBoundedSkillNames(coreSkills, "fallback")}\n` +
+      `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}`;
   }
@@ -382,8 +395,8 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   // silently wrong write. Does NOT gate safety — prism_infer handles that.
   let _saveLedgerGateWarning: string | undefined;
   {
-    const { requireContextLoaded } = await import("../session/sessionContext.js");
-    const gate = requireContextLoaded(args.conversation_id);
+    const { requireContextLoadedForProject } = await import("../session/sessionContext.js");
+    const gate = await requireContextLoadedForProject(args.conversation_id, args.project);
     if (gate !== null && gate.blocked) {
       return { content: [{ type: "text", text: gate.error }], isError: true };
     }
@@ -456,11 +469,13 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
   // ─── Fire-and-forget embedding generation ───
   const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_ledger") : null;
+  let embeddingQueued = false;
   if (embeddingProvider && result) {
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
+      embeddingQueued = true;
       embeddingProvider.generateEmbedding(embeddingText)
         .then(async (embedding) => {
           const attemptedAt = new Date().toISOString();
@@ -491,7 +506,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         })
         .catch(async (err) => {
           const attemptedAt = new Date().toISOString();
-          console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err.message}`);
+          console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           try {
             await storage.patchLedger(entryId, createFailedEmbeddingState(err, 1, attemptedAt));
           } catch (patchErr: unknown) {
@@ -576,7 +591,9 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         (todos?.length ? `TODOs: ${todos.length} items\n` : "") +
         (files_changed?.length ? `Files changed: ${files_changed.length}\n` : "") +
         (decisions?.length ? `Decisions: ${decisions.length}\n` : "") +
-        (embeddingProvider ? `📊 Embedding generation queued for semantic search.` : "") +
+        (embeddingQueued
+          ? `📊 Embedding generation queued for semantic search.`
+          : `📊 Primary history saved; optional semantic indexing was not queued.`) +
         metricsBlock +
         resolverNote,
     }],
@@ -596,8 +613,8 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
 
   let _saveHandoffGateWarning: string | undefined;
   {
-    const { requireContextLoaded } = await import("../session/sessionContext.js");
-    const gate = requireContextLoaded(args.conversation_id);
+    const { requireContextLoadedForProject } = await import("../session/sessionContext.js");
+    const gate = await requireContextLoadedForProject(args.conversation_id, args.project);
     if (gate !== null && gate.blocked) {
       return { content: [{ type: "text", text: gate.error }], isError: true };
     }
@@ -782,9 +799,12 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
   // ─── Success: handoff created or updated ───
   const newVersion = data.version;
 
-  // ─── TIME MACHINE: Auto-snapshot for time travel (fire-and-forget) ───
+  // ─── TIME MACHINE: Auto-snapshot for time travel ───
   // Every successful save creates a snapshot so the user can revert later.
-  // We don't await — this should never block the success response.
+  // Await the attempt so short-lived CLI/MCP transports cannot exit before the
+  // snapshot reaches storage. Failure stays non-fatal because the primary
+  // handoff has already been durably saved.
+  let historySnapshotSaved = false;
   if (data.status === "created" || data.status === "updated") {
     const snapshotEntry = {
       project,
@@ -795,14 +815,19 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
       keywords: keywords ?? null,
       key_context: key_context ?? null,
       active_branch: active_branch ?? null,
+      role: effectiveRole,
       version: newVersion,
     };
-    storage.saveHistorySnapshot(snapshotEntry).catch(err =>
-      console.error(`[session_save_handoff] History snapshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
-    );
+    try {
+      await storage.saveHistorySnapshot(snapshotEntry, active_branch ?? "main");
+      historySnapshotSaved = true;
+    } catch (err) {
+      console.error(`[session_save_handoff] History snapshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ─── Fire-and-forget embedding generation (enables semantic search on handoffs) ───
+  let embeddingQueued = false;
   if (data.status === "created" || data.status === "updated") {
     const embeddingText = [
       last_summary || "",
@@ -811,32 +836,38 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
     ].filter(Boolean).join("\n");
 
     if (embeddingText.trim()) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          const patchData: Record<string, unknown> = {
-            embedding: JSON.stringify(embedding),
-          };
+      try {
+        const embeddingPromise = getLLMProvider().generateEmbedding(embeddingText);
+        embeddingQueued = true;
+        embeddingPromise
+          .then(async (embedding) => {
+            const patchData: Record<string, unknown> = {
+              embedding: JSON.stringify(embedding),
+            };
 
-          try {
-            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-            const compressor = getDefaultCompressor();
-            const compressed = compressor.compress(embedding);
-            const buf = serialize(compressed);
+            try {
+              const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
+              const compressor = getDefaultCompressor();
+              const compressed = compressor.compress(embedding);
+              const buf = serialize(compressed);
 
-            patchData.embedding_compressed = buf.toString("base64");
-            patchData.embedding_format = `turbo${compressor.bits}`;
-            patchData.embedding_turbo_radius = compressed.radius;
-            debugLog(`[session_save_handoff] TurboQuant compressed: ${buf.length} bytes`);
-          } catch (turboErr: any) {
-            console.error(`[session_save_handoff] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
-          }
+              patchData.embedding_compressed = buf.toString("base64");
+              patchData.embedding_format = `turbo${compressor.bits}`;
+              patchData.embedding_turbo_radius = compressed.radius;
+              debugLog(`[session_save_handoff] TurboQuant compressed: ${buf.length} bytes`);
+            } catch (turboErr: any) {
+              console.error(`[session_save_handoff] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
+            }
 
-          await storage.patchHandoff(project, PRISM_USER_ID, patchData);
-          debugLog(`[session_save_handoff] Embedding saved for project "${project}"`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_handoff] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-        });
+            await storage.patchHandoff(project, PRISM_USER_ID, patchData);
+            debugLog(`[session_save_handoff] Embedding saved for project "${project}"`);
+          })
+          .catch((err) => {
+            console.error(`[session_save_handoff] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          });
+      } catch (err) {
+        console.error(`[session_save_handoff] Embedding provider initialization failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -961,6 +992,9 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
   }
 
   const metricsBlock = formatInferenceMetrics();
+  const historySnapshotLine = historySnapshotSaved
+    ? `🕘 Versioned history snapshot saved.\n`
+    : `⚠️ Primary handoff saved, but its versioned history snapshot was not saved. Check memory_history before relying on time travel.\n`;
 
   // Build response text based on whether a CRDT merge occurred
   const responseText = (_saveHandoffGateWarning ? `⚠️ ${_saveHandoffGateWarning}\n\n` : "") +
@@ -968,6 +1002,7 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
     ? `🔄 Auto-merged conflict for "${project}" (v${expected_version} → v${newVersion})\n` +
       `Strategy: ${JSON.stringify(mergeStrategy)}\n` +
       (last_summary ? `Summary: ${last_summary}\n` : "") +
+      historySnapshotLine +
       metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`
@@ -976,7 +1011,10 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
       (last_summary ? `Last summary: ${last_summary}\n` : "") +
       (open_todos?.length ? `Open TODOs: ${open_todos.length} items\n` : "") +
       (active_branch ? `Active branch: ${active_branch}\n` : "") +
-      `📊 Embedding generation queued for semantic search.\n` +
+      historySnapshotLine +
+      (embeddingQueued
+        ? `📊 Embedding generation queued for semantic search.\n`
+        : `📊 Primary history saved; optional semantic indexing was not queued.\n`) +
       metricsBlock +
       `\n🔑 Remember: pass expected_version: ${newVersion} on your next save ` +
       `to maintain concurrency control.`);
@@ -1106,10 +1144,9 @@ export async function sessionLoadContextHandler(
       }
     }
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
     const freshText = `No session context found for project "${project}" at level ${level}.\n` +
       `This project has no previous session history. Starting fresh.` +
@@ -1400,10 +1437,9 @@ export async function sessionLoadContextHandler(
     }
     nativeContext += `\n**Session Version:** ${version === null || version === undefined ? "None" : compact(version, 40)}\n`;
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
     return {
       content: [{
@@ -1661,10 +1697,9 @@ export async function sessionLoadContextHandler(
     }
 
     if (convId) {
-      const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+      const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-      markContextLoaded(convId, project, BOUNDARIES_VERSION);
-      noteDriftSessionStart(convId);
+      await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
     }
 
     return {
@@ -1676,10 +1711,9 @@ export async function sessionLoadContextHandler(
   let responseText = criticalPrefix + lowerPriority + historySection;
 
   if (convId) {
-    const { markContextLoaded, noteDriftSessionStart } = await import("../session/sessionContext.js");
+    const { registerContextLoaded } = await import("../session/sessionContext.js");
     const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
-    markContextLoaded(convId, project, BOUNDARIES_VERSION);
-    noteDriftSessionStart(convId);
+    await registerContextLoaded(convId, project, BOUNDARIES_VERSION);
   }
 
   return {
@@ -2313,7 +2347,7 @@ export async function sessionSaveExperienceHandler(args: unknown) {
           debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
         })
         .catch(async (err) => {
-          console.error(`[session_save_experience] Embedding failed (non-fatal): ${err.message}`);
+          console.error(`[session_save_experience] Embedding failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           const attemptedAt = new Date().toISOString();
           try {
             await storage.patchLedger(entryId, createFailedEmbeddingState(err, 1, attemptedAt));

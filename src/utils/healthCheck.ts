@@ -316,7 +316,20 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       severity: stats.missingEmbeddings > 10 ? "error" : "warning",  // >10 = critical
       message: `${stats.missingEmbeddings} ledger entries have no embedding vector and can be repaired automatically`,
       count: stats.missingEmbeddings,    // how many are affected
-      suggestion: "Run session_health_check(auto_fix: true) to generate missing embeddings automatically",
+      suggestion: "Run session_backfill_embeddings to generate the missing vectors",
+    });
+  } else if (stats.missingEmbeddings < 0) {
+    // -1 = coverage is UNKNOWN (portal unreachable, or a portal that predates
+    // the ledger_missing_embeddings field). Saying nothing here is how a
+    // 100%-missing outage was certified "HEALTHY — all clean": the storage
+    // layer hardcoded 0 and this check had no way to distinguish "verified
+    // zero" from "never looked".
+    issues.push({
+      check: "missing_embeddings",
+      severity: "warning",
+      message: "Embedding coverage could not be verified (portal did not report a count)",
+      count: 0,
+      suggestion: "Update the Synalux portal, or check connectivity, then re-run session_health_check",
     });
   }
 

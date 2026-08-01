@@ -31,6 +31,7 @@ const STANDARD_ENTITLEMENTS: PrismEntitlements = {
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
@@ -47,6 +48,7 @@ const ADVANCED_ENTITLEMENTS: PrismEntitlements = {
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
@@ -175,6 +177,7 @@ describe("FREE_ENTITLEMENTS", () => {
     it("disables all premium features", () => {
         expect(FREE_ENTITLEMENTS.features.cloud_fallback).toBe(false);
         expect(FREE_ENTITLEMENTS.features.grounding_verifier).toBe(false);
+        expect(FREE_ENTITLEMENTS.features.route_guard).toBe(false);
         expect(FREE_ENTITLEMENTS.features.knowledge_search_unlimited).toBe(false);
         expect(FREE_ENTITLEMENTS.features.session_memory_unlimited).toBe(false);
         expect(FREE_ENTITLEMENTS.features.analytics_dashboard).toBe(false);

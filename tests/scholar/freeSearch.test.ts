@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { createServer, type Server } from "node:http";
 import { searchYahooFree, scrapeArticleLocal } from "../../src/scholar/freeSearch.js";
 
 // Mock the global fetch API
@@ -134,93 +135,118 @@ describe("Free Local Search & Scraping (Zero-Config Fallback)", () => {
     });
   });
 
+  // scrapeArticleLocal no longer uses global.fetch: it resolves the host,
+  // validates every answer, then connects over a pinned lookup so the name
+  // cannot be re-resolved to a local address (DNS rebinding). A fetch spy
+  // therefore intercepts nothing — these serve real HTML over loopback
+  // instead, which exercises resolution, pinning and parsing together.
   describe("scrapeArticleLocal", () => {
+    const ARTICLE_HTML = `
+      <!DOCTYPE html>
+      <html>
+        <head><title>My Awesome Article</title></head>
+        <body>
+          <nav>This is a menu, it should be ignored by Readability.</nav>
+          <article>
+            <h1>Main Article Heading</h1>
+            <p>This is the first paragraph with some <strong>bold</strong> text.</p>
+            <div class="ads">Buy our product!</div>
+            <p>This is the second paragraph.</p>
+          </article>
+          <footer>Copyright 2026</footer>
+        </body>
+      </html>
+    `;
+    const NO_TITLE_HTML = `
+      <!DOCTYPE html>
+      <html>
+        <head></head>
+        <body>
+          <article>
+            <p>This article has plenty of content but absolutely no title tags or headings!</p>
+            <p>Just some paragraphs for readability to latch onto.</p>
+          </article>
+        </body>
+      </html>
+    `;
+
+    let server: Server;
+    let origin: string;
+    let previousDevMode: string | undefined;
+
+    beforeAll(async () => {
+      previousDevMode = process.env.PRISM_DEV_MODE;
+      // Loopback targets are refused in production; this suite serves its
+      // fixtures locally, so it opts in explicitly.
+      process.env.PRISM_DEV_MODE = "1";
+
+      server = createServer((req, res) => {
+        if (req.url === "/forbidden") {
+          res.writeHead(403, "Forbidden");
+          res.end("Forbidden");
+          return;
+        }
+        if (req.url === "/empty") {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(`<html><head><title>Empty</title></head><body></body></html>`);
+          return;
+        }
+        if (req.url === "/no-title") {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(NO_TITLE_HTML);
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(ARTICLE_HTML);
+      });
+      await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      origin = `http://127.0.0.1:${port}`;
+    });
+
+    afterAll(async () => {
+      if (previousDevMode === undefined) delete process.env.PRISM_DEV_MODE;
+      else process.env.PRISM_DEV_MODE = previousDevMode;
+      await new Promise<void>((done) => server.close(() => done()));
+    });
+
     it("should fetch an article, parse with Readability, and output clean Markdown", async () => {
-      // A mock HTML payload simulating an article
-      const mockArticleHtml = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>My Awesome Article</title>
-          </head>
-          <body>
-            <nav>This is a menu, it should be ignored by Readability.</nav>
-            <article>
-              <h1>Main Article Heading</h1>
-              <p>This is the first paragraph with some <strong>bold</strong> text.</p>
-              <div class="ads">Buy our product!</div>
-              <p>This is the second paragraph.</p>
-            </article>
-            <footer>Copyright 2026</footer>
-          </body>
-        </html>
-      `;
+      const scraped = await scrapeArticleLocal(`${origin}/article`);
 
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        new Response(mockArticleHtml, { status: 200, headers: { "Content-Type": "text/html" } })
-      );
-
-      const scraped = await scrapeArticleLocal("https://example.com/article");
-
-      // Verify the fetch
-      expect(global.fetch).toHaveBeenCalledTimes(1);
-      expect(global.fetch).toHaveBeenCalledWith("https://example.com/article", expect.any(Object));
-
-      // Verify the parsed output fields
       expect(scraped.title).toBe("My Awesome Article");
-      
-      // Turndown should convert the header and paragraphs to Markdown
       expect(scraped.content).toContain("# Main Article Heading");
       expect(scraped.content).toContain("This is the first paragraph with some **bold** text.");
       expect(scraped.content).toContain("This is the second paragraph.");
-      
+
       // Readability should strip out nav and footer, Turndown shouldn't see them
       expect(scraped.content).not.toContain("This is a menu");
       expect(scraped.content).not.toContain("Copyright");
     });
 
     it("should throw an error if the URL cannot be fetched (e.g., 403 Forbidden cloudflare block)", async () => {
-      // Readability/JSDOM implementation uses response.statusText
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        new Response("Forbidden", { status: 403, statusText: "Forbidden" })
-      );
-
-      await expect(scrapeArticleLocal("https://blocked.com")).rejects.toThrow("Failed to fetch article HTML: Forbidden");
+      await expect(scrapeArticleLocal(`${origin}/forbidden`))
+        .rejects.toThrow(/Failed to fetch article HTML: 403/);
     });
 
     it("should throw an error if Readability cannot parse the main content", async () => {
-      // An empty document with no readable content
-      const emptyHtml = `<html><head><title>Empty</title></head><body></body></html>`;
-
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        new Response(emptyHtml, { status: 200 })
-      );
-
-      await expect(scrapeArticleLocal("https://empty.com")).rejects.toThrow("Readability could not parse the article content.");
+      await expect(scrapeArticleLocal(`${origin}/empty`))
+        .rejects.toThrow("Readability could not parse the article content.");
     });
 
     it("should handle articles with missing titles gracefully, reverting to Unknown Title", async () => {
-      const noTitleHtml = `
-        <!DOCTYPE html>
-        <html>
-          <head></head>
-          <body>
-            <article>
-              <p>This article has plenty of content but absolutely no title tags or headings!</p>
-              <p>Just some paragraphs for readability to latch onto.</p>
-            </article>
-          </body>
-        </html>
-      `;
-
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        new Response(noTitleHtml, { status: 200, headers: { "Content-Type": "text/html" } })
-      );
-
-      const scraped = await scrapeArticleLocal("https://notitle.com/article");
+      const scraped = await scrapeArticleLocal(`${origin}/no-title`);
 
       expect(scraped.title).toBe("Unknown Title");
       expect(scraped.content).toContain("This article has plenty of content");
+    });
+
+    it("refuses a public URL whose name resolves to this machine", async () => {
+      // The rebinding shape: string checks pass, resolution betrays it.
+      process.env.PRISM_DEV_MODE = "";
+      await expect(scrapeArticleLocal(`${origin}/article`))
+        .rejects.toThrow(/loopback/i);
+      process.env.PRISM_DEV_MODE = "1";
     });
   });
 });

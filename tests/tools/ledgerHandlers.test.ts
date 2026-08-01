@@ -111,7 +111,9 @@ vi.mock("../../src/utils/imageCaptioner.js", () => ({
 // Allow all calls through here so existing handler-behavior tests stay focused.
 vi.mock("../../src/session/sessionContext.js", () => ({
   requireContextLoaded: vi.fn(() => null),
+  requireContextLoadedForProject: vi.fn(() => Promise.resolve(null)),
   markContextLoaded: vi.fn(),
+  registerContextLoaded: vi.fn(() => Promise.resolve()),
   noteDriftSessionStart: vi.fn(),
   noteInferenceForSession: vi.fn(),
   getSessionState: vi.fn(() => null),
@@ -203,10 +205,12 @@ import {
 } from "../../src/storage/configStorage.js";
 import { resolveProject } from "../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../src/storage/interface.js";
+import { getLLMProvider } from "../../src/utils/llm/factory.js";
 import { awaitSkillManifestSync } from "../../src/skillManifestSync.js";
 import {
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
+  sessionSaveExperienceHandler,
   sessionLoadContextHandler,
   sessionBootstrapHandler,
   sessionForgetMemoryHandler,
@@ -216,11 +220,10 @@ import {
   sessionViewImageHandler,
   sanitizeMemoryInput,
 } from "../../src/tools/ledgerHandlers.js";
-import { REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
+import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 import {
-  markContextLoaded,
-  noteDriftSessionStart,
-  requireContextLoaded,
+  registerContextLoaded,
+  requireContextLoadedForProject,
 } from "../../src/session/sessionContext.js";
 
 const BOOTSTRAP_DEPTH_CASES = ["quick", "standard", "deep"] as const;
@@ -240,9 +243,9 @@ const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockResolveProject = vi.mocked(resolveProject);
 const mockRefreshConfigStorageCache = vi.mocked(refreshConfigStorageCache);
 const mockAwaitSkillManifestSync = vi.mocked(awaitSkillManifestSync);
-const mockMarkContextLoaded = vi.mocked(markContextLoaded);
-const mockNoteDriftSessionStart = vi.mocked(noteDriftSessionStart);
-const mockRequireContextLoaded = vi.mocked(requireContextLoaded);
+const mockRegisterContextLoaded = vi.mocked(registerContextLoaded);
+const mockRequireContextLoadedForProject = vi.mocked(requireContextLoadedForProject);
+const mockGetLLMProvider = vi.mocked(getLLMProvider);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -310,9 +313,8 @@ describe("ledgerHandlers", () => {
       ok: true,
       project: declaredProject,
     }));
-    mockRequireContextLoaded.mockImplementation(() => null);
-    mockMarkContextLoaded.mockImplementation(() => undefined);
-    mockNoteDriftSessionStart.mockImplementation(() => undefined);
+    mockRequireContextLoadedForProject.mockResolvedValue(null);
+    mockRegisterContextLoaded.mockResolvedValue();
   });
 
   // ====================================================================
@@ -367,6 +369,20 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("Session ledger saved");
       expect(result.content[0].text).toContain("test-project");
       expect(storage.saveLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it("still returns persisted ledger success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveLedgerHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Session ledger saved");
+      expect(result.content[0].text).toContain("Implemented feature X");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
     });
 
     it("skips greeting-only turns without resolving a project or writing storage", async () => {
@@ -552,6 +568,25 @@ describe("ledgerHandlers", () => {
     });
   });
 
+  describe("sessionSaveExperienceHandler", () => {
+    it("still returns persisted experience success when optional embedding provider initialization throws", async () => {
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveExperienceHandler({
+        project: "test-project",
+        event_type: "success",
+        context: "Verifying history persistence",
+        action: "Saved a structured experience",
+        outcome: "The primary write completed",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Experience recorded");
+    });
+  });
+
   // ====================================================================
   // 3. sessionLoadContextHandler
   // ====================================================================
@@ -722,7 +757,7 @@ describe("ledgerHandlers", () => {
       expect(text).not.toContain("ABA PRECISION PROTOCOL");
     });
 
-    it("offline fallback injects only the protected floor, including ABA", async () => {
+    it("free offline fallback never injects paid protected skill content", async () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
@@ -734,8 +769,27 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "offline-protected-floor" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA PROTECTED FLOOR");
+        expect(text).not.toContain("ABA PROTECTED FLOOR");
+        expect(text).not.toContain("CURRENT STAGING PROTECTED FLOOR");
         expect(text).not.toContain("UNPROTECTED BCBA");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("paid offline fallback may use a committed paid protected manifest", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+      mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "enterprise";
+        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill:aba-precision-protocol") return "ABA PAID FLOOR";
+        return "";
+      });
+      storage.loadContext.mockResolvedValue({ last_summary: "Summary", version: 1 });
+      try {
+        const result = await sessionLoadContextHandler({ project: "offline-paid-floor" });
+        expect(result.content[0].text).toContain("ABA PAID FLOOR");
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -752,6 +806,7 @@ describe("ledgerHandlers", () => {
         ],
       }), { status: 200, headers: { "content-type": "application/json" } }));
       mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "standard";
         if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
         if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
         if (key === "skill:stale-paid-skill") return "STALE PAID";
@@ -785,8 +840,9 @@ describe("ledgerHandlers", () => {
         "skill:stale-paid-skill": "STALE PAID CONTENT",
       };
       const concurrentlyCommittedFreeState: Record<string, string> = {
-        "skill_manifest:names": JSON.stringify(["aba-precision-protocol"]),
-        "skill:aba-precision-protocol": "ABA FREE FLOOR",
+        "skill_manifest:tier": "free",
+        "skill_manifest:names": JSON.stringify(["prism-startup"]),
+        "skill:prism-startup": "PUBLIC STARTUP",
       };
       mockGetSetting.mockImplementation(async (key: string, defaultValue = "") => processCache[key] ?? defaultValue);
       // Simulates awaitSkillManifestSync taking its five-minute lastResult path:
@@ -806,7 +862,7 @@ describe("ledgerHandlers", () => {
         expect(mockRefreshConfigStorageCache).toHaveBeenCalledTimes(1);
         expect(mockAwaitSkillManifestSync.mock.invocationCallOrder[0])
           .toBeLessThan(mockRefreshConfigStorageCache.mock.invocationCallOrder[0]);
-        expect(text).toContain("ABA FREE FLOOR");
+        expect(text).not.toContain("ABA FREE FLOOR");
         expect(text).not.toContain("STALE PAID CONTENT");
       } finally {
         globalThis.fetch = originalFetch;
@@ -827,7 +883,7 @@ describe("ledgerHandlers", () => {
         status: "partial",
         tier: "free",
         generation: "a".repeat(64),
-        entitledNames: ["aba-precision-protocol"],
+        entitledNames: ["prism-startup"],
         installed: [], updated: [], pruned: [], conflicts: [],
         error: "config DB apply incomplete",
       }));
@@ -844,7 +900,7 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "partial-db-failure" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA CURRENT FLOOR");
+        expect(text).not.toContain("ABA CURRENT FLOOR");
         expect(text).not.toContain("STALE PAID CONTENT");
       } finally {
         globalThis.fetch = originalFetch;
@@ -854,11 +910,11 @@ describe("ledgerHandlers", () => {
     it("does not inject an unentitled legacy platform skill selected as the role", async () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        loaded: ["aba-precision-protocol"], skipped: [], routing_version: 42, tier: "free",
-        skills: [{ name: "aba-precision-protocol", priority: 0, protected: true, category: "universal" }],
+        loaded: [], skipped: [], routing_version: 42, tier: "free", skills: [],
       }), { status: 200, headers: { "content-type": "application/json" } }));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "skill:aba-precision-protocol") return "ABA ENTITLED";
         if (key === "skill:paid-role") return "LEGACY PAID ROLE";
         return "";
@@ -867,7 +923,7 @@ describe("ledgerHandlers", () => {
       try {
         const result = await sessionLoadContextHandler({ project: "legacy-paid-role", role: "paid-role" });
         const text = result.content[0].text as string;
-        expect(text).toContain("ABA ENTITLED");
+        expect(text).not.toContain("ABA ENTITLED");
         expect(text).not.toContain("LEGACY PAID ROLE");
       } finally {
         globalThis.fetch = originalFetch;
@@ -878,7 +934,8 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "user_skill:qa") return "USER QA ROLE";
         if (key === "skill:qa") return "LEGACY PLATFORM QA";
         return "";
@@ -898,6 +955,7 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
+        if (key === "skill_manifest:tier") return "enterprise";
         if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
         if (key === "user_skill:aba-precision-protocol") return "USER OVERRIDE";
         if (key === "skill:aba-precision-protocol") return "OFFICIAL ABA GUARDRAIL";
@@ -920,7 +978,8 @@ describe("ledgerHandlers", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
       mockGetSetting.mockImplementation(async (key: string) => {
-        if (key === "skill_manifest:names") return JSON.stringify(["aba-precision-protocol"]);
+        if (key === "skill_manifest:tier") return "free";
+        if (key === "skill_manifest:names") return JSON.stringify(["prism-startup"]);
         if (key === "user_skill:qa") return "FRESH USER QA ROLE";
         if (key === "skill:qa") return "LEGACY PLATFORM QA";
         return "";
@@ -1287,7 +1346,9 @@ describe("ledgerHandlers", () => {
       expect(text).toContain("Last work on prism-mcp");
       expect(text).toContain("Last work on portal");
       expect(text).toContain("Earlier prism-mcp session");
-      expect(text).toContain("Protected fallback names");
+      expect(text).toContain("Fallback skill names");
+      expect(text).toContain("prism-startup");
+      expect(text).not.toContain("evidence-first-protocol");
       expect(text).not.toContain("NATIVE_SKILL_BODY_MUST_NOT_BE_INLINED");
       expect(text.length).toBeLessThan(10_000);
       expect(storage.loadContext).toHaveBeenCalledTimes(2);
@@ -1331,7 +1392,8 @@ describe("ledgerHandlers", () => {
     it.each(BOOTSTRAP_TIER_DEPTH_CASES)(
       "uses the synchronized $tier manifest for the $depth structured greeting",
       async ({ tier, tierSkills, depth }) => {
-        const manifestNames = [...REQUIRED_NATIVE_SKILL_NAMES, ...tierSkills];
+        const nativeFloor = tier === "free" ? FREE_NATIVE_SKILL_NAMES : REQUIRED_NATIVE_SKILL_NAMES;
+        const manifestNames = [...nativeFloor, ...tierSkills];
         mockAwaitSkillManifestSync.mockResolvedValueOnce({
           status: "unchanged",
           tier,
@@ -1369,7 +1431,14 @@ describe("ledgerHandlers", () => {
         expect(text).toContain("automatic from Synalux · current · committed manifest");
         expect(text).toContain("Open TODOs");
         expect(text).toContain("Session Version");
-        for (const coreSkill of REQUIRED_NATIVE_SKILL_NAMES) expect(text).toContain(coreSkill);
+        for (const coreSkill of nativeFloor) expect(text).toContain(coreSkill);
+        if (tier === "free") {
+          for (const paidCoreSkill of REQUIRED_NATIVE_SKILL_NAMES) {
+            if (!FREE_NATIVE_SKILL_NAMES.includes(paidCoreSkill as typeof FREE_NATIVE_SKILL_NAMES[number])) {
+              expect(text).not.toContain(paidCoreSkill);
+            }
+          }
+        }
         for (const tierSkill of tierSkills) {
           expect(text).toContain(tierSkill);
           if (tierSkill.endsWith("-super-skill")) {
@@ -1389,7 +1458,7 @@ describe("ledgerHandlers", () => {
     );
 
     it("uses a validated partial downgrade instead of stale committed paid skills", async () => {
-      const currentFreeNames = [...REQUIRED_NATIVE_SKILL_NAMES];
+      const currentFreeNames = [...FREE_NATIVE_SKILL_NAMES];
       mockAwaitSkillManifestSync.mockResolvedValueOnce({
         status: "partial",
         tier: "free",
@@ -1477,8 +1546,8 @@ describe("ledgerHandlers", () => {
 
     it("generates a stable hidden conversation id and carries it through bootstrap, ledger, handoff, and drift registration", async () => {
       const registered = new Set<string>();
-      mockMarkContextLoaded.mockImplementation((conversationId) => { registered.add(conversationId); });
-      mockRequireContextLoaded.mockImplementation((conversationId) => conversationId && registered.has(conversationId)
+      mockRegisterContextLoaded.mockImplementation(async (conversationId) => { registered.add(conversationId); });
+      mockRequireContextLoadedForProject.mockImplementation(async (conversationId) => conversationId && registered.has(conversationId)
         ? null
         : { blocked: true, error: "context_not_loaded" });
       mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
@@ -1492,8 +1561,7 @@ describe("ledgerHandlers", () => {
       const conversationId = bootstrap.structuredContent.conversation_id as string;
       expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
       expect(bootstrap.content[0].text).not.toContain(conversationId);
-      expect(mockMarkContextLoaded).toHaveBeenCalledWith(conversationId, "test-project", "1");
-      expect(mockNoteDriftSessionStart).toHaveBeenCalledWith(conversationId);
+      expect(mockRegisterContextLoaded).toHaveBeenCalledWith(conversationId, "test-project", "1");
 
       expect((await sessionSaveLedgerHandler({
         project: "test-project", conversation_id: conversationId, summary: "Finished startup",
@@ -1501,7 +1569,7 @@ describe("ledgerHandlers", () => {
       expect((await sessionSaveHandoffHandler({
         project: "test-project", conversation_id: conversationId, last_summary: "Finished startup",
       })).isError).toBe(false);
-      expect(mockRequireContextLoaded).toHaveBeenCalledWith(conversationId);
+      expect(mockRequireContextLoadedForProject).toHaveBeenCalledWith(conversationId, "test-project");
     });
 
     it("reuses a supplied conversation id and flattens dashboard identity controls", async () => {
@@ -1562,6 +1630,24 @@ describe("ledgerHandlers", () => {
       expect(result.content[0].text).toContain("expected_version: 1");
     });
 
+    it("still returns persisted success when optional embedding provider initialization throws", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 16 });
+      mockGetLLMProvider.mockImplementationOnce(() => {
+        throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
+      });
+
+      const result = await sessionSaveHandoffHandler({
+        ...validArgs,
+        expected_version: 15,
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 16");
+      expect(result.content[0].text).toContain("Primary history saved");
+      expect(result.content[0].text).not.toContain("Embedding generation queued");
+    });
+
     it("passes sanitized summary to storage", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 1 });
       await sessionSaveHandoffHandler({
@@ -1598,13 +1684,51 @@ describe("ledgerHandlers", () => {
 
     it("saves history snapshot after successful save", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "created", version: 3 });
-      await sessionSaveHandoffHandler(validArgs);
+      await sessionSaveHandoffHandler({ ...validArgs, role: "dev" });
 
-      // saveHistorySnapshot is called fire-and-forget
       expect(storage.saveHistorySnapshot).toHaveBeenCalledTimes(1);
       const snapshotArg = getFirstCallArg<HandoffEntry>(storage.saveHistorySnapshot);
       expect(snapshotArg.project).toBe("test-project");
       expect(snapshotArg.version).toBe(3);
+      expect(storage.saveHistorySnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ project: "test-project", role: "dev", version: 3 }),
+        "main",
+      );
+    });
+
+    it("waits for the history snapshot attempt before reporting handoff success", async () => {
+      let releaseSnapshot!: () => void;
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      }));
+
+      let settled = false;
+      const pending = sessionSaveHandoffHandler(validArgs).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(storage.saveHistorySnapshot).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+
+      releaseSnapshot();
+      const result = await pending;
+      expect(settled).toBe(true);
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Versioned history snapshot saved");
+    });
+
+    it("keeps the durable handoff successful when its optional history snapshot fails", async () => {
+      storage.saveHandoff.mockResolvedValue({ status: "updated", version: 4 });
+      storage.saveHistorySnapshot.mockRejectedValueOnce(new Error("history unavailable"));
+
+      const result = await sessionSaveHandoffHandler(validArgs);
+
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("Handoff updated");
+      expect(result.content[0].text).toContain("version: 4");
+      expect(result.content[0].text).toContain("versioned history snapshot was not saved");
+      expect(result.content[0].text).toContain("Check memory_history");
     });
 
     // --- OCC (Optimistic Concurrency Control) ---

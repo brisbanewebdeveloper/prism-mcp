@@ -12,7 +12,7 @@ describe("F1: entitlement fetch failure → fail-closed", () => {
         // We verify the logic pattern.
         const cachedEntitlements = {
             plan: "advanced",
-            model_ceiling: "32b" as const,
+            model_ceiling: "27b" as const,
             features: { grounding_verifier: true },
         };
 

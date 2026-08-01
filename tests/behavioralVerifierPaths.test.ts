@@ -19,10 +19,11 @@ const { PORTAL, getSynaluxJwt } = vi.hoisted(() => ({
     getSynaluxJwt: vi.fn(async (): Promise<string | null> => "jwt-abc"),
 }));
 
-// Portal configured/online for this whole file.
+// The module-load base URL is intentionally empty: the handler must honor a
+// runtime URL loaded from local Prism configuration after startup.
 vi.mock("../src/config.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../src/config.js")>();
-    return { ...actual, SYNALUX_CONFIGURED: true, PRISM_SYNALUX_BASE_URL: PORTAL };
+    return { ...actual, SYNALUX_CONFIGURED: false, PRISM_SYNALUX_BASE_URL: "" };
 });
 
 // JWT exchange is a separate unit; default to a valid token, override per test.
@@ -38,6 +39,7 @@ const ARGS = {
     change_summary: "add discount",
     workspace_id: "ws_123",
 };
+const ORIGINAL_BASE_URL = process.env.PRISM_SYNALUX_BASE_URL;
 
 /** Every return, on every path, must satisfy the CallToolResult contract. */
 function expectToolResult(result: Awaited<ReturnType<typeof verifyBehaviorHandler>>): string {
@@ -55,10 +57,13 @@ function jsonResponse(status: number, body: unknown) {
 }
 
 beforeEach(() => {
+    process.env.PRISM_SYNALUX_BASE_URL = PORTAL;
     getSynaluxJwt.mockResolvedValue("jwt-abc");
     vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
+    if (ORIGINAL_BASE_URL === undefined) delete process.env.PRISM_SYNALUX_BASE_URL;
+    else process.env.PRISM_SYNALUX_BASE_URL = ORIGINAL_BASE_URL;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
 });
@@ -135,11 +140,17 @@ describe("verify_behavior — fail-closed branches (safety gate must never skip)
         expect(text).toContain("OFFLINE MODE");
     });
 
-    it("malformed portal JSON (missing requires_verification) → treated as non-behavioral, still an object", async () => {
-        vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { unexpected: "shape" })));
+    it.each([
+        { unexpected: "shape" },
+        null,
+        [],
+        "not-an-object",
+        { requires_verification: "false" },
+    ])("malformed portal JSON fails closed with a verification scenario", async (body) => {
+        vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, body)));
 
         const text = expectToolResult(await verifyBehaviorHandler(ARGS));
-        const parsed = JSON.parse(text);
-        expect(parsed.requires_verification).toBe(false);
+        expect(text).toContain("OFFLINE MODE");
+        expect(text).toContain("Before editing this file, answer ALL of these");
     });
 });

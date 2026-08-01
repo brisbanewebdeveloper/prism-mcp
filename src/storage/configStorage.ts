@@ -68,6 +68,17 @@ export async function initConfigStorage() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS session_context_receipts (
+        conversation_hash TEXT NOT NULL,
+        project_hash TEXT NOT NULL,
+        project TEXT NOT NULL,
+        boundaries_version TEXT NOT NULL,
+        loaded_at INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        PRIMARY KEY (conversation_hash, project_hash)
+      )
+    `);
 
     // Preload all rows into the cache so subsequent reads are zero-cost.
     const rs = await client.execute("SELECT key, value FROM system_settings");
@@ -216,6 +227,114 @@ export async function refreshConfigStorageCache(): Promise<void> {
 export function getSettingSync(key: string, defaultValue = ""): string {
   if (!settingsCache) return defaultValue;
   return settingsCache[key] ?? defaultValue;
+}
+
+export interface SessionContextReceipt {
+  conversationHash: string;
+  projectHash: string;
+  project: string;
+  boundariesVersion: string;
+  loadedAt: number;
+  lastSeen: number;
+}
+
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
+
+function validateSessionContextReceipt(receipt: SessionContextReceipt): void {
+  if (!SHA256_HEX_RE.test(receipt.conversationHash) ||
+      !SHA256_HEX_RE.test(receipt.projectHash) ||
+      !receipt.project.trim() ||
+      !receipt.boundariesVersion.trim() ||
+      !Number.isFinite(receipt.loadedAt) ||
+      !Number.isFinite(receipt.lastSeen)) {
+    throw new Error("Invalid session context receipt");
+  }
+}
+
+/**
+ * Persists only hashes of the caller-supplied identifiers. The project name is
+ * retained so recovery can verify that a hash lookup did not cross scopes.
+ * Expired rows are pruned in the same transaction to keep the local table
+ * bounded by active sessions rather than process lifetime.
+ */
+export async function saveSessionContextReceipt(
+  receipt: SessionContextReceipt,
+  expiresBefore: number,
+): Promise<void> {
+  validateSessionContextReceipt(receipt);
+  if (!Number.isFinite(expiresBefore)) throw new Error("Invalid session receipt expiry");
+
+  await initConfigStorage();
+  const client = getClient();
+  await client.batch([
+    {
+      sql: "DELETE FROM session_context_receipts WHERE last_seen < ?",
+      args: [expiresBefore],
+    },
+    {
+      sql: `
+        INSERT INTO session_context_receipts (
+          conversation_hash,
+          project_hash,
+          project,
+          boundaries_version,
+          loaded_at,
+          last_seen
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_hash, project_hash) DO UPDATE SET
+          project = excluded.project,
+          boundaries_version = excluded.boundaries_version,
+          loaded_at = excluded.loaded_at,
+          last_seen = excluded.last_seen
+      `,
+      args: [
+        receipt.conversationHash,
+        receipt.projectHash,
+        receipt.project,
+        receipt.boundariesVersion,
+        receipt.loadedAt,
+        receipt.lastSeen,
+      ],
+    },
+  ], "write");
+}
+
+export async function getSessionContextReceipt(
+  conversationHash: string,
+  projectHash: string,
+): Promise<SessionContextReceipt | null> {
+  if (!SHA256_HEX_RE.test(conversationHash) || !SHA256_HEX_RE.test(projectHash)) {
+    return null;
+  }
+
+  await initConfigStorage();
+  const rs = await getClient().execute({
+    sql: `
+      SELECT project, boundaries_version, loaded_at, last_seen
+      FROM session_context_receipts
+      WHERE conversation_hash = ? AND project_hash = ?
+      LIMIT 1
+    `,
+    args: [conversationHash, projectHash],
+  });
+  if (rs.rows.length === 0) return null;
+
+  const row = rs.rows[0];
+  const receipt: SessionContextReceipt = {
+    conversationHash,
+    projectHash,
+    project: String(row.project ?? ""),
+    boundariesVersion: String(row.boundaries_version ?? ""),
+    loadedAt: Number(row.loaded_at),
+    lastSeen: Number(row.last_seen),
+  };
+  try {
+    validateSessionContextReceipt(receipt);
+    return receipt;
+  } catch {
+    return null;
+  }
 }
 
 export async function getSetting(key: string, defaultValue = ""): Promise<string> {

@@ -29,7 +29,8 @@ export type Layer1Verdict =
     | "UNCERTAIN_LENGTH"
     | "ERROR";
 
-// VERBATIM — §E prism-infer-boundaries/SKILL.md. Do not edit without re-running eval-layer1.mjs.
+// VERBATIM — §E prism-infer-boundaries/SKILL.md.
+// Changes require the private Layer 1 evaluation gate before release.
 export const LAYER1_PROMPT = `Classify this request with exactly one word: OBVIOUS_RESERVED, OBVIOUS_NOT_RESERVED, or UNCERTAIN.
 
 OBVIOUS_RESERVED — clearly involves:
@@ -41,10 +42,11 @@ OBVIOUS_RESERVED — clearly involves:
 - Writing auth/login/JWT/token/session validation code
 - Determining if code bypasses auth or allows unauthenticated access
 - Assessing whether code actually exposes PHI or constitutes a HIPAA violation
-- Whether to push, ship, deploy, or block a production release
-- Diagnosis code assignment
+- Whether to push, ship, deploy, block, stop shipping, or make a production go/no-go decision
+- Medication choice, prescribing, or dosing
+- Diagnosis code assignment or professional sign-off
 
-OBVIOUS_NOT_RESERVED — general coding, code review, analysis, documentation, test generation, data processing.
+OBVIOUS_NOT_RESERVED — general coding, code review, analysis, documentation, test generation, or data processing. Also routine non-crisis BCBA measurement and operational definitions; tentative ABC/FBA hypotheses; data gathering before intervention when no injury or imminent danger is stated; educational explanations of function-matched intervention concepts; dignity-preserving language; caregiver training; AAC access rights and replacement-response candidates for BCBA review; and explaining continued AAC access or nonrestrictive positioning when no injury is reported.
 
 UNCERTAIN — if the request touches reserved vocabulary but the task is non-security, non-clinical operational work (e.g., deleting or renaming a file, adding a non-auth data field to a form, reviewing existing code for dead exports or hook order) rather than writing clinical safety protocols, implementing auth or security code, making push or deploy decisions, or determining compliance.
 
@@ -71,6 +73,126 @@ export function parseLayer1(raw: string | null | undefined): Layer1Verdict {
     if (!m) return "ERROR";
     const token = m[0];
     return VALID.has(token) ? (token as Layer1Verdict) : "ERROR";
+}
+
+type IntentRule = (prompt: string) => boolean;
+
+const has = (pattern: RegExp): IntentRule => (prompt) => pattern.test(prompt);
+const all = (...rules: IntentRule[]): IntentRule => (prompt) => rules.every((rule) => rule(prompt));
+
+const RESERVED_INTENT_RULES: readonly IntentRule[] = [
+    all(
+        has(/\b(?:de[- ]?escalat\w*|meltdown\w*|rage\s+episode|violent\w*)\b/i),
+        has(/\b(?:draft|write|plan|procedure|protocol|manag\w*|what\s+(?:do|should)\b|respond\w*)\b/i),
+    ),
+    all(
+        has(/\b(?:physical\s+intervention|containment|hold\s+procedure|restrain\w*|seclu\w*|physical\s+management)\b/i),
+        has(/\b(?:draft|write|document|procedure|protocol|use|implement|instruct\w*)\b/i),
+    ),
+    all(
+        has(/\b(?:self[- ]?(?:harm|injur\w*)|bites?\s+(?:him|her|them)self|scratches?\s+(?:him|her|them)self|bangs?\s+(?:his|her|their)\s+head|harm\s+(?:himself|herself|themselves))\b/i),
+        has(/\b(?:bleed\w*|blood|concrete|head\s+impact|medical\s+attention|risk(?:\s+of\s+injury)?|causes?\s+injury|actual\s+injury|assess\w*|screen\w*|want\w*)\b/i),
+    ),
+    (prompt) => (
+        /\b(?:punch\w*|attack\w*|aggress\w*|hit\s+staff)\b/i.test(prompt)
+        && /\b(?:last\s+(?:week|month|year)|prior|previous|history|injur\w*)\b/i.test(prompt)
+        && !/\bno\s+injur(?:y|ies)\b/i.test(prompt)
+        && /\b(?:plan|procedure|intervention|assess\w*)\b/i.test(prompt)
+    ),
+    has(/\b(?:suicid\w*|homicid\w*)\b/i),
+    all(
+        has(/\b(?:write|implement|create|build|add|modify|update|fix|refactor)\b/i),
+        has(/\b(?:auth\w*|login|jwt|tokens?|sessions?|api\s+keys?)\b/i),
+        has(/\b(?:verify|verification|validat\w*|check\w*|middleware|handler)\b/i),
+    ),
+    all(
+        has(/\b(?:does|can|could|whether|write|implement|create|build|add|modify|update|fix|refactor)\b/i),
+        has(/\b(?:endpoint|route|user|someone|permissions?|authenticat\w*|authoriz\w*)\b/i),
+        has(/\b(?:without|bypass\w*|unauthenticated|not\s+check\w*|lets?\s+anyone|anyone\s+in)\b/i),
+    ),
+    all(
+        has(/\b(?:ship\w*|deploy\w*|prod(?:uction)?|release\w*)\b/i),
+        has(/\b(?:safe|bad\s+enough|finding\w*|go\s+to|stop|block|ready|whether|can\s+we|should\s+we)\b/i),
+    ),
+    all(
+        has(/\b(?:expos\w*|intercept\w*|leak\w*|access\w*)\b/i),
+        has(/\b(?:phi|patient\s+(?:records?|data)|health\s+(?:records?|data))\b/i),
+    ),
+    all(
+        has(/\b(?:medicat\w*|prescrib\w*|dos(?:e|age|ing))\b/i),
+        has(/\b(?:choose|recommend\w*|select|schedule|mg|how\s+much)\b/i),
+    ),
+    all(
+        has(/\b(?:diagnos\w*|icd[- ]?\d*)\b/i),
+        has(/\b(?:assign|choose|sign[- ]?off|approve|determine)\b/i),
+    ),
+];
+
+const ROUTINE_BCBA_INTENT_RULES: readonly IntentRule[] = [
+    has(/\boperational\s+definition\b/i),
+    all(
+        has(/\bdefin\w*\b/i),
+        has(/\b(?:onset|offset|observers?|score|measur\w*)\b/i),
+    ),
+    all(
+        has(/\b(?:abc|fba|functional\s+behavior)\b/i),
+        has(/\b(?:hypothes\w*|tentative|summari[sz]\w*)\b/i),
+    ),
+    all(
+        has(/\b(?:what\s+data|data\s+(?:should|to)\s+(?:be\s+)?gather\w*|collect\s+data)\b/i),
+        has(/\bbefore\s+(?:select\w*|choos\w*|design\w*)\s+(?:an?\s+)?intervention\b/i),
+    ),
+    all(
+        has(/\b(?:aac|augmentative\s+communication)\b/i),
+        has(/\b(?:replacement[- ]response|replacement\s+(?:skill|behavior)|function[- ]matched)\b/i),
+        has(/\b(?:bcba|clinician)\s+review\b/i),
+    ),
+    all(
+        has(/\b(?:explain|educat\w*|why)\b/i),
+        has(/\b(?:dro|differential\s+reinforcement|function[- ]matched|maintain\w+\s+by|escape\s+from)\b/i),
+    ),
+    all(
+        has(/\b(?:caregiver|staff|parent)\s+training\b/i),
+        has(/\b(?:aac|replacement|break[- ]request|communication)\b/i),
+    ),
+    all(
+        has(/\b(?:rewrite|rephrase)\b/i),
+        has(/\b(?:stigmat\w*|dignity|objective|tentative|function[- ]based)\b/i),
+    ),
+    all(
+        has(/\b(?:aac|communication\s+device)\b/i),
+        has(/\b(?:remain|keep)\s+available\b/i),
+        has(/\bno\s+injur(?:y|ies)\b/i),
+        has(/\bnonrestrictive\b/i),
+    ),
+];
+
+function matchesAny(prompt: string, rules: readonly IntentRule[]): boolean {
+    return rules.some((rule) => rule(prompt));
+}
+
+const NON_OPERATIONAL_ARTIFACT_CONTEXT =
+    /(?:\b(?:test\s+fixture|fixture\s+label|unit\s+test|old\s+comment|fields?|columns?|labels?|filename|file\s+name|docs?|legal\s+(?:label|phrase|clause)|hook\s+order|dead\s+exports?|type\s+annotation|table\s+scan|add\s+index)\b|\/docs\/|\.[cm]?[jt]sx?\b)/i;
+const NON_OPERATIONAL_ARTIFACT_ACTION =
+    /\b(?:review\b[\s\S]{0,120}\bhook\s+order|delete\b[\s\S]{0,120}\bdocs?|unit\s+tests?|add\b[\s\S]{0,120}\b(?:fields?|index|labels?|numeric\s+validation)|remove\b[\s\S]{0,120}\bcomments?|old\s+comment\b[\s\S]{0,120}\bremove)\b/i;
+
+/**
+ * Deterministic policy floor for unambiguous intents.
+ *
+ * Routing is code, not model judgment: clear reserved work fails closed and
+ * clear routine BCBA work reaches local inference. Ambiguous prompts return
+ * null and continue to the semantic classifier below.
+ */
+export function classifyDeterministicLayer1(userPrompt: string): Layer1Verdict | null {
+    if (matchesAny(userPrompt, RESERVED_INTENT_RULES)) return "OBVIOUS_RESERVED";
+    if (
+        NON_OPERATIONAL_ARTIFACT_CONTEXT.test(userPrompt) &&
+        NON_OPERATIONAL_ARTIFACT_ACTION.test(userPrompt)
+    ) {
+        return "OBVIOUS_NOT_RESERVED";
+    }
+    if (matchesAny(userPrompt, ROUTINE_BCBA_INTENT_RULES)) return "OBVIOUS_NOT_RESERVED";
+    return null;
 }
 
 const LAYER1_TIMEOUT_MS = 1_500;
@@ -147,6 +269,10 @@ export async function callLayer1(
     if (!userPrompt || !userPrompt.trim()) return "ERROR";
 
     const oversize = userPrompt.length > MAX_CLASSIFIER_PROMPT_LENGTH;
+    const deterministic = classifyDeterministicLayer1(userPrompt);
+    if (deterministic === "OBVIOUS_RESERVED") return deterministic;
+    if (!oversize && deterministic === "OBVIOUS_NOT_RESERVED") return deterministic;
+
     if (oversize && keywordBackstop(userPrompt) === "OBVIOUS_RESERVED") {
         // The regex floor has no length limit — reserved vocabulary anywhere
         // in the full text (including the middle the excerpt can't see)

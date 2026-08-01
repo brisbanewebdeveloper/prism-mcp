@@ -44,6 +44,21 @@ describe("passesQualityGate", () => {
         expect(passesQualityGate(code, false).pass).toBe(true);
     });
 
+    it("does not treat repeated member access in plain code as a prose loop", () => {
+        const code = [
+            "class Trie:",
+            "    def insert(self, word):",
+            "        node = self.root",
+            "    def search(self, word):",
+            "        node = self.root",
+            "    def starts_with(self, prefix):",
+            "        node = self.root",
+            "    def autocomplete(self, prefix):",
+            "        node = self.root",
+        ].join("\n");
+        expect(passesQualityGate(code, false, "stop", "code").pass).toBe(true);
+    });
+
     it("does NOT false-positive on refusal text (no regex gate)", () => {
         expect(passesQualityGate("I cannot stress this enough: always use TypeScript.", false).pass).toBe(true);
     });
@@ -266,6 +281,44 @@ describe("passesQualityGate", () => {
         expect(passesQualityGate(legitimateCode, false).pass).toBe(true);
     });
 
+    it("does NOT split member access into a false loop in code mode", () => {
+        const parserCode = [
+            "export function parse(input: string) {",
+            "  while (i < input.length) i++;",
+            "  while (i < input.length && input[i] !== ',') i++;",
+            "  while (i < input.length && input[i] !== '=') i++;",
+            "  while (i < input.length && input[i] !== '\\\"') i++;",
+            "  while (i < input.length && /\\s/.test(input[i])) i++;",
+            "  return input.slice(0, i);",
+            "}",
+        ].join("\n");
+
+        expect(passesQualityGate(parserCode, false, "stop", "code")).toEqual({
+            pass: true,
+        });
+    });
+
+    it("still catches five identical full source lines in code mode", () => {
+        const repeatedSourceLine = Array.from(
+            { length: 5 },
+            () => "  const repeatedValue = computeRepeatedValue(input);",
+        );
+        const code = [
+            "export function broken(input: string) {",
+            "  const firstGuard = validateInputShape(input);",
+            "  const secondGuard = validateInputLength(input);",
+            "  const thirdGuard = validateInputEncoding(input);",
+            ...repeatedSourceLine,
+            "  return repeatedValue;",
+            "}",
+        ].join("\n");
+
+        expect(passesQualityGate(code, false, "stop", "code")).toEqual({
+            pass: false,
+            reason: "loop_detected",
+        });
+    });
+
     it("catches loop wrapped in markdown heading evasion (≥5 full-text)", () => {
         const headingEvasion = Array.from({ length: 6 }, (_, i) =>
             `# Section ${i}\nThe model cannot answer this question at this time.`
@@ -319,10 +372,21 @@ describe("passesQualityGate", () => {
         expect(r.reason).toBe("empty_response");
     });
 
-    it("route: bleed check still fires on short bleed output", () => {
+    it("route: a canonical Prism tool-call envelope is valid routing output", () => {
+        const output = [
+            "<|tool_call|>",
+            '{"name":"session_load_context","arguments":{"project":"prism"}}',
+            "<|tool_call_end|>",
+        ].join("\n");
+        expect(passesQualityGate(output, false, undefined, "route")).toEqual({
+            pass: true,
+        });
+    });
+
+    it("route: a malformed tool-call envelope fails the contract", () => {
         const r = passesQualityGate("<|tool_call|>x<|tool_call_end|>", false, undefined, "route");
         expect(r.pass).toBe(false);
-        expect(r.reason).toBe("tool_call_bleed");
+        expect(r.reason).toBe("route_tool_call_malformed");
     });
 
     it("no mode (default): 'Hi' fails — backward-compatible with code/chat callers", () => {

@@ -44,5 +44,9 @@ export const KnowledgeSearchResponseSchema = z.object({
   action: z.literal("knowledge_search"),
   count: z.number(),
   results: z.array(z.record(z.string(), z.unknown())),
+  /** How the portal matched. Optional so an older portal deployment that
+   *  predates the ranked search RPC still validates. When present and
+   *  'relaxed', callers MUST NOT present the rows as exact hits. */
+  match_mode: z.enum(["strict", "relaxed", "unfiltered", "none"]).optional(),
 });
 export type KnowledgeSearchResponse = z.infer<typeof KnowledgeSearchResponseSchema>;

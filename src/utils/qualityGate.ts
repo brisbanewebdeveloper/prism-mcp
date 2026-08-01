@@ -1,3 +1,5 @@
+import { parseRouteOutput } from "./routeContract.js";
+
 /**
  * Quality Gate — deterministic check for obvious inference failures.
  *
@@ -52,11 +54,20 @@ export function passesQualityGate(
         return { pass: false, reason: "hard_truncation" };
     }
 
-    // Signal 5: Tool-call bleed — fine-tuned 4b emits <|tool_call|> format in non-tool turns.
-    // Pipe-delimited format only; angle-bracket variants are handled by normalizeToolCallFormat.
-    // False-positive guard: requires the literal pipe tokens, not the words "tool call".
+    // Signal 5: Tool-call bleed. The pipe envelope is invalid in chat/code,
+    // but it is the canonical trained output in route mode. Route mode parses
+    // the whole envelope and fails only when the contract is malformed.
     if (TOOL_CALL_BLEED_RE.test(stripped)) {
-        return { pass: false, reason: "tool_call_bleed" };
+        if (mode === "route") {
+            const parsedRoute = parseRouteOutput(stripped);
+            if (parsedRoute.kind === "tool_call") {
+                // Continue through the remaining generic loop checks.
+            } else {
+                return { pass: false, reason: "route_tool_call_malformed" };
+            }
+        } else {
+            return { pass: false, reason: "tool_call_bleed" };
+        }
     }
 
     // Signal 4: Exact-loop detection (two passes).
@@ -70,7 +81,11 @@ export function passesQualityGate(
         .replace(/^#{1,6}\s+.*$/gm, "")
         .replace(/^[\s*-]*\*{1,2}[^*]+\*{1,2}:?\s*$/gm, "");
     const proseSentences = proseOnly.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 10);
-    if (proseSentences.length >= 6) {
+    // Plain source code often repeats structural lines across methods. In code
+    // mode those are not prose loops, and splitting on "." corrupts member
+    // access (`node = self.root` becomes `node = self`). Pass B below still
+    // catches egregious repetition at the higher threshold.
+    if (mode !== "code" && proseSentences.length >= 6) {
         const counts = new Map<string, number>();
         for (const s of proseSentences) {
             const key = s.toLowerCase();
@@ -85,7 +100,17 @@ export function passesQualityGate(
     // inside fake code blocks or other structural elements. Higher
     // threshold avoids false positives on legitimate code patterns
     // (e.g. `node = self.root` × 4 is fine, × 5 is suspicious).
-    const allSentences = stripped.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 10);
+    // In code mode, periods are member-access operators, not sentence
+    // boundaries. Splitting `input.length` at "." made several different
+    // loops share the fragment `while (i < input` and falsely counted it as
+    // repeated output. Full-line matching still catches genuinely duplicated
+    // source while preserving valid repeated control-flow shapes.
+    const fullTextUnits = mode === "code"
+        ? stripped.split(/\n+/)
+        : stripped.split(/[.!?\n]+/);
+    const allSentences = fullTextUnits
+        .map(s => s.trim())
+        .filter(s => s.length > 10);
     if (allSentences.length >= 10) {
         const counts = new Map<string, number>();
         for (const s of allSentences) {

@@ -7,11 +7,14 @@
  * This closes the gap where users have to learn tool syntax to query memories.
  * Instead, they ask plain English questions and get structured results.
  *
- * Pipeline:
+ * Parsing pipeline:
  *   1. Intent classification (decision, todo, file, general)
  *   2. Key phrase extraction
- *   3. Multi-strategy search (keyword + semantic)
- *   4. Answer synthesis (optional, uses local LLM)
+ *   3. Structured memory-query construction
+ *
+ * Execution, web fallback, and grounded prism_infer synthesis live in
+ * queryMemoryNaturalHandler.ts. Keeping network/model work out of this parser
+ * makes intent handling deterministic and independently testable.
  */
 
 import { debugLog } from "./logger.js";
@@ -33,15 +36,6 @@ export interface NLQueryResult {
     confidence: number;
     suggestedTool: string;
     suggestedArgs: Record<string, unknown>;
-}
-
-export interface NLAnswerResult extends NLQueryResult {
-    answer: string;
-    sources: Array<{
-        summary: string;
-        project: string;
-        createdAt: string;
-    }>;
 }
 
 // ─── Intent Classification ───────────────────────────────────
@@ -202,43 +196,6 @@ export function parseNLQuery(query: string, project?: string): NLQueryResult {
         confidence,
         suggestedTool: tool,
         suggestedArgs: args,
-    };
-}
-
-/**
- * Execute a natural language query end-to-end.
- *
- * Parses the query, executes the appropriate tool, and optionally
- * synthesizes an answer using the local LLM.
- */
-export async function executeNLQuery(
-    query: string,
-    project: string,
-    synthesize: boolean = false,
-): Promise<NLAnswerResult> {
-    const parsed = parseNLQuery(query, project);
-
-    // Execute the search
-    let sources: NLAnswerResult["sources"] = [];
-    let answer = "";
-
-    try {
-        // Return the parsed query structure — the caller (handler) will
-        // execute the actual tool call using the suggestedTool and suggestedArgs.
-        answer =
-            `Intent: ${parsed.intent} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)\n` +
-            `Keywords: ${parsed.extractedKeywords.join(", ")}\n` +
-            `Suggested tool: ${parsed.suggestedTool}\n` +
-            `Search query: "${parsed.searchQuery}"`;
-    } catch (err) {
-        debugLog(`NL query execution failed: ${err}`);
-        answer = `Unable to parse query: ${err}`;
-    }
-
-    return {
-        ...parsed,
-        answer: answer || "No relevant memories found.",
-        sources,
     };
 }
 

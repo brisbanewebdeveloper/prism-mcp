@@ -47,6 +47,10 @@ const { mockConfig, mockStorage, mockFetch } = vi.hoisted(() => {
     GOOGLE_SEARCH_CX: undefined,
     SEMANTIC_SCHOLAR_API_KEY: undefined,
     PRISM_SCHOLAR_MAX_ARTICLES_PER_RUN: 3,
+    // This mock replaces config.js wholesale, so every named export the
+    // module imports must appear here — a missing one fails ESM linking and
+    // takes the whole suite down rather than failing one assertion.
+    PRISM_SCHOLAR_SCRAPE_BUDGET_MS: 60_000,
     PRISM_USER_ID: "default",
     PRISM_SCHOLAR_TOPICS: ["ai", "agents", "mcp", "authentication"],
     PRISM_ENABLE_HIVEMIND: false,
@@ -73,6 +77,21 @@ const { mockConfig, mockStorage, mockFetch } = vi.hoisted(() => {
 });
 
 vi.mock("../../src/config.js", () => mockConfig);
+
+// scrapeArticleLocal now opens a real pinned connection rather than going
+// through global.fetch, so without this the suite would make live network
+// calls to example.com. Scraping has its own coverage in freeSearch.test.ts
+// and ssrf-*.test.ts; here it is a boundary to stub.
+vi.mock("../../src/scholar/freeSearch.js", () => ({
+  // Empty by default: with no API keys the Yahoo fallback yields nothing and
+  // the run must skip rather than save. A test needing the fallback to
+  // produce URLs overrides this explicitly.
+  searchYahooFree: vi.fn().mockResolvedValue([]),
+  scrapeArticleLocal: vi.fn().mockResolvedValue({
+    title: "Mock Article",
+    content: "Mock article body content used for synthesis.",
+  }),
+}));
 
 vi.mock("../../src/storage/index.js", () => ({
   getStorage: vi.fn().mockResolvedValue(mockStorage),

@@ -56,7 +56,7 @@ export const REQUIRED_PROTECTED_SKILL_NAMES = [
 ] as const;
 
 /**
- * Native skills that every subscription tier receives through `prism connect`.
+ * Native skills that paid subscription tiers receive through `prism connect`.
  *
  * `prism-startup` is deliberately not part of OFFLINE_FALLBACK: it tells the
  * host to call session_load_context, so injecting it back into that tool's
@@ -67,6 +67,9 @@ export const REQUIRED_NATIVE_SKILL_NAMES = [
   ...REQUIRED_PROTECTED_SKILL_NAMES,
   'prism-startup',
 ] as const;
+
+/** Public hook-free bootstrap package available without a paid entitlement. */
+export const FREE_NATIVE_SKILL_NAMES = ['prism-startup'] as const;
 
 export const OFFLINE_FALLBACK: SkillRoutingTable = {
   version: 1,

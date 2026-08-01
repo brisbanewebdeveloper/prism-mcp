@@ -33,7 +33,7 @@ export interface ShutdownHandlerOptions {
   onShutdown?: () => Promise<void> | void;
 }
 
-let shutdownHandlersRegistered = false;
+let registeredShutdownRequest: ((reason: string) => void) | null = null;
 
 /**
  * Global registry for tracking critical background tasks (like embeddings or SDM writes).
@@ -216,12 +216,12 @@ export function acquireLock() {
 /**
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
-export function registerShutdownHandlers(options: ShutdownHandlerOptions = {}) {
-  if (shutdownHandlersRegistered) {
-    return;
+export function registerShutdownHandlers(
+  options: ShutdownHandlerOptions = {}
+): (reason: string) => void {
+  if (registeredShutdownRequest) {
+    return registeredShutdownRequest;
   }
-
-  shutdownHandlersRegistered = true;
   let shuttingDown = false;
 
   const shutdown = async (reason: string) => {
@@ -311,4 +311,9 @@ export function registerShutdownHandlers(options: ShutdownHandlerOptions = {}) {
       shutdown("CLIENT_DISCONNECTED_STDIN_CLOSED");
     });
   }
+
+  registeredShutdownRequest = (reason: string) => {
+    void shutdown(reason);
+  };
+  return registeredShutdownRequest;
 }

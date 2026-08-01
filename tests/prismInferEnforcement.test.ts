@@ -2,7 +2,7 @@
  * prism_infer Tier Enforcement Tests
  *
  * Verifies that runInfer() correctly enforces entitlement gates:
- *   1. Model ceiling — free=4b, standard=14b, advanced/enterprise=27b
+ *   1. Model ceiling — free=4b, standard=9b, advanced/enterprise=27b
  *   2. Max tokens — clamped to plan limit
  *   3. Cloud fallback — blocked for free users
  *   4. Grounding verifier — blocked for free users
@@ -29,13 +29,14 @@ const FREE: PrismEntitlements = { ...FREE_ENTITLEMENTS };
 
 const STANDARD: PrismEntitlements = {
     plan: "standard",
-    model_ceiling: "14b",
+    model_ceiling: "9b",
     daily_infer_limit: 200,
     max_tokens: 1024,
     max_seats: 1,
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
@@ -52,6 +53,7 @@ const ADVANCED: PrismEntitlements = {
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
@@ -68,6 +70,7 @@ const ENTERPRISE: PrismEntitlements = {
     features: {
         cloud_fallback: true,
         grounding_verifier: true,
+        route_guard: true,
         knowledge_search_unlimited: true,
         session_memory_unlimited: true,
         analytics_dashboard: true,
@@ -82,9 +85,8 @@ function mockDeps(overrides: Partial<InferDeps> = {}): InferDeps {
         freemem: () => 16 * 1024 ** 3, // 16 GB free
         listTags: async () => new Set([
             "prism-coder:2b",
-            "qwen3.5:4b",
-            "qwen3.5:4b",
-            "prism-coder:14b",
+            "prism-coder:4b",
+            "prism-coder:9b",
             "prism-coder:27b",
         ]),
         listLoaded: async () => new Set<string>(),
@@ -103,7 +105,7 @@ function mockDeps(overrides: Partial<InferDeps> = {}): InferDeps {
         callCloud: vi.fn(async (_prompt: string, maxTokens: number, _timeout: number) => ({
             ok: true,
             output: `cloud response (max_tokens=${maxTokens})`,
-            backend: "synalux-14b",
+            backend: "gemini-3.6-flash",
         })),
         ollamaUrl: "http://localhost:11434",
         callLayer1: vi.fn(async () => "OBVIOUS_NOT_RESERVED" as const),
@@ -132,22 +134,22 @@ describe("model ceiling enforcement", () => {
         expect(modelUsed).toMatch(/2b|4b/);
     });
 
-    it("free user requesting 14b gets clamped to 4b", async () => {
+    it("free user requesting 9b gets clamped to 4b", async () => {
         const deps = mockDeps({ entitlements: FREE });
-        const result = await runInfer({ ...baseArgs, model_ceiling: "14b" }, deps);
+        const result = await runInfer({ ...baseArgs, model_ceiling: "9b" }, deps);
 
         const calls = (deps.callLocal as ReturnType<typeof vi.fn>).mock.calls;
         const modelUsed = calls[0][1];
         expect(modelUsed).toMatch(/2b|4b/);
     });
 
-    it("standard user requesting 27b gets clamped to 14b", async () => {
+    it("standard user requesting 27b selects the entitled 9b model", async () => {
         const deps = mockDeps({ entitlements: STANDARD });
         const result = await runInfer({ ...baseArgs, model_ceiling: "27b" }, deps);
 
         const calls = (deps.callLocal as ReturnType<typeof vi.fn>).mock.calls;
         const modelUsed = calls[0][1];
-        expect(modelUsed).toMatch(/2b|4b|14b/);
+        expect(modelUsed).toMatch(/9b/);
         expect(modelUsed).not.toMatch(/27b/);
     });
 
@@ -373,7 +375,7 @@ describe("combined gate scenarios", () => {
             evidence: [{ source: "x", content: "y" }],
         }, deps);
 
-        // Model: only 4b or lower (no 14b, no 27b)
+        // Model: only 4b or lower (no 9b, no 27b)
         const localCalls = (deps.callLocal as ReturnType<typeof vi.fn>).mock.calls;
         for (const call of localCalls) {
             expect(call[1]).toMatch(/2b|4b/);

@@ -3,7 +3,7 @@
 > **v19.0.0** — Local-first cognitive memory engine for AI agents.
 >
 > Persistent sessions, semantic search, behavioral verification, PHI compliance,
-> and an open-weight model fleet (2B–32B) for offline tool-routing.
+> and an open-weight model fleet (2B–27B) for offline tool-routing.
 
 ---
 
@@ -265,10 +265,10 @@ For offline tool-routing via `prism_infer`:
 |-----|------|------|---------------|-----------|
 | `prism-coder:2b` | Qwen 3.5-4B Q3_K_M | 2.3 GB | 99.1% | Free (mobile) |
 | `prism-coder:4b` | Qwen 3.5-4B Q4_K_M | 3.4 GB | 100% | Free |
-| `prism-coder:14b` | — | 8.4 GB | 100% | Standard+ |
-| `prism-coder:32b` | — | 16 GB | 100% | Advanced+ |
+| `prism-coder:9b` | Qwen 3.5-9B | 5.8 GB | 100% | Standard+ automatic routing |
+| `prism-coder:27b` | Qwen 3.5-27B | 16 GB | 100% | Advanced+ automatic routing |
 
-Prism auto-detects both namespaced (`dcostenco/prism-coder:14b`) and bare (`prism-coder:14b`)
+Prism auto-detects both namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`)
 Ollama tags.
 
 ### 5.4 Configuration Priority
@@ -351,8 +351,83 @@ effective_importance = base_importance × 0.95^(days_since_last_access)
 Computed at retrieval time — no cron jobs mutate the stored value. Memories that keep
 surfacing in results stay important; neglected ones naturally fade.
 
+### 6.7 Portal-Tier Embedding Write Path (v20.3)
+
+On Synalux-backed (paid) installs the embedding never touches the database
+directly — it travels through the portal as its own authenticated action:
+
+```
+save_ledger ──▶ Portal ──▶ row created, id returned
+     │
+     ▼ (fire-and-forget, non-blocking)
+generateEmbedding (provider factory, 768-dim)
+     │
+     ▼
+save_embedding { memory_id, vector } ──▶ Portal ──▶ attached to the row
+```
+
+Three properties are load-bearing:
+
+- **The save response carries the new row's id.** Embedding generation starts
+  only after the save succeeds and is keyed to that id; a response without an
+  id means no vector can ever be attached.
+- **Embedding failure never blocks the save.** A ledger write is always
+  durable first; a failed embedding degrades that row to keyword-only recall
+  until repaired (see 6.8), it does not fail the operation.
+- **The client holds no database credentials.** Local mode writes SQLite
+  directly; portal mode has exactly one path — the authenticated action —
+  and the write is verified server-side against the caller's own row.
+
+### 6.8 Embedding Coverage & Self-Repair (v20.3)
+
+Silent memory loss is the worst failure a memory product can have, so
+coverage is treated as a first-class, *honest* signal:
+
+| Signal | Behavior |
+|--------|----------|
+| `session_health_check` | Reports the **real** count of rows without vectors, from the store that holds them |
+| Portal unreachable / too old to report | Coverage is declared **unknown** — never assumed clean |
+| `session_backfill_embeddings` | Lists un-embedded rows through the same authenticated portal path and repairs them in place |
+
+The design rule: the health check may only report numbers it can verify.
+A monitoring path that cannot see the data says "could not be verified"
+instead of defaulting to zero — a fabricated clean bill is how outages
+hide.
+
+> **Not to be confused with Deep Storage Purge (6.5):** on local installs a
+> cold row's float32 vector is purged *by design* and search falls back to
+> its TurboQuant copy — that row is still recallable. Coverage here means
+> portal-tier rows that have **no vector in any form** and are therefore
+> invisible to semantic search until repaired.
+
+### 6.9 Hybrid Retrieval (v20.3, portal tier)
+
+`session_search_memory` on portal-backed installs fuses two independent
+retrieval arms server-side:
+
+| Arm | Strength | Weakness it covers for |
+|-----|----------|------------------------|
+| **Semantic** (vector similarity) | meaning across different wording | exact identifiers blur in embedding space |
+| **Lexical** (ranked exact-term) | TPNs, error strings, function names | vocabulary must overlap |
+
+Results are rank-fused and each hit reports how it was found —
+`similarity`, `semantic_rank`, `lexical_rank`, and a fused score — so a
+hit that only the lexical arm produced renders as `exact-term match`
+rather than pretending to a similarity percentage.
+
+`knowledge_search` (the keyword tool) reports `match_mode` with the same
+honesty contract: `strict` means every query term matched; `relaxed`
+means the search was widened and the results are *leads, not confirmed
+answers* — and they are labelled that way in the output.
+
+Failure modes are asymmetric by design: if the lexical arm errors, the
+semantic results serve alone; if no query text is sent, the pure-semantic
+path runs byte-identical to pre-hybrid behavior. **Local SQLite installs
+keep pure vector search** (the Tier 1–3 chain in 6.4) — hybrid requires
+the portal's lexical index.
+
 **Key files:** `src/tools/ledgerHandlers.ts`, `src/tools/graphHandlers.ts`,
-`src/storage/sqlite.ts`, `src/storage/supabase.ts`
+`src/storage/sqlite.ts`, `src/storage/supabase.ts`, `src/storage/synalux.ts`
 
 ---
 
@@ -497,14 +572,17 @@ No network calls for storage, no cloud LLM for compaction. SQLite only.
 
 ### 9.5 Tier-Based Enforcement (v17+)
 
-`prism_infer` gates model ceiling, max tokens, daily limits, and cloud fallback
-by subscription plan:
+`prism_infer` gates its automatic model ceiling, max tokens, daily limits,
+private route correction, and cloud fallback by subscription plan:
 
-| Plan | Model ceiling | Cloud fallback |
-|------|---------------|----------------|
-| Free | Up to 4B, local only | No |
-| Standard | Up to 14B | No |
-| Advanced | Up to 32B | Claude Sonnet fallback |
+| Plan | Automatic model ceiling | Route correction | Cloud fallback |
+|------|-------------------------|------------------|----------------|
+| Free | Up to 4B, local only | Local advertised-tool contract | No |
+| Standard | Up to 9B | Synalux deterministic guard | Gemini 3.6 Flash |
+| Advanced / Enterprise | Up to 27B | Synalux deterministic guard | Gemini 3.6 Flash |
+
+These ceilings govern automatic `prism_infer` routing. They do not prevent a
+user from running any downloaded model directly through local Ollama.
 
 Flat-rate seat caps via `max_seats` per plan.
 

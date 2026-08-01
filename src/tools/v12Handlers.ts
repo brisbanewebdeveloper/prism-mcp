@@ -16,7 +16,6 @@ import {
     isExtractEntitiesArgs,
     isBackupDatabaseArgs,
     isConfigureNotificationsArgs,
-    isQueryMemoryNaturalArgs,
 } from "./sessionMemoryDefinitions.js";
 
 // ─── Onboarding Wizard Handler ───────────────────────────────
@@ -385,55 +384,4 @@ export async function configureNotificationsHandler(args: Record<string, unknown
     }
 }
 
-// ─── Natural Language Memory Query Handler ───────────────────
-
-export async function queryMemoryNaturalHandler(args: Record<string, unknown>) {
-    if (!isQueryMemoryNaturalArgs(args)) {
-        return {
-            content: [{ type: "text", text: "Invalid arguments for query_memory_natural. Required: query (string)." }],
-            isError: true,
-        };
-    }
-
-    const { query, project } = args;
-
-    try {
-        const nlQuery = await import("../utils/nlQuery.js");
-
-        if (project) {
-            // Attempt full end-to-end query with project context
-            const result = await nlQuery.executeNLQuery(
-                query as string,
-                project as string,
-            );
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        status: "ok",
-                        ...result,
-                    }, null, 2),
-                }],
-            };
-        }
-
-        // Parse-only mode (no project context to execute against)
-        const parsed = nlQuery.parseNLQuery(query as string);
-        return {
-            content: [{
-                type: "text",
-                text: JSON.stringify({
-                    status: "ok",
-                    ...parsed,
-                    hint: "Provide a 'project' parameter to execute the query against memory.",
-                }, null, 2),
-            }],
-        };
-    } catch (err) {
-        debugLog(`query_memory_natural error: ${err}`);
-        return {
-            content: [{ type: "text", text: `Natural language query error: ${err}` }],
-            isError: true,
-        };
-    }
-}
+export { queryMemoryNaturalHandler } from "./queryMemoryNaturalHandler.js";

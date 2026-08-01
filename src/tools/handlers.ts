@@ -77,7 +77,7 @@ export async function braveWebSearchCodeModeHandler(args: unknown) {
   }
 
   // 1. Fetch raw data
-  debugLog(`Fetching web search for code mode: "${query}"`);
+  debugLog(`Fetching web search for code mode: query_chars=${query.length}`);
   const rawDataStr = await performWebSearchRaw(query, count, offset);
   const beforeSizeKB = (Buffer.byteLength(rawDataStr, 'utf8') / 1024).toFixed(1);
 
@@ -123,7 +123,7 @@ export async function braveLocalSearchCodeModeHandler(args: unknown) {
     };
   }
 
-  debugLog(`Fetching local search for code mode: "${query}"`);
+  debugLog(`Fetching local search for code mode: query_chars=${query.length}`);
   const rawDataStr = await performLocalSearchRaw(query, count);
   const beforeSizeKB = (Buffer.byteLength(rawDataStr, "utf8") / 1024).toFixed(1);
 

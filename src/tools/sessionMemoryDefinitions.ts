@@ -1900,8 +1900,10 @@ export const QUERY_MEMORY_NATURAL_TOOL: Tool = {
   name: "query_memory_natural",
   description:
     "Query memories using natural language instead of structured tool syntax. " +
-    "Automatically classifies intent, extracts keywords, and executes the " +
-    "appropriate search strategy.\n\n" +
+    "Searches Prism memory first. When memory has no useful result, paid tiers " +
+    "automatically run one quick Synalux web search, preserve the raw sources, " +
+    "and synthesize a grounded answer through prism_infer. Reserved or uncertain " +
+    "content is cloud-or-refuse and never sent through the local web-grounded path.\n\n" +
     "**Examples:**\n" +
     "- \"What did we decide about authentication?\"\n" +
     "- \"What's still open on the billing project?\"\n" +
@@ -1922,7 +1924,17 @@ export const QUERY_MEMORY_NATURAL_TOOL: Tool = {
       },
       synthesize: {
         type: "boolean",
-        description: "If true, use local LLM to synthesize a natural language answer. Default: false.",
+        description: "If true, use prism_infer to synthesize a grounded answer. Default: true.",
+        default: true,
+      },
+      web_fallback: {
+        type: "boolean",
+        description: "If true, use one paid Synalux web search when Prism memory has no useful evidence. Default: true.",
+        default: true,
+      },
+      conversation_id: {
+        type: "string",
+        description: "Optional session_bootstrap conversation id for inference telemetry and continuity.",
       },
     },
     required: ["question"],
@@ -1933,6 +1945,8 @@ export interface QueryMemoryNaturalArgs {
   question: string;
   project?: string;
   synthesize?: boolean;
+  web_fallback?: boolean;
+  conversation_id?: string;
 }
 
 export function isQueryMemoryNaturalArgs(
@@ -1940,9 +1954,13 @@ export function isQueryMemoryNaturalArgs(
 ): args is QueryMemoryNaturalArgs {
   if (typeof args !== "object" || args === null) return false;
   const a = args as Record<string, unknown>;
-  if (typeof a.question !== "string") return false;
-  if (a.project !== undefined && typeof a.project !== "string") return false;
+  if (typeof a.question !== "string" || !a.question.trim()) return false;
+  if (a.project !== undefined &&
+      (typeof a.project !== "string" || !a.project.trim())) return false;
   if (a.synthesize !== undefined && typeof a.synthesize !== "boolean") return false;
+  if (a.web_fallback !== undefined && typeof a.web_fallback !== "boolean") return false;
+  if (a.conversation_id !== undefined &&
+      (typeof a.conversation_id !== "string" || !a.conversation_id.trim())) return false;
   return true;
 }
 
@@ -2065,7 +2083,8 @@ export const VERIFY_BEHAVIOR_TOOL: Tool = {
     "Call BEFORE editing behavioral source files (API routes, ordering logic, billing, auth, migrations). " +
     "Returns a domain-specific scenario you must answer to demonstrate understanding of the end-user impact. " +
     "Example: editing a KDS route returns 'A cook has a 3-item ticket. One item is voided. What should the cook see?' " +
-    "Answer the scenario concretely before proceeding with the edit.",
+    "Answer the scenario concretely before proceeding with the edit. If the MCP transport is unavailable, use the " +
+    "packaged `prism verify-behavior` CLI fallback; never fabricate a replacement scenario.",
   inputSchema: {
     type: "object",
     properties: {

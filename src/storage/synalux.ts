@@ -20,14 +20,28 @@
  *   Methods migrated to portal:
  *     - saveLedger        → POST /api/v1/prism/memory  action=save_ledger
  *     - saveHandoff       → POST /api/v1/prism/memory  action=save_handoff
+ *     - saveHistorySnapshot → POST /api/v1/prism/memory  action=save_history_snapshot
  *     - loadContext       → POST /api/v1/prism/memory  action=load_context
  *     - searchKnowledge   → POST /api/v1/prism/memory  action=search
  *     - softDeleteLedger  → POST /api/v1/prism/memory  action=forget_memory (Phase 3 Tier A)
  *     - hardDeleteLedger  → POST /api/v1/prism/memory  action=forget_memory (Phase 3 Tier A)
+ *     - searchMemory      → POST /api/v1/prism/memory  action=search_memory
+ *     - getHistory        → POST /api/v1/prism/memory  action=memory_history
+ *     - patchLedger       → POST /api/v1/prism/memory  action=save_embedding
+ *     - getEntriesMissingEmbeddings → POST /api/v1/prism/memory  action=list_missing_embeddings
  *
  *   Methods still falling through to SupabaseStorage (Phase 3 Tier B+):
- *   semantic searchMemory, save_experience direct entrypoint,
- *   compactLedger, image ops, history, hivemind, etc.
+ *   save_experience direct entrypoint, compactLedger, image ops,
+ *   hivemind, etc. Anything in this group requires a direct SUPABASE_URL
+ *   and therefore does NOT work on paid-tier installs — that is precisely
+ *   how embedding writes failed silently: patchLedger was inherited, threw
+ *   against a URL that is not configured, and the caller swallowed it.
+ *   Before relying on an inherited method, check it is actually reachable.
+ *
+ *   NOTE: this list was previously wrong — it named searchMemory and
+ *   history as falling through when both had already been overridden.
+ *   A stale routing map here sends the next reader down the wrong path,
+ *   so amend it in the same commit that moves a method.
  *   See portal/docs/PHASE_3_PORTAL_ENDPOINTS.md for the full catalog.
  * ═══════════════════════════════════════════════════════════════════
  */
@@ -35,7 +49,7 @@
 import { SupabaseStorage } from "./supabase.js";
 import { debugLog } from "../utils/logger.js";
 import { PRISM_SYNALUX_BASE_URL, PRISM_SYNALUX_API_KEY } from "../config.js";
-import { KnowledgeSearchRequestSchema } from "./portalContracts.js";
+import { KnowledgeSearchRequestSchema, KnowledgeSearchResponseSchema } from "./portalContracts.js";
 import type {
   LedgerEntry,
   HandoffEntry,
@@ -265,7 +279,48 @@ export class SynaluxStorage extends SupabaseStorage {
       role: handoff.role,
       expected_version: expectedVersion ?? undefined,
     });
-    return (result.handoff ?? result) as SaveHandoffResult;
+    const candidate = Object.prototype.hasOwnProperty.call(result, "result")
+      ? result.result
+      : Object.prototype.hasOwnProperty.call(result, "handoff")
+        ? result.handoff
+        : result;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("[SynaluxStorage] Invalid save_handoff response: missing result");
+    }
+
+    const value = candidate as Record<string, unknown>;
+    if (value.status === "conflict" && Number.isSafeInteger(value.current_version)) {
+      return {
+        status: "conflict",
+        current_version: value.current_version as number,
+      };
+    }
+    if ((value.status === "created" || value.status === "updated")
+      && Number.isSafeInteger(value.version)) {
+      return {
+        status: value.status,
+        version: value.version as number,
+      };
+    }
+    // Older portal RPC wrappers returned only the new version. Preserve that
+    // rolling-upgrade contract without accepting an unversioned success.
+    if (value.status === undefined && Number.isSafeInteger(value.version)) {
+      return {
+        status: "updated",
+        version: value.version as number,
+      };
+    }
+    throw new Error("[SynaluxStorage] Invalid save_handoff response: malformed OCC result");
+  }
+
+  async saveHistorySnapshot(handoff: HandoffEntry, branch: string = "main"): Promise<void> {
+    await this.portalPost("/api/v1/prism/memory", {
+      action: "save_history_snapshot",
+      project: handoff.project,
+      version: handoff.version,
+      snapshot: handoff,
+      branch,
+    });
   }
 
   // ─── Context ─────────────────────────────────────────────────
@@ -345,6 +400,7 @@ export class SynaluxStorage extends SupabaseStorage {
 
   async searchMemory(params: {
     queryEmbedding: string;
+    queryText?: string;
     project?: string | null;
     limit: number;
     similarityThreshold: number;
@@ -365,6 +421,8 @@ export class SynaluxStorage extends SupabaseStorage {
     const result = await this.portalPost("/api/v1/prism/memory", {
       action: "search_memory",
       project: params.project ?? undefined,
+      // Enables the portal's hybrid lexical+semantic fusion (see interface).
+      query: params.queryText || undefined,
       query_embedding: parsed,
       similarity_threshold: params.similarityThreshold,
       limit: params.limit,
@@ -403,9 +461,91 @@ export class SynaluxStorage extends SupabaseStorage {
       scope: resolveKnowledgeScope(params.scope),
     });
     const result = await this.portalPost("/api/v1/prism/memory", wireBody as Record<string, unknown>);
+
+    // Validate the RESPONSE against the shared contract, not just the request.
+    // Before this, only the outgoing shape was checked — so a portal-side
+    // field rename would have gone unnoticed on both sides, which is exactly
+    // the 2026-05-24 class of incident this file exists to prevent.
+    // safeParse (not parse) on purpose: drift must be loud, but it must not
+    // take knowledge_search offline. The build-time contract test is what
+    // fails hard; at runtime we log and degrade to lenient extraction.
+    const validated = KnowledgeSearchResponseSchema.safeParse(result);
+    if (!validated.success) {
+      console.error(
+        "[synalux] knowledge_search response failed contract validation — " +
+        "portal and client may have drifted: " +
+        JSON.stringify(validated.error.issues.map(i => ({ path: i.path, code: i.code }))),
+      );
+    }
+
     const count = typeof result.count === "number" ? result.count : 0;
     const results = Array.isArray(result.results) ? result.results : [];
-    return { count, results } as KnowledgeSearchResult;
+    const matchMode = validated.success ? validated.data.match_mode : undefined;
+    return { count, results, match_mode: matchMode } as KnowledgeSearchResult;
+  }
+
+  /**
+   * Persist embedding data for an already-saved entry.
+   *
+   * MUST be overridden here. SupabaseStorage.patchLedger writes straight to
+   * Supabase via supabasePatch, which needs a direct SUPABASE_URL — not
+   * configured for paid-tier installs. Inheriting it meant every embedding
+   * write threw, and session_save_ledger's fire-and-forget catch swallowed
+   * the error while still reporting "Embedding generation queued". The
+   * result was 0 of 8,560 rows carrying an embedding and semantic search
+   * silently returning nothing.
+   *
+   * Only the vector is sent. embedding_compressed / embedding_format /
+   * embedding_turbo_radius are local-SQLite columns that do not exist on the
+   * portal schema; forwarding them would fail the whole write for fields the
+   * server has nowhere to put.
+   */
+  async patchLedger(id: string, data: Record<string, unknown>): Promise<void> {
+    const raw = data.embedding;
+    if (raw === undefined || raw === null) return;
+
+    // ledgerHandlers JSON-stringifies the vector before patching; accept both.
+    let vector: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        vector = JSON.parse(raw);
+      } catch {
+        throw new Error("patchLedger: embedding string is not valid JSON");
+      }
+    }
+    if (!Array.isArray(vector)) {
+      throw new Error("patchLedger: embedding must be an array");
+    }
+
+    await this.portalPost("/api/v1/prism/memory", {
+      action: "save_embedding",
+      memory_id: id,
+      embedding: vector,
+    });
+  }
+
+  /**
+   * Rows semantic search cannot find, read through the portal.
+   *
+   * The backfill tool used to reach these via inherited getLedgerEntries —
+   * a direct Supabase read paid-tier installs cannot make (NXDOMAIN), so the
+   * repair tool could never see what needed repairing. The portal endpoint
+   * ignores cursorId (it always returns the oldest missing rows, and rows
+   * gain embeddings as the backfill proceeds, so the frontier advances by
+   * itself); it is accepted here to satisfy the shared signature.
+   */
+  async getEntriesMissingEmbeddings(params: {
+    project?: string;
+    limit: number;
+    cursorId?: string;
+  }): Promise<Array<{ id: string; summary: string; decisions?: string[]; project: string }>> {
+    const result = await this.portalPost("/api/v1/prism/memory", {
+      action: "list_missing_embeddings",
+      limit: params.limit,
+      ...(params.project ? { project: params.project } : {}),
+    });
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    return entries as Array<{ id: string; summary: string; decisions?: string[]; project: string }>;
   }
 
   // ─── Time Travel ─────────────────────────────────────────────
@@ -446,8 +586,15 @@ export class SynaluxStorage extends SupabaseStorage {
       const inventory = result.inventory as Record<string, number> | undefined;
       const totalActiveEntries = typeof inventory?.ledger_entries === "number" ? inventory.ledger_entries : 0;
       const totalHandoffs = typeof inventory?.active_projects === "number" ? inventory.active_projects : 0;
+      // Hardcoding 0 here certified a 100%-missing-embeddings outage as
+      // "HEALTHY — all clean". Use the portal's real count; if the portal
+      // predates the field, report -1 so healthCheck can say "unknown"
+      // instead of lying in either direction.
+      const missingEmbeddings = typeof inventory?.ledger_missing_embeddings === "number"
+        ? inventory.ledger_missing_embeddings
+        : -1;
       return {
-        missingEmbeddings: 0,
+        missingEmbeddings,
         unrepairableEmbeddings: 0,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],
@@ -460,7 +607,9 @@ export class SynaluxStorage extends SupabaseStorage {
     } catch (e) {
       debugLog("[SynaluxStorage] getHealthStats failed: " + (e instanceof Error ? e.message : String(e)));
       return {
-        missingEmbeddings: 0,
+        // Portal unreachable: coverage is UNKNOWN, not zero. -1 makes the
+        // health check say so rather than certify blind.
+        missingEmbeddings: -1,
         unrepairableEmbeddings: 0,
         activeLedgerSummaries: [],
         orphanedHandoffs: [],

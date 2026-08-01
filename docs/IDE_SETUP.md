@@ -517,12 +517,17 @@ then pull whichever fits your hardware:
 ```bash
 ollama pull dcostenco/prism-coder:2b     # 2.3 GB — mobile / lightweight (99.1% accuracy)
 ollama pull dcostenco/prism-coder:4b     # 3.4 GB — balanced (100% accuracy)
-ollama pull dcostenco/prism-coder:14b    # 8.4 GB — Mac default (100% accuracy)
-ollama pull dcostenco/prism-coder:32b    # 16 GB  — complex tasks (100% accuracy)
+ollama pull dcostenco/prism-coder:9b     # 5.8 GB — Mac default (100% routing accuracy)
+ollama pull dcostenco/prism-coder:27b    # 16 GB  — complex tasks (100% routing accuracy)
 ```
 
 Prism auto-detects running Ollama models. No configuration needed — `prism_infer`
 picks the best available model automatically.
+
+Route mode validates every tool-call envelope against the host's advertised
+tool registry. Standard and higher plans can add authenticated deterministic
+correction with the default `route_guard: "auto"`; use
+`route_guard: "local"` to keep the prompt and route draft entirely on-device.
 
 ### Remote Ollama (e.g., another machine on LAN)
 

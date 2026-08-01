@@ -157,6 +157,13 @@ export interface SpreadingActivationOptions {
 export interface KnowledgeSearchResult {
   count: number;
   results: unknown[];
+  /**
+   * How the backend matched. 'strict' = every query term matched.
+   * 'relaxed' = no exact match existed, so these are the closest entries
+   * and must not be presented as exact hits. 'unfiltered' = no query text.
+   * Undefined for backends that don't report it (local SQLite, older portals).
+   */
+  match_mode?: "strict" | "relaxed" | "unfiltered" | "none";
 }
 
 /**
@@ -423,6 +430,14 @@ export interface StorageBackend {
    */
   searchMemory(params: {
     queryEmbedding: string; // JSON-stringified number[]
+    /**
+     * Raw query text. Optional; when a backend can use it, it enables hybrid
+     * lexical+semantic retrieval (portal fuses knowledge_search_ranked with
+     * the vector search via weighted RRF — measured 59% hit@1 vs 45% for
+     * semantic alone on blind probes, 2026-07-28). Backends without a
+     * lexical arm simply ignore it.
+     */
+    queryText?: string;
     project?: string | null;
     limit: number;
     similarityThreshold: number;
@@ -483,6 +498,21 @@ export interface StorageBackend {
    * smart analysis — this just runs simple SQL queries.
    */
   getHealthStats(userId: string): Promise<HealthStats>;
+
+  /**
+   * Active ledger entries with no embedding vector, for repair.
+   *
+   * OPTIONAL with a fallback in the caller: session_backfill_embeddings
+   * previously queried via getLedgerEntries with PostgREST params, which
+   * SynaluxStorage inherits from SupabaseStorage — a direct-Supabase read
+   * that paid-tier installs cannot make (no SUPABASE_URL → NXDOMAIN). A
+   * dedicated method lets each backend answer in its own dialect.
+   */
+  getEntriesMissingEmbeddings?(params: {
+    project?: string;
+    limit: number;
+    cursorId?: string;
+  }): Promise<Array<{ id: string; summary: string; decisions?: string[]; project: string }>>;
 
   // ─── v3.0: Agent Registry Operations ──────────────────────────
 
