@@ -303,6 +303,68 @@ describe('skill routing — on-device prompt matching', () => {
   });
 });
 
+// ── Native-context path (session_bootstrap) ──────────────────────────────────
+// Two defects shipped here and were caught by a cross-harness probe, not by
+// this suite: session_bootstrap sets includeSkillContent:false, which returns
+// from sessionLoadContextHandler BEFORE resolveSkills — so the first turn, the
+// entire point of the change, never routed on the prompt AND never wired
+// storage, killing offline routing at the next restart.
+
+describe('skill routing — native path (bootstrap)', () => {
+  it('resolves matched names with NO portal call', async () => {
+    mockEndpoints({ table: TEST_TABLE });
+    const { resolvePromptSkillNames } = await import('../src/tools/skillRouting.js');
+    const names = await resolvePromptSkillNames("she can't access the ledger");
+
+    expect(names).toContain('data-before-code');
+    const portalCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url]) => String(url).includes('/api/v1/prism/resolve'));
+    expect(portalCalls, 'bootstrap must not block on a portal round-trip').toHaveLength(0);
+  });
+
+  it('returns [] rather than guessing when the table is unavailable', async () => {
+    mockEndpoints({}); // table 404s
+    const { resolvePromptSkillNames } = await import('../src/tools/skillRouting.js');
+    expect(await resolvePromptSkillNames('the list is empty for her')).toEqual([]);
+  });
+
+  it('returns [] for an absent or blank prompt', async () => {
+    mockEndpoints({ table: TEST_TABLE });
+    const { resolvePromptSkillNames } = await import('../src/tools/skillRouting.js');
+    expect(await resolvePromptSkillNames('')).toEqual([]);
+  });
+
+  it('wires _setStorage BEFORE the native-context early return', () => {
+    // Structural, because the defect has no behavioural surface in this suite:
+    // the handler returns a text block either way. _setStorage sat below the
+    // early return, so the keyword table was never persisted on the bootstrap
+    // path and offline routing died at the next restart. Ordering IS the fix.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    const wired = src.indexOf('_setStorage(');
+    const earlyReturn = src.indexOf('if (!includeSkillContent) {');
+    expect(wired, '_setStorage( not found').toBeGreaterThan(-1);
+    expect(earlyReturn, 'native early return not found').toBeGreaterThan(-1);
+    expect(wired, '_setStorage must be wired before the native early return')
+      .toBeLessThan(earlyReturn);
+  });
+
+  it('gates the hint on entitlement, not on the public table', () => {
+    // The public routing table lists names for EVERY tier, so matching it
+    // alone would advertise skills the caller has no entitlement to. The
+    // native path must intersect with entitledSkillNames.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    const block = src.split('Symptom-triggered skills (on-device prompt routing)')[1]?.slice(0, 1200) ?? '';
+    expect(block).toMatch(/resolvePromptSkillNames/);
+    expect(block, 'matched names must be filtered by entitlement').toMatch(/entitledSkillNames\.has/);
+  });
+});
+
 // ── Parity with the portal's resolver ────────────────────────────────────────
 
 /**

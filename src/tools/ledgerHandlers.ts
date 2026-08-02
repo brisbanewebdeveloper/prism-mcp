@@ -1061,6 +1061,18 @@ export async function sessionLoadContextHandler(
   const manifestSnapshot = await resolveNativeSkillManifestSnapshot(skillSyncResult);
   const entitledSkillNames = new Set(manifestSnapshot.names);
 
+  // Wire last-good persistence BEFORE any early return. This sat below the
+  // native-context branch, so session_bootstrap — the one path that runs on
+  // every first turn — could never persist the keyword table, and offline
+  // keyword routing died at the next restart. Cheap and idempotent.
+  {
+    const { _setStorage } = await import("./skillRouting.js");
+    _setStorage(
+      async (k, v) => { try { await storage.setSetting?.(k, v); } catch { /* cache-only */ } },
+      async (k) => { try { return await getSetting(k, ""); } catch { return ""; } },
+    );
+  }
+
   const storage = options.storageOverride ?? await getStorage();
   const effectiveRole = role || await getSetting("default_role", "") || undefined;
   const loadEntitledRoleSkill = async (): Promise<string> => {
@@ -1406,6 +1418,26 @@ export async function sessionLoadContextHandler(
         (d.keywords.length > keywords.length ? `, … ${d.keywords.length - keywords.length} more omitted` : "") + `\n`;
     }
     nativeContext += `\n**Session Version:** ${version === null || version === undefined ? "None" : compact(version, 40)}\n`;
+
+    // ─── Symptom-triggered skills (on-device prompt routing) ───
+    // Native hosts already hold every entitled skill as a FILE on disk, so
+    // routing cannot gate delivery here — it surfaces WHICH ones the first
+    // message implicates, on the turn an incident report actually arrives.
+    //
+    // Entitlement comes from manifestSnapshot (already loaded, tier-gated), so
+    // this costs no portal call; the keyword table is matched on-device and
+    // the prompt never leaves the machine. Filtering by entitledSkillNames is
+    // required — the public table lists names for every tier.
+    if (typeof prompt === "string" && prompt.trim()) {
+      try {
+        const { resolvePromptSkillNames } = await import("./skillRouting.js");
+        const matched = (await resolvePromptSkillNames(prompt))
+          .filter((name) => entitledSkillNames.has(name));
+        if (matched.length > 0) {
+          nativeContext += `\n**Symptom-triggered skills:** ${matched.join(", ")}\n`;
+        }
+      } catch { /* routing is advisory — never fail startup over it */ }
+    }
     if (convId) {
       const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
@@ -1487,11 +1519,8 @@ export async function sessionLoadContextHandler(
   }
 
   // ─── All other skills resolved by portal API ───────────────
-  const { resolveSkills, _setStorage } = await import("./skillRouting.js");
-  _setStorage(
-    async (k, v) => { try { await storage.setSetting?.(k, v); } catch {} },
-    async (k) => { try { return await getSetting(k, ""); } catch { return ""; } },
-  );
+  // Storage is wired above, before the native-context early return.
+  const { resolveSkills } = await import("./skillRouting.js");
   const skillResolution = await resolveSkills(project, prompt, effectiveRole);
 
   // Client-renders-content: portal returns names, we load content from local DB

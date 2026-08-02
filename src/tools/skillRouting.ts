@@ -332,6 +332,26 @@ export function _applyPromptRouting(
 }
 
 /**
+ * Skill names matched by the on-device keyword rules, and nothing else.
+ *
+ * For the NATIVE-context path (session_bootstrap): native hosts receive skill
+ * files on disk from the tier-gated manifest sync, so there is no portal call
+ * to make and no entitlement to re-derive here — the caller already holds
+ * `entitledSkillNames` and MUST filter with it. Returns [] when the table is
+ * unavailable rather than guessing.
+ *
+ * Deliberately does not call the portal: bootstrap is the first-turn startup
+ * display, and blocking it on a network round-trip per project is the cost
+ * this whole change exists to avoid.
+ */
+export async function resolvePromptSkillNames(prompt: string): Promise<string[]> {
+  if (!prompt) return [];
+  const kw = await fetchKeywordTable();
+  if (!kw) return [];
+  return _applyPromptRouting([], prompt, kw.prompt_keywords).map((s) => s.name);
+}
+
+/**
  * Free tier resolves to an empty set portal-side, so adding prompt-matched
  * skills locally would hand out an entitlement the portal just withheld.
  * Older portals omit `tier`; fall back to "did we get anything at all".
