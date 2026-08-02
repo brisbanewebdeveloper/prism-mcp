@@ -65,6 +65,14 @@ function expectVerbatimStartupContract(instructions: string): void {
   expect(normalized).toContain(
     "For a greeting-only prompt, stop after the verbatim startup display.",
   );
+  // Every host template must (a) pass the first message so turn-one keyword
+  // routing fires, and (b) disclose that matching is local. Asserted here
+  // rather than per-host so a new template cannot ship without both.
+  expect(normalized).toMatch(/prompt-keyword skill routing fires? on turn one/);
+  expect(normalized).toContain("on-device");
+  expect(normalized).toContain("never transmitted");
+  // The zero-argument contract is what made routing dead on turn one.
+  expect(normalized).not.toMatch(/exactly once with an empty object/);
 }
 
 function expectLocalFirstPolicy(instructions: string): void {
@@ -549,7 +557,7 @@ describe("prism connect", () => {
     expect(configureGeminiNativeStartup(homeDir)).toMatchObject({ status: "installed" });
     const configured = readFileSync(instructionPath, "utf8");
     expect(configured).toContain("<!-- >>> prism connect managed: native startup -->");
-    expect(configured).toContain("`session_bootstrap({})`, exactly once");
+    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
     expect(configured).toContain("native tool discovery/ToolSearch");
     expect(configured).toContain("Do not use shell commands, file reads, subagents");
     expect(configured).toContain("`Prism startup failure` and stop");
@@ -636,7 +644,7 @@ describe("prism connect", () => {
     const configured = readFileSync(instructionPath, "utf8");
     expect(configured.startsWith(`${original}\r\n`)).toBe(true);
     expect(configured).toContain("<!-- >>> prism connect managed: codex native startup -->");
-    expect(configured).toContain("`session_bootstrap({})`, exactly once");
+    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
     expect(configured).toContain("Do not call `session_load_context`");
     expect(configured.replaceAll("\r\n", "")).not.toContain("\n");
     expectPosixMode(instructionPath, 0o640);
@@ -1931,7 +1939,7 @@ describe("prism connect", () => {
       expect(JSON.stringify(readConfig(geminiSettings).hooks)).toBe(geminiHooksBefore);
       expect(readConfig(geminiSettings).experimental.enableAgents).toBe(false);
       const configuredGeminiInstructions = readFileSync(geminiInstructions, "utf8");
-      expect(configuredGeminiInstructions).toContain("`session_bootstrap({})`, exactly once");
+      expect(configuredGeminiInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
       expect(configuredGeminiInstructions).not.toContain("# Startup — MANDATORY");
       expect(configuredGeminiInstructions).toContain("# Paths\n\n- Keep this user rule.\n");
       expectVerbatimStartupContract(configuredGeminiInstructions);
@@ -1941,7 +1949,7 @@ describe("prism connect", () => {
       const configuredCodexInstructions = readFileSync(codexInstructions, "utf8");
       expect(configuredCodexInstructions.startsWith(`${codexInstructionsSentinel}\n`)).toBe(true);
       expect(configuredCodexInstructions).toContain("prism connect managed: codex native startup");
-      expect(configuredCodexInstructions).toContain("`session_bootstrap({})`, exactly once");
+      expect(configuredCodexInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
       expectVerbatimStartupContract(configuredCodexInstructions);
       expectLocalFirstPolicy(configuredCodexInstructions);
       expectEvidenceWorkflowPolicy(configuredCodexInstructions);

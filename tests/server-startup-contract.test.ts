@@ -62,7 +62,15 @@ describe("Prism startup tool contract", () => {
     expect(loadDescription).toMatch(/explicit project reload/i);
     expect(loadDescription).toMatch(/fallback only when session_bootstrap is unavailable/i);
     expect(loadDescription).not.toMatch(/at the start of every conversation/i);
-    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/call session_bootstrap exactly once with \{\}/i);
+    // Was `exactly once with {}` until 2026-08-02. The zero-argument contract
+    // meant prompt-keyword routing could never fire on turn one — the turn an
+    // incident report arrives on. The prompt is now passed and matched
+    // on-device, so both halves are pinned here.
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/call session_bootstrap exactly once/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/verbatim first message as \{prompt: "<first user message>"\}/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/ON-DEVICE/);
+    expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/never leaves the machine/i);
+    expect(PRISM_SERVER_INSTRUCTIONS).not.toMatch(/exactly once with \{\}/);
     expectVerbatimStartupContract(PRISM_SERVER_INSTRUCTIONS);
     expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/Do not substitute session_load_context/i);
     expect(PRISM_SERVER_INSTRUCTIONS).toMatch(/session_save_handoff to preserve state/i);

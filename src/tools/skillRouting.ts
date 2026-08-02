@@ -1,7 +1,24 @@
 /**
- * Skill routing thin client — all routing logic is portal-side.
- * POST SYNALUX_BASE/api/v1/prism/resolve with bearer auth.
- * Cache: keyed on (project,prompt,role), 5-min live / 30s failure.
+ * Skill routing thin client.
+ *
+ * Split of responsibility (changed 2026-08-02):
+ *   - The PORTAL is the entitlement oracle. POST SYNALUX_BASE/api/v1/prism/resolve
+ *     with bearer auth answers "is this caller paid, and which universal/project
+ *     skills do they get". The request body carries NO prompt.
+ *   - PROMPT keyword routing is matched ON-DEVICE against the public routing
+ *     table (GET SYNALUX_BASE/_internal/skills-routing.json — no auth, no body).
+ *     The user's message never leaves the machine.
+ *
+ * Why the prompt stopped being transmitted: routing needs only which of 28
+ * regexes match, and the regexes are already public. Sending the raw first
+ * message bought nothing a local match could not compute — and free-tier
+ * callers paid that privacy cost for literally zero routing benefit, since
+ * the portal gates them to an empty set (resolve/route.ts: `tier === 'paid' ?
+ * resolved : []`). Paid skill CONTENT stays gated server-side at
+ * /api/v1/prism/skill-manifest, which this change does not touch.
+ *
+ * Cache: portal keyed on (project,role) — no longer per-prompt, which never
+ * hit because prompts are unique. Keyword table cached 1h + last-good.
  * Offline: last-good from local DB, or empty with warning.
  */
 
@@ -117,8 +134,13 @@ interface CacheEntry { resp: PortalResp; at: number; live: boolean }
 const cache = new Map<string, CacheEntry>();
 const inflightMap = new Map<string, Promise<PortalResp | null>>();
 
-function cacheKey(project: string, prompt?: string): string {
-  return `${project}|${prompt || ''}`;
+/**
+ * Deliberately excludes the prompt. Prompts are unique, so a per-prompt key
+ * never hit and grew one dead entry per message; and the portal no longer
+ * receives a prompt to key on.
+ */
+function cacheKey(project: string, role?: string): string {
+  return `${project}|${role || ''}`;
 }
 
 // Persist last-good to local DB for offline fallback
@@ -130,13 +152,21 @@ export function _setStorage(persist: typeof persistFn, read: typeof readFn): voi
   readFn = read;
 }
 
-async function callPortal(project: string, prompt?: string, role?: string): Promise<PortalResp | null> {
+function synaluxBase(): string {
+  return (process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
+    process.env.SYNALUX_BASE_URL?.trim() || PRISM_SYNALUX_BASE_URL ||
+    'https://synalux.ai').replace(/\/+$/, '');
+}
+
+/**
+ * No `prompt` parameter, by design. The privacy guarantee is enforced by this
+ * signature: the user's message is not in scope at the only site that builds a
+ * network request body, so it cannot be transmitted by a later edit without
+ * deleting this comment and changing the type.
+ */
+async function callPortal(project: string, role?: string): Promise<PortalResp | null> {
   try {
-    const synaluxBase = (process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
-      process.env.SYNALUX_BASE_URL?.trim() || PRISM_SYNALUX_BASE_URL ||
-      'https://synalux.ai').replace(/\/+$/, '');
     const body: Record<string, string> = { project };
-    if (prompt) body.prompt = prompt;
     if (role) body.role = role;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -170,7 +200,7 @@ async function callPortal(project: string, prompt?: string, role?: string): Prom
       }
     }
 
-    const doFetch = () => fetch(`${synaluxBase}/api/v1/prism/resolve`, {
+    const doFetch = () => fetch(`${synaluxBase()}/api/v1/prism/resolve`, {
       method: 'POST', headers, body: JSON.stringify(body),
       signal: AbortSignal.timeout(5_000),
       redirect: 'error', // never follow a redirect with a credential attached
@@ -194,17 +224,162 @@ function makeOffline(): ResolvedSkills {
   return { names: [], skills: [], user_local: DEFAULT_UL, isOffline: true };
 }
 
+// -- Prompt keyword routing, matched ON-DEVICE --------------------------------
+
+const TABLE_TTL = 60 * 60 * 1000;
+const TABLE_STORAGE_KEY = 'routing_keywords';
+/** Public, unauthenticated, byte-identical to the table the portal compiles. */
+const TABLE_PATH = '/_internal/skills-routing.json';
+
+interface KeywordTable { version: number; prompt_keywords: Record<string, string[]> }
+
+let kwCache: { table: KeywordTable; at: number } | null = null;
+let kwInflight: Promise<KeywordTable | null> | null = null;
+const warnedVersions = new Set<string>();
+
+function isKeywordTable(v: unknown): v is KeywordTable {
+  const t = v as KeywordTable | null;
+  return !!t && typeof t.version === 'number' && !!t.prompt_keywords
+    && typeof t.prompt_keywords === 'object';
+}
+
+/**
+ * @param expectVersion routing_version the portal just reported. A mismatch
+ *   means our cached copy predates a routing deploy, so drop it and refetch
+ *   once — bounded to one extra request per version change.
+ */
+async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable | null> {
+  if (expectVersion !== undefined && kwCache && kwCache.table.version !== expectVersion) {
+    kwCache = null;
+  }
+  if (kwCache && Date.now() - kwCache.at < TABLE_TTL) return kwCache.table;
+  if (!kwInflight) {
+    kwInflight = (async (): Promise<KeywordTable | null> => {
+      try {
+        const res = await fetch(`${synaluxBase()}${TABLE_PATH}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(5_000),
+          redirect: 'error',
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const raw: unknown = await res.json();
+        if (!isKeywordTable(raw)) throw new Error('malformed routing table');
+        const table: KeywordTable = { version: raw.version, prompt_keywords: raw.prompt_keywords };
+        kwCache = { table, at: Date.now() };
+        if (persistFn) {
+          try { await persistFn(TABLE_STORAGE_KEY, JSON.stringify(table)); } catch { /* cache-only */ }
+        }
+        return table;
+      } catch {
+        // Stale-but-usable beats no keyword routing: an unreachable portal is
+        // exactly the incident case where symptom-triggered skills matter.
+        if (kwCache) return kwCache.table;
+        if (readFn) {
+          try {
+            const stored = await readFn(TABLE_STORAGE_KEY);
+            const parsed: unknown = stored ? JSON.parse(stored) : null;
+            if (isKeywordTable(parsed)) {
+              kwCache = { table: parsed, at: 0 }; // at:0 → retry live on next call
+              return parsed;
+            }
+          } catch { /* fall through to null */ }
+        }
+        return null;
+      } finally {
+        kwInflight = null;
+      }
+    })();
+  }
+  return kwInflight;
+}
+
+/**
+ * Verbatim port of portal resolve/route.ts prompt-matching block + the sort
+ * that follows it. Parity is the whole point: any divergence silently changes
+ * which skills load. Do not "improve" this — the reference implementation and
+ * a scenario-level parity test both pin it.
+ *
+ * `priority: 200 + resolved.length` reads the length AT PUSH TIME, so it
+ * depends on how many skills precede it. Preserved exactly.
+ */
+export function _applyPromptRouting(
+  base: ResolvedSkill[],
+  prompt: string,
+  promptKeywords: Record<string, string[]>,
+): ResolvedSkill[] {
+  const resolved: ResolvedSkill[] = base.map((s) => ({ ...s }));
+  const seen = new Set(resolved.map((s) => s.name));
+  for (const [pattern, skills] of Object.entries(promptKeywords)) {
+    try {
+      if (new RegExp(pattern, 'i').test(prompt)) {
+        for (const skillName of skills) {
+          const existing = resolved.find((s) => s.name === skillName);
+          if (existing) existing.category = 'prompt';
+          else if (!seen.has(skillName)) {
+            seen.add(skillName);
+            resolved.push({
+              name: skillName, priority: 200 + resolved.length,
+              protected: false, category: 'prompt',
+            });
+          }
+        }
+      }
+    } catch { /* invalid pattern — portal swallows it too */ }
+  }
+  resolved.sort((a, b) => a.priority - b.priority);
+  return resolved;
+}
+
+/**
+ * Free tier resolves to an empty set portal-side, so adding prompt-matched
+ * skills locally would hand out an entitlement the portal just withheld.
+ * Older portals omit `tier`; fall back to "did we get anything at all".
+ */
+function isPaid(resp: PortalResp): boolean {
+  return resp.tier ? resp.tier === 'paid' : resp.loaded.length > 0;
+}
+
+async function toResolvedSkillsWithPrompt(
+  resp: PortalResp, prompt: string | undefined, isOffline: boolean,
+): Promise<ResolvedSkills> {
+  let skills = toResolvedSkills(resp);
+  if (prompt && isPaid(resp)) {
+    const kw = await fetchKeywordTable(resp.routing_version);
+    if (kw) {
+      if (typeof resp.routing_version === 'number' && kw.version !== resp.routing_version) {
+        const pair = `${kw.version}/${resp.routing_version}`;
+        if (!warnedVersions.has(pair)) {
+          warnedVersions.add(pair);
+          console.error(
+            `[skill-routing] keyword table v${kw.version} vs portal v${resp.routing_version} — ` +
+            `prompt-matched skills may lag a routing deploy`,
+          );
+        }
+      }
+      skills = _applyPromptRouting(skills, prompt, kw.prompt_keywords);
+    }
+  }
+  return {
+    names: skills.map((s) => s.name),
+    skills,
+    user_local: DEFAULT_UL,
+    isOffline,
+    routing_version: resp.routing_version,
+  };
+}
+
 // -- Public API ---------------------------------------------------------------
 
 export async function resolveSkills(project: string, prompt?: string, role?: string): Promise<ResolvedSkills> {
-  const key = cacheKey(project, prompt);
+  const key = cacheKey(project, role);
   const now = Date.now();
   const entry = cache.get(key);
   const ttl = (entry?.live ?? true) ? LIVE_TTL : FAIL_TTL;
 
   if (!entry || now - entry.at > ttl) {
     if (!inflightMap.has(key)) {
-      const p = callPortal(project, prompt, role).then(async (r) => {
+      const p = callPortal(project, role).then(async (r) => {
         if (r) {
           cache.set(key, { resp: r, at: Date.now(), live: true });
           // Persist last-good for offline fallback
@@ -223,13 +398,7 @@ export async function resolveSkills(project: string, prompt?: string, role?: str
 
   const cached = cache.get(key);
   if (cached) {
-    return {
-      names: cached.resp.loaded,
-      skills: toResolvedSkills(cached.resp),
-      user_local: DEFAULT_UL,
-      isOffline: !cached.live,
-      routing_version: cached.resp.routing_version,
-    };
+    return toResolvedSkillsWithPrompt(cached.resp, prompt, !cached.live);
   }
 
   // No cached response — try last-good from local DB
@@ -238,11 +407,7 @@ export async function resolveSkills(project: string, prompt?: string, role?: str
       const stored = await readFn(`skill_cache:${project}`);
       if (stored) {
         const resp = JSON.parse(stored) as PortalResp;
-        return {
-          names: resp.loaded, skills: toResolvedSkills(resp), user_local: DEFAULT_UL,
-          isOffline: true,
-          routing_version: resp.routing_version,
-        };
+        return toResolvedSkillsWithPrompt(resp, prompt, true);
       }
     } catch {}
   }
@@ -261,6 +426,9 @@ export async function resolveSkillsForPrompt(_prompt: string, _baseSkills: strin
 export function _invalidateRoutingCache(): void {
   cache.clear();
   inflightMap.clear();
+  kwCache = null;
+  kwInflight = null;
+  warnedVersions.clear();
 }
 
 export const _OFFLINE_FALLBACK = OFFLINE_FALLBACK;

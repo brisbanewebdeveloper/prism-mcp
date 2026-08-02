@@ -71,14 +71,28 @@ describe('skill routing — portal call', () => {
     expect(result.names).toContain('prime-directive');
   });
 
-  it('passes prompt and role to portal', async () => {
+  it('passes role to portal but NEVER the prompt', async () => {
+    // Inverted 2026-08-02. This test previously pinned `body.prompt` as a
+    // REQUIREMENT — it was the contract that the user's verbatim first message
+    // is transmitted. Prompt matching moved on-device, so the same assertion
+    // now runs the other way: the prompt must be absent from every request
+    // body, on every endpoint. Rewritten rather than deleted so the flip is
+    // explicit in history instead of looking like dropped coverage.
     mockPortalResponse(PORTAL_RESP);
-    await resolveSkills('prism-coder', 'train with LoRA', 'dev');
-    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(call[1].body);
-    expect(body.project).toBe('prism-coder');
-    expect(body.prompt).toBe('train with LoRA');
-    expect(body.role).toBe('dev');
+    const secret = 'user Sam Doe cannot access their ledger, sam.doe@example.invalid';
+    await resolveSkills('prism-coder', secret, 'dev');
+
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    const first = JSON.parse(calls[0][1].body);
+    expect(first.project).toBe('prism-coder');
+    expect(first.role).toBe('dev');
+    expect(first.prompt).toBeUndefined();
+
+    for (const [url, init] of calls) {
+      const serialized = `${String(url)} ${init?.body ?? ''}`;
+      expect(serialized).not.toContain('Sam Doe');
+      expect(serialized).not.toContain('sam.doe@example.invalid');
+    }
   });
 });
 
@@ -151,6 +165,228 @@ describe('skill routing — backward compat', () => {
     const result = await resolveSkillsForProject('any');
     expect(result.user_local.enabled).toBe(false);
     expect(result.user_local.key_prefix).toBe('user_skill:');
+  });
+});
+
+// ── Prompt routing matched ON-DEVICE ─────────────────────────────────────────
+// The prompt is never transmitted; the 28 keyword regexes are fetched from the
+// PUBLIC routing table and matched locally. These tests pin the two things that
+// can silently break: (1) the match still happens, (2) it produces exactly what
+// the portal would have produced.
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { _applyPromptRouting, _setStorage, type ResolvedSkill } from '../src/tools/skillRouting.js';
+
+const TEST_TABLE = {
+  version: 26,
+  prompt_keywords: {
+    "can'?t (access|see)|no rows|is (empty|blank)": ['data-before-code'],
+    'lora|corpus|fine-?tun': ['autonomous-training-protocol'],
+    '[unterminated': ['never-reachable'], // invalid regex — portal swallows it
+  },
+};
+
+/** Dispatches by URL: resolve endpoint vs the public routing table. */
+function mockEndpoints(opts: { resolve?: unknown; resolveOk?: boolean; table?: unknown }) {
+  globalThis.fetch = vi.fn().mockImplementation((url: unknown) => {
+    if (String(url).includes('/_internal/skills-routing.json')) {
+      return Promise.resolve({
+        ok: opts.table !== undefined, status: opts.table !== undefined ? 200 : 404,
+        json: async () => opts.table,
+      } as Response);
+    }
+    const ok = opts.resolveOk ?? true;
+    return Promise.resolve({
+      ok, status: ok ? 200 : 500, json: async () => opts.resolve,
+    } as Response);
+  });
+}
+
+const PAID_RESP = {
+  loaded: ['prime-directive'], skipped: [], routing_version: 26, tier: 'paid',
+  skills: [{ name: 'prime-directive', priority: 0, protected: true, category: 'universal' }],
+};
+
+describe('skill routing — on-device prompt matching', () => {
+  afterEach(() => { _setStorage(null, null); });
+
+  it('loads a keyword-matched skill without transmitting the prompt', async () => {
+    mockEndpoints({ resolve: PAID_RESP, table: TEST_TABLE });
+    const result = await resolveSkills('synalux', "Sam Doe can't access their ledger");
+
+    expect(result.names).toContain('data-before-code');
+    const matched = result.skills.find((s) => s.name === 'data-before-code');
+    expect(matched?.category).toBe('prompt');
+    expect(matched?.protected).toBe(false); // never fabricate a floor entry
+
+    const bodies = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, init]) => String(init?.body ?? '')).join(' ');
+    expect(bodies).not.toContain('Sam Doe');
+  });
+
+  it('withholds prompt-matched skills from free tier, matching portal gating', async () => {
+    // resolve/route.ts: `const gated = tier === 'paid' ? resolved : []`. Local
+    // matching must not hand back an entitlement the portal just withheld.
+    mockEndpoints({
+      resolve: { loaded: [], skipped: [], routing_version: 26, tier: 'free' },
+      table: TEST_TABLE,
+    });
+    const result = await resolveSkills('synalux', "Sam Doe can't access their ledger");
+    expect(result.names).toEqual([]);
+  });
+
+  it('swallows an invalid pattern and still applies the remaining rules', async () => {
+    mockEndpoints({ resolve: PAID_RESP, table: TEST_TABLE });
+    const result = await resolveSkills('synalux', 'the list is empty for her');
+    expect(result.names).toContain('data-before-code');
+    expect(result.names).not.toContain('never-reachable');
+  });
+
+  it('serves distinct prompts from ONE portal call (the per-prompt cache never hit)', async () => {
+    mockEndpoints({ resolve: PAID_RESP, table: TEST_TABLE });
+    const a = await resolveSkills('synalux', "she can't access the ledger");
+    const b = await resolveSkills('synalux', 'fine-tune the corpus');
+    const c = await resolveSkills('synalux', 'update the README');
+
+    const resolveCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url]) => String(url).includes('/api/v1/prism/resolve'));
+    expect(resolveCalls).toHaveLength(1);
+    // ...and routing still differs per prompt despite the shared cache entry.
+    expect(a.names).toContain('data-before-code');
+    expect(b.names).toContain('autonomous-training-protocol');
+    expect(c.names).toEqual(['prime-directive']);
+  });
+
+  it('still routes on keywords when the portal is unreachable', async () => {
+    // The incident case: the portal being down is exactly when a symptom-
+    // triggered diagnostic skill matters most. Old behaviour returned nothing.
+    const store: Record<string, string> = {
+      'skill_cache:synalux': JSON.stringify(PAID_RESP),
+      routing_keywords: JSON.stringify(TEST_TABLE),
+    };
+    _setStorage(async () => {}, async (k: string) => store[k] ?? '');
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const result = await resolveSkills('synalux', 'no rows returned for that user');
+    expect(result.isOffline).toBe(true);
+    expect(result.names).toContain('data-before-code');
+  });
+});
+
+// ── Parity with the portal's resolver ────────────────────────────────────────
+
+/**
+ * Verbatim reference port of portal resolve/route.ts lines 143-184. If the
+ * portal changes its resolution order, priority arithmetic, or dedup rules,
+ * this reference drifts from production and the test below stops proving
+ * anything — so portal/src/__tests__ pins the portal side against this file.
+ */
+function portalReference(
+  table: { universal?: unknown[]; projects?: Record<string, unknown[]>; prompt_keywords?: Record<string, string[]> },
+  project: string,
+  prompt?: string,
+): ResolvedSkill[] {
+  const seen = new Set<string>();
+  const resolved: ResolvedSkill[] = [];
+  const universal = table.universal || [];
+  for (let i = 0; i < universal.length; i++) {
+    const e = universal[i] as { name: string; priority?: number; protected?: boolean } | string;
+    const name = typeof e === 'string' ? e : e.name;
+    const prio = typeof e === 'object' ? (e.priority ?? i) : i;
+    const prot = typeof e === 'object' ? !!e.protected : false;
+    if (!seen.has(name)) { seen.add(name); resolved.push({ name, priority: prio, protected: prot, category: 'universal' }); }
+  }
+  let pp = 100;
+  for (const [pattern, skills] of Object.entries(table.projects || {})) {
+    if (project.toLowerCase().includes(pattern)) {
+      for (const s of skills as ({ name: string; priority?: number } | string)[]) {
+        const name = typeof s === 'string' ? s : s.name;
+        const prio = typeof s === 'object' ? (s.priority ?? pp) : pp;
+        pp++;
+        if (!seen.has(name)) { seen.add(name); resolved.push({ name, priority: prio, protected: false, category: 'project' }); }
+      }
+    }
+  }
+  if (prompt && table.prompt_keywords) {
+    for (const [pattern, skills] of Object.entries(table.prompt_keywords)) {
+      try {
+        if (new RegExp(pattern, 'i').test(prompt)) {
+          for (const skillName of skills) {
+            const existing = resolved.find((s) => s.name === skillName);
+            if (existing) existing.category = 'prompt';
+            else if (!seen.has(skillName)) {
+              seen.add(skillName);
+              resolved.push({ name: skillName, priority: 200 + resolved.length, protected: false, category: 'prompt' });
+            }
+          }
+        }
+      } catch { /* portal swallows invalid patterns */ }
+    }
+  }
+  resolved.sort((a, b) => a.priority - b.priority);
+  return resolved;
+}
+
+const REAL_TABLE_PATH = process.env.PRISM_ROUTING_TABLE_PATH || path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../synalux-private/portal/src/config/prism/skills-routing.json',
+);
+
+const PARITY_PROMPTS = [
+  "A serious regression: Sam Doe can't access their prism ledger. Their account is sam.doe@example.invalid.",
+  'A customer says their invoice list is empty but they insist they have invoices.',
+  'Users in workspace B cannot see any patients, workspace A is fine.',
+  'no rows returned for that user',
+  'her ledger is blank',
+  'wrong rows showing up',
+  'Refactor the billing reconciliation job and add unit tests.',
+  'Update the README to document the new PRISM_STORAGE options.',
+  'fix the TypeScript compile error',
+  'deploy to production',
+  'train a LoRA on the v2 corpus',
+  'take a screenshot and verify the layout',
+  '', // empty prompt must be a no-op
+];
+
+describe('skill routing — parity with portal resolver', () => {
+  const available = existsSync(REAL_TABLE_PATH);
+  if (!available) {
+    it.skip(`REAL routing table not found at ${REAL_TABLE_PATH} — parity unproven`, () => {});
+    console.warn(`[skill-routing] parity test SKIPPED: no table at ${REAL_TABLE_PATH}`);
+  }
+
+  it.runIf(available)('produces byte-identical output to the portal for every prompt', () => {
+    const table = JSON.parse(readFileSync(REAL_TABLE_PATH, 'utf8'));
+    expect(Object.keys(table.prompt_keywords || {}).length).toBeGreaterThan(0);
+
+    for (const project of ['synalux', 'prism-coder', 'prism-aac', 'unrelated-repo']) {
+      for (const prompt of PARITY_PROMPTS) {
+        // Production composition: the portal resolves universal+project with
+        // NO prompt, then we apply the keyword rules on-device.
+        const base = portalReference(table, project, undefined);
+        const local = _applyPromptRouting(base, prompt, table.prompt_keywords);
+        const portal = portalReference(table, project, prompt);
+        expect(local, `project=${project} prompt=${JSON.stringify(prompt)}`).toEqual(portal);
+      }
+    }
+  });
+
+  it.runIf(available)('parity holds for a prompt that matches nothing', () => {
+    const table = JSON.parse(readFileSync(REAL_TABLE_PATH, 'utf8'));
+    const base = portalReference(table, 'synalux', undefined);
+    const local = _applyPromptRouting(base, 'zzz qqq', table.prompt_keywords);
+    expect(local).toEqual(portalReference(table, 'synalux', 'zzz qqq'));
+  });
+
+  it('detects a divergent matcher (the parity test can actually fail)', () => {
+    // Negative control: a matcher that gets the priority arithmetic wrong must
+    // be caught. Without this, the parity assertions above could be vacuous.
+    const table = { universal: [{ name: 'a', priority: 0, protected: true }], prompt_keywords: { widget: ['b'] } };
+    const base = portalReference(table, 'p', undefined);
+    const wrong = _applyPromptRouting(base, 'widget', { widget: ['b'] })
+      .map((s) => ({ ...s, priority: s.priority + 1 }));
+    expect(wrong).not.toEqual(portalReference(table, 'p', 'widget'));
   });
 });
 
