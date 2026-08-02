@@ -1543,8 +1543,12 @@ export async function sessionLoadContextHandler(
   // exists to deliver. The protected floor may still exceed this tranche
   // (always inlined); the reserved 40% keeps history alive whenever the
   // caller's budget covers the floor at all.
-  const skillBudgetChars = maxTokens && maxTokens > 0 ? Math.floor(maxTokens * 3.5 * 0.6) : Number.POSITIVE_INFINITY;
-  const { assembleSkillBlock } = await import("../utils/skillBudget.js");
+  // Armed by DEFAULT, not only when the caller passes max_tokens — see
+  // resolveSkillBudgetChars for why an unbudgeted default cost the agent its
+  // entire response on 2026-08-01. `level` scales the tranche so `quick`
+  // actually means quick.
+  const { assembleSkillBlock, resolveSkillBudgetChars } = await import("../utils/skillBudget.js");
+  const skillBudgetChars = resolveSkillBudgetChars(maxTokens, level);
   const budgeted = assembleSkillBlock(skillEntries, skillBudgetChars);
   skillBlock = budgeted.block;
   loadedSkills.push(...budgeted.inlined);

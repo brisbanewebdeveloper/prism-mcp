@@ -102,17 +102,38 @@ export async function getStorage(): Promise<StorageBackend> {
   }
 
   // ─── Validate explicit backend has credentials ────────────────
+  // An explicitly requested cloud backend with missing credentials must fail
+  // loud. Silently serving local SQLite splits session history: the caller
+  // keeps working against a stale local copy while believing it is on the
+  // cloud, and console.error goes to stderr, which MCP hosts discard. "auto"
+  // already refuses to fall back for this exact reason (see above); naming a
+  // backend outright is a stronger statement of intent, so it must not be
+  // weaker about protecting history.
+  //
+  // Observed in the field: a base URL present without its API key (a
+  // `prism connect` run from a shell that never exported the key strips it)
+  // downgraded every subsequent session to local storage for weeks. The local
+  // copy kept serving months-old context while the cloud held current history,
+  // and nothing in-band surfaced the downgrade.
+  //
+  // This throw is deliberately NOT matched by isRecoverableStartupStorageError
+  // (startupRecovery.ts): a missing credential is a configuration fault, not a
+  // transient one, so startup must not paper over it with last-good context.
   if (requested === "synalux" && !(await ensureSynaluxCredentials())) {
-    console.error(
-      "[Prism Storage] Synalux backend requested but PRISM_SYNALUX_BASE_URL/PRISM_SYNALUX_API_KEY are missing or invalid. Falling back to local storage."
+    throw new Error(
+      "[Prism Storage] PRISM_STORAGE=synalux but Synalux credentials are missing or invalid " +
+      "(need PRISM_SYNALUX_BASE_URL and PRISM_SYNALUX_API_KEY). " +
+      "Refusing to fall back to local storage because that silently splits session history. " +
+      "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
     );
-    requested = "local";
   }
   if (requested === "supabase" && !(await ensureSupabaseCredentials())) {
-    console.error(
-      "[Prism Storage] Supabase backend requested but SUPABASE_URL/SUPABASE_KEY are missing or invalid. Falling back to local storage."
+    throw new Error(
+      "[Prism Storage] PRISM_STORAGE=supabase but Supabase credentials are missing or invalid " +
+      "(need SUPABASE_URL and SUPABASE_KEY). " +
+      "Refusing to fall back to local storage because that silently splits session history. " +
+      "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
     );
-    requested = "local";
   }
 
   // ─── Initialize ───────────────────────────────────────────────

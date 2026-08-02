@@ -302,15 +302,48 @@ describe("getStorage — synalux dashboard-config fallback", () => {
     expect((storage as { tag?: string }).tag).toBe("synalux");
   });
 
-  it("falls back to local when explicit synalux backend has no credentials anywhere", async () => {
-    // Mirror of the supabase guardrail: explicit backend, no creds, must
-    // fall back to local with the named-env-var error message (not crash).
+  // Regression: this previously fell back to local and only logged to stderr,
+  // which MCP hosts discard. A session could then run for weeks on stale local
+  // context while the cloud held current history, with nothing in-band
+  // surfacing the downgrade. An explicitly named cloud backend must now refuse
+  // rather than silently split history.
+  it("throws when explicit synalux backend has no credentials anywhere", async () => {
     process.env.PRISM_STORAGE = "synalux";
     // No env vars, no dashboard creds.
+
+    await expect(freshGetStorage()).rejects.toThrow(/PRISM_STORAGE=synalux/);
+
+    // Critically: it must NOT have silently constructed a local backend.
+    expect(sqliteInstances).toHaveLength(0);
+    expect(synaluxInstances).toHaveLength(0);
+  });
+
+  it("names the missing variables and the explicit opt-out in the failure", async () => {
+    // The message is the whole remedy — it is the only thing the operator
+    // sees, so it must say what is missing AND how to intentionally go local.
+    process.env.PRISM_STORAGE = "synalux";
+
+    await expect(freshGetStorage()).rejects.toThrow(
+      /PRISM_SYNALUX_BASE_URL and PRISM_SYNALUX_API_KEY[\s\S]*PRISM_STORAGE=local/,
+    );
+  });
+
+  it("throws when explicit supabase backend has no credentials anywhere", async () => {
+    // Same defect class; leaving supabase silent would preserve the hazard.
+    process.env.PRISM_STORAGE = "supabase";
+
+    await expect(freshGetStorage()).rejects.toThrow(/PRISM_STORAGE=supabase/);
+    expect(sqliteInstances).toHaveLength(0);
+  });
+
+  it("still resolves auto to local when no cloud credentials exist", async () => {
+    // Guardrail on the fix: auto is a preference, not an assertion, so its
+    // documented synalux > supabase > local ordering must keep degrading
+    // quietly. Only an explicitly named backend refuses.
+    process.env.PRISM_STORAGE = "auto";
 
     const storage = await freshGetStorage();
 
     expect((storage as { tag?: string }).tag).toBe("sqlite");
-    expect(synaluxInstances).toHaveLength(0);
   });
 });
