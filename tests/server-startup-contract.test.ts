@@ -56,7 +56,16 @@ describe("Prism startup tool contract", () => {
     const bootstrapDescription = tools.find((tool) => tool.name === "session_bootstrap")?.description || "";
     const loadDescription = tools.find((tool) => tool.name === "session_load_context")?.description || "";
     expect(bootstrapDescription).toMatch(/first user turn of every conversation/i);
-    expect(bootstrapDescription).toMatch(/empty object/i);
+    // Was /empty object/ — this assertion is why the zero-argument contract
+    // survived the 2026-08-02 switch to prompt-passing. The tool DESCRIPTION is
+    // what a host reads to decide how to call the tool, so it outranks the
+    // server instructions in practice: while it said "with an empty object",
+    // hosts passed {} and turn-one keyword routing never fired, defeating the
+    // change. Pinned to the new contract, and to its negation.
+    expect(bootstrapDescription).toMatch(/verbatim first message as \{prompt: "<first user message>"\}/i);
+    expect(bootstrapDescription).toMatch(/ON-DEVICE/);
+    expect(bootstrapDescription).toMatch(/never leaves the machine/i);
+    expect(bootstrapDescription).not.toMatch(/exactly once with an empty object/i);
     expectVerbatimStartupContract(bootstrapDescription);
     expect(bootstrapDescription).toMatch(/Do not guess or pass a project or depth/i);
     expect(loadDescription).toMatch(/explicit project reload/i);

@@ -176,7 +176,10 @@ export const SESSION_BOOTSTRAP_TOOL: Tool = {
   name: "session_bootstrap",
   description:
     "IMPORTANT: On the first user turn of every conversation, including a greeting, call this tool exactly once " +
-    "with an empty object before any user-facing response. Do not substitute session_load_context when this tool is available. " +
+    "before any user-facing response, passing the user's verbatim first message as {prompt: \"<first user message>\"}. " +
+    "The prompt is matched against prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used " +
+    "for routing only and never leaves the machine. Pass {} only when there is no user message. " +
+    "Do not substitute session_load_context when this tool is available. " +
     "This starts a Prism-backed conversation without host hooks. " +
     "Prism reads the dashboard's Auto-Load Projects, Context Depth (quick/standard/deep), developer name, and default role, " +
     "then returns the greeting and correctly scoped prior-session context. Emit no preamble. Print the complete tool result " +
@@ -200,7 +203,8 @@ export const SESSION_BOOTSTRAP_TOOL: Tool = {
       },
       prompt: {
         type: "string",
-        description: "Optional initial user prompt for prompt-routed skill selection.",
+        description: "The user's verbatim first message. Matched against prompt_keywords ON-DEVICE for " +
+          "symptom-triggered skill routing; it is never transmitted. Omit only when there is no user message.",
       },
     },
     required: [],
