@@ -132,8 +132,14 @@ describe('skill routing — backward compat', () => {
     const protectedNames = OFFLINE_FALLBACK.universal
       .filter((entry) => typeof entry !== 'string' && entry.protected)
       .map((entry) => typeof entry === 'string' ? entry : entry.name);
-    expect(protectedNames).toHaveLength(12);
-    expect(OFFLINE_FALLBACK.universal).toHaveLength(12);
+    // 12 -> 14 on 2026-08-02: data-before-code and critical-thinking-debug
+    // joined the floor. Both are universal diagnostic-discipline rules that
+    // overflowed to name-only on small budgets, which is why GATE 2 and the
+    // four-query pre-flight were both skipped during a live incident.
+    // Offline inclusion is safe: session_load_context only inlines a fallback
+    // entry when its content is actually cached locally.
+    expect(protectedNames).toHaveLength(14);
+    expect(OFFLINE_FALLBACK.universal).toHaveLength(14);
     expect(OFFLINE_FALLBACK.universal.every((entry) => typeof entry !== 'string' && entry.protected)).toBe(true);
     expect(protectedNames).toContain('aba-precision-protocol');
     expect(protectedNames).not.toContain('current-staging-acceptance');

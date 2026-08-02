@@ -53,6 +53,12 @@ export const REQUIRED_PROTECTED_SKILL_NAMES = [
   'pre-push-audit',
   'implementation-integrity-audit',
   'local-inference-first',
+  // Added 2026-08-02. Both are universal diagnostic-discipline rules that
+  // overflowed to name-only on small budgets; the portal marked them
+  // protected but this list — the running server's own floor — was missed,
+  // so the two sources disagreed. A portal test now asserts they match.
+  'data-before-code',
+  'critical-thinking-debug',
 ] as const;
 
 /**
