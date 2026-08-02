@@ -132,6 +132,13 @@ const MEMORY_BOUNDARY_SUFFIX = '\n</prism_memory>';
 
 type NativeContextDepth = "quick" | "standard" | "deep";
 
+/**
+ * Cap on names listed in the symptom-triggered line. The line is carried in
+ * the display suffix, which capNativeStartupText subtracts from the body
+ * budget — an unbounded list would starve the context it is meant to annotate.
+ */
+const MAX_SYMPTOM_SKILLS = 5;
+
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
   standard: 8_000,
@@ -1419,6 +1426,7 @@ export async function sessionLoadContextHandler(
     }
     nativeContext += `\n**Session Version:** ${version === null || version === undefined ? "None" : compact(version, 40)}\n`;
 
+    let symptomSkillSuffix = "";
     // ─── Symptom-triggered skills (on-device prompt routing) ───
     // Native hosts already hold every entitled skill as a FILE on disk, so
     // routing cannot gate delivery here — it surfaces WHICH ones the first
@@ -1428,15 +1436,39 @@ export async function sessionLoadContextHandler(
     // this costs no portal call; the keyword table is matched on-device and
     // the prompt never leaves the machine. Filtering by entitledSkillNames is
     // required — the public table lists names for every tier.
+    //
+    // Carried as a SUFFIX, not appended to nativeContext. capNativeStartupText
+    // truncates from the END, so appending made this the first casualty on a
+    // tight budget — silently, and bootstrap divides the budget across
+    // projects. That is the 2026-08-01 failure mode exactly: the diagnostic
+    // skill absent precisely when context is scarce. The cap reserves space
+    // for the suffix, mirroring how the protected floor is exempt from the
+    // skill budget.
     if (typeof prompt === "string" && prompt.trim()) {
       try {
         const { resolvePromptSkillNames } = await import("./skillRouting.js");
-        const matched = (await resolvePromptSkillNames(prompt))
-          .filter((name) => entitledSkillNames.has(name));
+        // The manifest's routing_version is the only version signal available
+        // here; without it a stale cached table would never be detected on
+        // this path, since there is no portal response to compare against.
+        const manifestVersion = Number(await getSetting("skill_manifest:routing_version", ""));
+        const matched = (await resolvePromptSkillNames(
+          prompt,
+          Number.isFinite(manifestVersion) && manifestVersion > 0 ? manifestVersion : undefined,
+        )).filter((name) => entitledSkillNames.has(name));
         if (matched.length > 0) {
-          nativeContext += `\n**Symptom-triggered skills:** ${matched.join(", ")}\n`;
+          const shown = matched.slice(0, MAX_SYMPTOM_SKILLS);
+          const overflow = matched.length - shown.length;
+          // Imperative, not a label: a bare list is decorative, and nothing
+          // else in the pipeline tells the agent to act on it.
+          symptomSkillSuffix = `\n\n**Symptom-triggered skills:** ${shown.join(", ")}` +
+            (overflow > 0 ? `, … ${overflow} more` : "") +
+            `\nThe first message matches these skills' trigger rules. Read them before proposing changes.\n`;
         }
-      } catch { /* routing is advisory — never fail startup over it */ }
+      } catch (err) {
+        // Advisory — never fail startup over routing. But do not go silent:
+        // a permanently broken table would otherwise be invisible forever.
+        debugLog(`[session_load_context] prompt routing skipped: ${(err as Error)?.message}`);
+      }
     }
     if (convId) {
       const { registerContextLoaded } = await import("../session/sessionContext.js");
@@ -1446,7 +1478,10 @@ export async function sessionLoadContextHandler(
     return {
       content: [{
         type: "text",
-        text: capNativeStartupText(nativeContext, level, options.nativeMaxChars, MEMORY_BOUNDARY_SUFFIX),
+        text: capNativeStartupText(
+          nativeContext, level, options.nativeMaxChars,
+          symptomSkillSuffix + MEMORY_BOUNDARY_SUFFIX,
+        ),
       }],
       isError: false,
     };

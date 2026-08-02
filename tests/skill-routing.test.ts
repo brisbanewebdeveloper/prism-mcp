@@ -351,6 +351,60 @@ describe('skill routing — native path (bootstrap)', () => {
       .toBeLessThan(earlyReturn);
   });
 
+  it('carries the hint in the display SUFFIX so the cap cannot truncate it', () => {
+    // Adversarial review of the first fix: capNativeStartupText truncates from
+    // the END (text.slice(0, keepChars)), and the hint was the LAST append
+    // before the return — so on a tight budget it was the first thing dropped,
+    // silently. Bootstrap divides the budget across projects, so tight is
+    // normal. That is the 2026-08-01 failure mode: the diagnostic skill absent
+    // exactly when context is scarce. The cap reserves suffix length, so
+    // carrying it there makes it unconditional.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src, 'hint must not be appended to the truncatable body')
+      .not.toMatch(/nativeContext \+=.*Symptom-triggered/);
+    expect(src, 'hint must be passed as part of the reserved suffix')
+      .toMatch(/symptomSkillSuffix \+ MEMORY_BOUNDARY_SUFFIX/);
+    expect(src, 'name list must be bounded — the suffix is subtracted from the body budget')
+      .toMatch(/slice\(0, MAX_SYMPTOM_SKILLS\)/);
+  });
+
+  it('states an action, not just a label (surfacing is not loading)', () => {
+    // The first version emitted a bare list that nothing consumed: a grep for
+    // "Symptom-triggered" returned only the emitter. Displayed is not loaded —
+    // transport mistaken for acceptance.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(/Read them before proposing changes/);
+  });
+
+  it('gives the native path a version to detect table drift against', () => {
+    // Without an expectVersion the native path has no portal response to
+    // compare to, so a stale cached table would persist undetected.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(/skill_manifest:routing_version/);
+    const routing = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/skillRouting.ts'),
+      'utf8',
+    );
+    expect(routing).toMatch(/fetchKeywordTable\(expectVersion\)/);
+  });
+
+  it('logs rather than silently swallowing a routing failure', () => {
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(/prompt routing skipped/);
+  });
+
   it('gates the hint on entitlement, not on the public table', () => {
     // The public routing table lists names for EVERY tier, so matching it
     // alone would advertise skills the caller has no entitlement to. The
@@ -359,7 +413,8 @@ describe('skill routing — native path (bootstrap)', () => {
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
       'utf8',
     );
-    const block = src.split('Symptom-triggered skills (on-device prompt routing)')[1]?.slice(0, 1200) ?? '';
+    // Window must cover the whole block; it is mostly comment, so keep it wide.
+    const block = src.split('Symptom-triggered skills (on-device prompt routing)')[1]?.slice(0, 3000) ?? '';
     expect(block).toMatch(/resolvePromptSkillNames/);
     expect(block, 'matched names must be filtered by entitlement').toMatch(/entitledSkillNames\.has/);
   });

@@ -343,10 +343,17 @@ export function _applyPromptRouting(
  * Deliberately does not call the portal: bootstrap is the first-turn startup
  * display, and blocking it on a network round-trip per project is the cost
  * this whole change exists to avoid.
+ *
+ * @param expectVersion routing version the caller already knows (the native
+ *   path has no portal response, so without this it could serve a stale table
+ *   indefinitely and never detect drift). The skill manifest carries one.
  */
-export async function resolvePromptSkillNames(prompt: string): Promise<string[]> {
+export async function resolvePromptSkillNames(
+  prompt: string,
+  expectVersion?: number,
+): Promise<string[]> {
   if (!prompt) return [];
-  const kw = await fetchKeywordTable();
+  const kw = await fetchKeywordTable(expectVersion);
   if (!kw) return [];
   return _applyPromptRouting([], prompt, kw.prompt_keywords).map((s) => s.name);
 }
