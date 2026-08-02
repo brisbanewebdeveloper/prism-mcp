@@ -14,7 +14,7 @@ export const SESSION_SAVE_LEDGER_TOOL: Tool = {
     properties: {
       project: {
         type: "string",
-        description: "Project identifier (e.g. 'bcba-private', 'my-app'). Used to group and filter sessions.",
+        description: "Project identifier (e.g. 'my-app', 'acme-api'). Used to group and filter sessions.",
       },
       conversation_id: {
         type: "string",
@@ -985,7 +985,7 @@ export const SESSION_EXPORT_MEMORY_TOOL: Tool = {
         type: "string",
         description:
           "Absolute path to the directory where the export file(s) will be written. " +
-          "Must exist and be writable. Example: '/Users/admin/Desktop'.",
+          "Must exist and be writable. Example: '~/Desktop'.",
       },
     },
     required: ["output_dir"],

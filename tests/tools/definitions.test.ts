@@ -344,7 +344,7 @@ describe("isSessionExportMemoryArgs", () => {
     expect(isSessionExportMemoryArgs({
       project:    "my-project",
       format:     "json",
-      output_dir: "/Users/admin/Desktop",
+      output_dir: "/Users/example/Desktop",
     })).toBe(true);
   });
 
@@ -394,9 +394,9 @@ describe("isSessionExportMemoryArgs", () => {
   });
 
   it("allows output_dir access after type narrowing", () => {
-    const args: unknown = { output_dir: "/Users/admin/Desktop", format: "json" as const };
+    const args: unknown = { output_dir: "/Users/example/Desktop", format: "json" as const };
     if (isSessionExportMemoryArgs(args)) {
-      expect(args.output_dir).toBe("/Users/admin/Desktop");
+      expect(args.output_dir).toBe("/Users/example/Desktop");
       expect(args.format).toBe("json");
     } else {
       expect.unreachable("Guard should accept valid args");

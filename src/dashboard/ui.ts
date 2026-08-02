@@ -1462,10 +1462,10 @@ export function renderDashboardHTML(version: string): string {
         <div class="setting-row">
           <div>
             <div class="setting-label">Agent Name</div>
-            <div class="setting-desc">Display name shown in Hivemind Radar (e.g. Dmitri, Dev Alex)</div>
+            <div class="setting-desc">Display name shown in Hivemind Radar (e.g. Alex, Dev Sam)</div>
           </div>
           <input type="text" id="input-agent-name"
-            placeholder="e.g. Dmitri"
+            placeholder="e.g. Alex"
             style="padding: 0.2rem 0.5rem; background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; font-family: var(--font-mono); width: 130px;"
             onchange="saveSetting('agent_name', this.value)"
             oninput="clearTimeout(this._t); var self=this; this._t=setTimeout(function(){saveSetting('agent_name',self.value)},800)" />

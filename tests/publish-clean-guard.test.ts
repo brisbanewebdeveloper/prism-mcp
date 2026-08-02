@@ -70,3 +70,26 @@ describe("npm publish cleanliness guard", () => {
     expect(result.stderr).toContain("untracked.ts");
   });
 });
+
+// ── Private-identifier leak guard (mirrors .github/workflows/ci.yml) ─────────
+// The CI guard checked ONE term (the private repo name) and stayed green while
+// a private Vercel team slug and a private client project name shipped in the
+// published npm package. Running it here too means it fails at `npm test`,
+// before a publish, not after. Terms are split so this file cannot self-match.
+describe("private identifiers must not appear in tracked files", () => {
+  const TERMS = [
+    "synalux" + "-private",
+    "dcostencos" + "-projects",
+    "bcba" + "-private",
+    "/Users/" + "admin",
+  ];
+  const IGNORE = /package-lock\.json|\.github\/workflows\/ci\.yml|tests\/publish-clean-guard\.test\.ts/;
+
+  it.each(TERMS)("no tracked file contains %s", (term) => {
+    const tracked = execFileSync("git", ["ls-files"], { encoding: "utf8" })
+      .split("\n").filter(Boolean).filter((f) => !IGNORE.test(f));
+    const hits = spawnSync("grep", ["-ln", term, ...tracked], { encoding: "utf8" })
+      .stdout.split("\n").filter(Boolean);
+    expect(hits, `private identifier leaked into: ${hits.join(", ")}`).toEqual([]);
+  });
+});

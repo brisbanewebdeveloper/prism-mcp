@@ -514,19 +514,19 @@ describe("Regression: Apr 15 Failures", () => {
     {
       prompt: "open browser with my vercel logs",
       badResponse: "I can't directly open a browser on your machine, but you can easily access your Vercel logs by navigating to your project dashboard.",
-      goodResponse: "https://vercel.com/dcostencos-projects/portal/deployments",
+      goodResponse: "https://vercel.com/dashboard",
       rules: ["negation", "tool_redirect"],
     },
     {
       prompt: "open browser i logged in to vercel, fix deploy error",
       badResponse: "I cannot directly open a browser or log in for you. To help fix the Vercel deploy error, please tell me what error message you are seeing.",
-      goodResponse: "https://vercel.com/dcostencos-projects/portal/deployments",
+      goodResponse: "https://vercel.com/dashboard",
       rules: ["negation", "tool_redirect"],
     },
     {
       prompt: "open browser fix vercel deploy error, prompt for login if needed",
       badResponse: "I cannot directly open a browser or log in for you. To help fix the Vercel deploy error, please tell me what error message you are seeing in the Vercel build log.",
-      goodResponse: "https://vercel.com/dcostencos-projects/portal/deployments",
+      goodResponse: "https://vercel.com/dashboard",
       rules: ["negation", "tool_redirect"],
     },
     {
@@ -826,7 +826,7 @@ describe("Output Guardrail: Deterministic Post-Generation Filter", () => {
 
   describe("allows valid responses", () => {
     [
-      "https://vercel.com/dcostencos-projects/portal/deployments",
+      "https://vercel.com/dashboard",
       "https://synalux.ai/dashboard",
       "https://github.com/dcostenco/synalux-docs",
       "\`npm run build\`",
@@ -964,7 +964,7 @@ describe("URL Domain Whitelist", () => {
 
   const safe = [
     "https://vercel.com/deployments",
-    "https://vercel.com/dcostencos-projects/portal/deployments",
+    "https://vercel.com/dashboard",
     "https://github.com/dcostenco/synalux-docs",
     "https://synalux.ai/dashboard",
     "https://app.synalux.ai/patient-portal",
@@ -1064,7 +1064,7 @@ describe("Edge: Buffer Boundary Conditions", () => {
   });
 
   it("very long clean response passes", () => {
-    const longClean = "https://vercel.com/dcostencos-projects/portal/deployments ".repeat(5);
+    const longClean = "https://vercel.com/dashboard ".repeat(5);
     expect(longClean.length).toBeGreaterThan(BUFFER_SIZE);
     expect(/^Unfortunately/i.test(longClean.trim())).toBe(false);
   });
@@ -1095,7 +1095,7 @@ describe("Edge: URL Whitelist Bypass Attempts", () => {
   });
 
   describe("path traversal", () => {
-    it("ALLOWED: vercel with deep path", () => expect(isSafe("https://vercel.com/dcostencos-projects/portal/deployments")).toBe(true));
+    it("ALLOWED: vercel with deep path", () => expect(isSafe("https://vercel.com/dashboard")).toBe(true));
     it("ALLOWED: github with repo path", () => expect(isSafe("https://github.com/dcostenco/synalux-docs/issues")).toBe(true));
   });
 

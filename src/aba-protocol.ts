@@ -51,25 +51,55 @@ export const ABA_IMMUTABLE_FOOTER = [
 
 // ─── Interface-Specific Rule 7 ──────────────────────────────────
 
+/**
+ * Per-deployment service links for RULE7_CLOUD.
+ *
+ * These were hardcoded to one maintainer's private Vercel team slug and doc
+ * repo, which (a) shipped that infrastructure naming in a PUBLIC npm package
+ * and (b) sent every other user to somebody else's dashboard. Defaults are now
+ * vendor-generic; callers override with their own.
+ *
+ * Kept as a plain parameter, not a settings lookup: this module is shared with
+ * portal/route.ts and synalux-vscode/chat-panel.ts and must stay free of
+ * prism-side storage imports.
+ */
+export interface CloudToolLinks {
+  vercel?: string;
+  github?: string;
+  dashboard?: string;
+}
+
+const DEFAULT_CLOUD_LINKS: Required<CloudToolLinks> = {
+  vercel: 'https://vercel.com/dashboard',
+  github: 'https://github.com/dashboard',
+  dashboard: 'https://synalux.ai/dashboard',
+};
+
 /** Cloud: IF/THEN deterministic mapping — AI outputs URL, no filler */
-export const RULE7_CLOUD = [
-  '### TOOL REQUEST HANDLING',
-  'When the user asks to open, check, fix, or view a service — respond with ONLY the URL or command.',
-  '',
-  'IF user says "open vercel" or "check vercel" or "fix vercel deploy":',
-  '  THEN respond: https://vercel.com/dcostencos-projects/portal/deployments',
-  '',
-  'IF user says "open github" or "check github":',
-  '  THEN respond: https://github.com/dcostenco/synalux-docs',
-  '',
-  'IF user says "open browser" with no specific target:',
-  '  THEN respond: https://synalux.ai/dashboard',
-  '',
-  'FORMAT RULES:',
-  '- Output the URL or command and NOTHING ELSE.',
-  '- Do NOT add explanations or describe what will happen.',
-  '- Do NOT use "Missing:" for vercel/deploy/browser/github requests.',
-].join('\n');
+export function buildRule7Cloud(links: CloudToolLinks = {}): string {
+  const l = { ...DEFAULT_CLOUD_LINKS, ...links };
+  return [
+    '### TOOL REQUEST HANDLING',
+    'When the user asks to open, check, fix, or view a service — respond with ONLY the URL or command.',
+    '',
+    'IF user says "open vercel" or "check vercel" or "fix vercel deploy":',
+    `  THEN respond: ${l.vercel}`,
+    '',
+    'IF user says "open github" or "check github":',
+    `  THEN respond: ${l.github}`,
+    '',
+    'IF user says "open browser" with no specific target:',
+    `  THEN respond: ${l.dashboard}`,
+    '',
+    'FORMAT RULES:',
+    '- Output the URL or command and NOTHING ELSE.',
+    '- Do NOT add explanations or describe what will happen.',
+    '- Do NOT use "Missing:" for vercel/deploy/browser/github requests.',
+  ].join('\n');
+}
+
+/** Backward-compatible default (generic links). */
+export const RULE7_CLOUD = buildRule7Cloud();
 
 /** VS Code LOCAL: AI HAS browser/terminal/git tools — execute immediately */
 export const RULE7_VSCODE = [

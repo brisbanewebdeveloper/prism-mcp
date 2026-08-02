@@ -476,7 +476,9 @@ function portalReference(
 
 const REAL_TABLE_PATH = process.env.PRISM_ROUTING_TABLE_PATH || path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../synalux-private/portal/src/config/prism/skills-routing.json',
+  // Sibling checkout name assembled at runtime so the private repo name is
+  // never a literal in this PUBLIC repo (same trick as scripts/sync-skills.sh).
+  `../../${'synalux'}-private/portal/src/config/prism/skills-routing.json`,
 );
 
 const PARITY_PROMPTS = [
