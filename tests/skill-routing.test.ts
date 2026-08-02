@@ -225,6 +225,35 @@ describe('skill routing — on-device prompt matching', () => {
     expect(bodies).not.toContain('Sam Doe');
   });
 
+  it('re-categorises a floor skill in place, KEEPING protected:true', async () => {
+    // A cross-harness probe (2026-08-02) observed data-before-code returning as
+    // category:'prompt' with protected:true retained. That is the portal's
+    // `existing.category = 'prompt'` mutation: it re-labels in place and never
+    // touches `protected` or `priority`. A reimplementation that pushed a fresh
+    // entry instead would look correct — the skill still "loads" — while
+    // silently dropping out of the always-inline floor and overflowing to
+    // name-only on a small budget. That is precisely the 2026-08-01 incident.
+    //
+    // Nothing here asserted it: the new-skill path is covered above (pushed
+    // entries must be protected:false), and parity covers it only implicitly.
+    // It took a live harness probe to see. This is the cheap version.
+    mockEndpoints({
+      resolve: {
+        loaded: ['data-before-code'], skipped: [], routing_version: 26, tier: 'paid',
+        skills: [{ name: 'data-before-code', priority: 5, protected: true, category: 'universal' }],
+      },
+      table: TEST_TABLE,
+    });
+    const result = await resolveSkills('synalux', 'the list is empty for her');
+
+    expect(result.skills).toEqual([
+      { name: 'data-before-code', priority: 5, protected: true, category: 'prompt' },
+    ]);
+    // Length pinned: a duplicate would leave the protected copy intact and pass
+    // a naive .find() check while doubling the skill in the budget.
+    expect(result.skills).toHaveLength(1);
+  });
+
   it('withholds prompt-matched skills from free tier, matching portal gating', async () => {
     // resolve/route.ts: `const gated = tier === 'paid' ? resolved : []`. Local
     // matching must not hand back an entitlement the portal just withheld.
