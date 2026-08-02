@@ -2,6 +2,76 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.5.0] - 2026-08-02 — On-Device Prompt Routing
+
+Privacy and correctness release. Symptom-triggered skills — the rules that fire
+on "can't see X", "no rows", "the list is empty" — are meant to load on the turn
+an incident report arrives. They never did: every host template told the agent
+to call `session_bootstrap` with `{}`, so there was no prompt to match against.
+
+Fixing the templates exposed a second, structural failure, and closing that
+required deciding where matching happens. It now happens on your machine: the
+28 keyword rules are already public, so there was nothing a local match could
+not compute, and the raw first message no longer crosses the network.
+
+### Security
+- **The user's first message is no longer transmitted.** `/api/v1/prism/resolve`
+  now receives `{project, role}` only. The keyword rules are fetched from the
+  public routing table and matched on-device. `callPortal()` has no `prompt`
+  parameter at all, so the message is out of scope at the only place a request
+  body is built — the guarantee is structural, not a convention.
+  Free and anonymous callers previously paid this privacy cost for nothing: the
+  portal gates them to an empty skill set, so the prompt was transmitted, matched
+  and discarded.
+- **Paid skill *content* is unaffected.** It is gated at `/api/v1/prism/skill-manifest`,
+  a separate authenticated route this change does not touch.
+- **The private-identifier leak guard now covers four classes, not one.** It had
+  checked a single term and stayed green while a private Vercel team slug, a
+  private client project name and maintainer-local absolute paths shipped in the
+  published package. It runs in CI *and* in `npm test`, so it fails before a
+  publish rather than after one.
+
+### Fixed
+- **Turn-one routing never ran.** `session_bootstrap` passes the prompt into
+  `sessionLoadContextHandler`, which sets `includeSkillContent:false` and returns
+  from the native-context branch *before* skill resolution. The prompt was
+  threaded all the way in and dropped. Bootstrap now routes before that return.
+- **Offline routing died at the next restart.** Last-good persistence was wired
+  below the same early return, so the bootstrap path could never cache the
+  keyword table. Keyword routing now survives an unreachable portal — the
+  incident case a diagnostic skill exists for.
+- **`session_bootstrap`'s own tool description still said "call with an empty
+  object."** That is the text a host reads to decide *how* to call a tool, so it
+  outranked the server instructions in practice and kept hosts passing `{}`.
+- **"Open vercel" sent every user to one maintainer's dashboard.** The cloud
+  tool-link rules were hardcoded to a private Vercel team and doc repo. They are
+  now vendor-generic and overridable via `buildRule7Cloud(links)`.
+- `data-before-code` and `critical-thinking-debug` were marked protected by the
+  portal but missing from the server's own hardcoded floor, so the two sources
+  disagreed and both skills could arrive as bare names on a small budget.
+
+### Added
+- **Symptom-triggered skills are surfaced in the startup display.** Native hosts
+  already hold every entitled skill as a file on disk, so routing cannot gate
+  delivery — it names which skills the first message implicates, with an
+  instruction to read them before proposing changes. Entitlement comes from the
+  already-loaded manifest, so this costs no portal call.
+  The line is carried in the display suffix, which the cap reserves space for:
+  appended to the body it was the first thing truncated on a tight budget, which
+  is exactly when a diagnostic rule matters most.
+- Routing responses are cached per `(project, role)` instead of per prompt. The
+  old key included the prompt, so it never hit and grew one dead entry per
+  message.
+
+### Notes
+- Requires a restart to take effect. Server instructions are dynamic; the static
+  host files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) are refreshed by
+  `prism connect --refresh`.
+- Free tier is unchanged and was verified against a live anonymous identity: a
+  non-offline empty skill set, no `Authorization` header, no keyword-table
+  request, a manifest limited to `prism-startup`, and no symptom hint.
+- 20.4.0 shipped without a changelog entry; its changes are folded in here.
+
 ## [20.3.2] - 2026-07-30 — Web Scholar: SSRF Hardening
 
 Security release. Web Scholar fetches article URLs taken from search-engine
