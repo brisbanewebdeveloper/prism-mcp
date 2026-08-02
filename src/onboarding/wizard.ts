@@ -200,7 +200,7 @@ function getFirstSearchContent(): WizardStepContent {
             "You should see your saved memory returned!",
         ],
         codeSnippet: `// The agent calls once with no project or depth override:
-session_bootstrap({})
+session_bootstrap({prompt: "<verbatim first user message>"})
 // → Returns your saved summary + any open TODOs`,
         nextStep: "advanced_tour",
         progress: 71,
