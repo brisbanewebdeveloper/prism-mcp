@@ -61,6 +61,35 @@ features.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.4.0
+
+### An Explicitly Named Cloud Backend Fails Loud
+
+Setting `PRISM_STORAGE=synalux` or `=supabase` with incomplete credentials used
+to downgrade silently to local SQLite. The switch was logged to stderr, which
+MCP hosts discard, so nothing surfaced it: sessions kept serving stale local
+context while the cloud held newer history, and `context_source` read `local`
+rather than any kind of warning. A session could run that way for weeks.
+
+Naming a backend outright is a strong statement of intent, so it now throws —
+naming the missing variables and the `PRISM_STORAGE=local` opt-out — instead of
+quietly splitting your session history. `auto` is unchanged: it keeps its
+documented `synalux > supabase > local` degradation, pinned by a test.
+
+**Upgrade note:** if you explicitly set `PRISM_STORAGE=synalux|supabase` and
+your credentials are incomplete, startup now fails with a named error instead
+of silently using local data. That error is the fix — set the missing variable,
+or choose `PRISM_STORAGE=local` deliberately. Default (`auto`) configs are
+unaffected.
+
+The throw is deliberately not treated as a recoverable startup fault: that path
+exists for transient errors (rate limits, 5xx, DNS), which may degrade behind a
+visible notice. A missing credential is a configuration fault and must not be
+papered over.
+
+Also: the skill block is now budgeted by default rather than only on request,
+so a large skill payload cannot crowd out briefing and history.
+
 ## What's New in v20.3.2
 
 ### Web Scholar: SSRF Hardening
