@@ -337,6 +337,19 @@ function toEvidence(sources: QuerySource[]) {
 }
 
 /**
+ * SQLite `CURRENT_TIMESTAMP` writes "YYYY-MM-DD HH:MM:SS" in UTC with no zone,
+ * and `Date.parse` reads a zone-less stamp as LOCAL time. West of UTC that puts
+ * a ten-minute-old record hours in the FUTURE, which the guard above then hid
+ * entirely — the age disappeared exactly when the memory was freshest. Formats
+ * are not uniform across tables (semantic_knowledge writes ISO+Z, memory_links
+ * does not), so normalise rather than assume.
+ */
+function parseRecordedAt(raw: string): number {
+    const zoneless = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+    return Date.parse(zoneless.test(raw) ? `${raw.replace(" ", "T")}Z` : raw);
+}
+
+/**
  * " (recorded 2026-08-02, 431 days ago)" — or "" when the store gave no date.
  * Never guesses: an absent date stays absent rather than defaulting to now,
  * which would make the oldest memories look freshest.
@@ -344,10 +357,13 @@ function toEvidence(sources: QuerySource[]) {
 export function describeAge(source: QuerySource): string {
     const recorded = source.type === "memory" ? source.recorded : undefined;
     if (!recorded) return "";
-    const at = Date.parse(recorded);
+    const at = parseRecordedAt(recorded);
     if (Number.isNaN(at)) return "";
-    const days = Math.floor((Date.now() - at) / 86_400_000);
-    if (days < 0) return "";
+    const elapsed = Date.now() - at;
+    // Tolerate clock skew between machines: slightly-future stamps are "today",
+    // not silence. Only a stamp more than a day ahead is treated as bad data.
+    if (elapsed < -86_400_000) return "";
+    const days = Math.max(0, Math.floor(elapsed / 86_400_000));
     const day = recorded.slice(0, 10);
     return days === 0 ? ` (recorded ${day}, today)` : ` (recorded ${day}, ${days} days ago)`;
 }

@@ -673,9 +673,35 @@ describe("describeAge — evidence carries its own age", () => {
         expect(describeAge({ type: "memory", source: "s", content: "c" })).toBe("");
     });
 
-    it("stays silent on an unparseable or future date rather than guessing", () => {
+    it("stays silent on an unparseable date, or one more than a day ahead", () => {
         expect(describeAge({ type: "memory", source: "s", recorded: "not-a-date", content: "c" })).toBe("");
         expect(describeAge({ type: "memory", source: "s", recorded: iso(-5), content: "c" })).toBe("");
+    });
+
+    it("reads a zone-less SQLite stamp as UTC, not local", () => {
+        // Adversarial review: SQLite CURRENT_TIMESTAMP writes
+        // "YYYY-MM-DD HH:MM:SS" in UTC with no zone; Date.parse reads that as
+        // LOCAL. Formats are not uniform — semantic_knowledge writes ISO+Z,
+        // memory_links does not.
+        //
+        // Dated 3 days + 1 hour back so the offset changes the DAY count: west
+        // of UTC a raw parse yields "2 days ago". A "today"-based assertion was
+        // vacuous, because the clock-skew tolerance below absorbs a few hours
+        // and both implementations agreed. (Under TZ=UTC there is no offset to
+        // detect, so this asserts correctness rather than catching the bug.)
+        const d = new Date(Date.now() - (3 * 86_400_000 + 3_600_000));
+        const p2 = (n: number) => String(n).padStart(2, "0");
+        const zoneless = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`
+            + ` ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+        expect(describeAge({ type: "memory", source: "s", recorded: zoneless, content: "c" }))
+            .toMatch(/, 3 days ago\)$/);
+    });
+
+    it("tolerates small clock skew instead of going silent", () => {
+        // A stamp a few minutes ahead (skew between machines) is "today".
+        const skewed = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        expect(describeAge({ type: "memory", source: "s", recorded: skewed, content: "c" }))
+            .toMatch(/, today\)$/);
     });
 
     it("does not annotate web sources, which carry their own provenance", () => {
