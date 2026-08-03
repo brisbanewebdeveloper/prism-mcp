@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.5.1] - 2026-08-02 — Symptom-Triggered Skills Actually Arrive
+
+20.5.0 surfaced the *name* of a matching skill and called that routing. It
+wasn't. A live probe on a third-party host followed the instruction exactly,
+got nothing back, and fell back to guessing at source — which is the failure
+the routed skill exists to prevent.
+
+### Fixed
+- **The matched skill's body is now inlined in the startup display.** Naming a
+  skill was never delivering it: bodies reach agents only as files under the
+  canonical skills root, hosts outside that mirror have no path to the content,
+  and no MCP tool serves it. 20.5.0's line pointed at a rule the agent had no
+  way to read. It now carries the rule.
+  Bounded to the top match, capped at the smaller of 1,800 characters and 40%
+  of the display budget, so it cannot starve the context it annotates.
+- **`knowledge_search("<skill name>")` rendered as `knowledge_search("")`.**
+  The angle-bracket placeholder was parsed as an unknown tag by the host's
+  markdown display and dropped, so the instruction asked the agent to search
+  for the empty string. Text a host renders no longer contains placeholders.
+- The canonical skills root is resolved through one exported helper rather than
+  a path literal duplicated per module. It is overridable per caller and per
+  home, so the copy was wrong on any machine that overrides either.
+
+### Notes
+- Requires a restart. Server instructions are dynamic; static host files are
+  refreshed by `prism connect --refresh`.
+- Whether an in-context rule changes agent behaviour is **not** claimed here.
+  It is the one thing still unmeasured, and the reason this is a patch rather
+  than a feature release: 20.5.0 advertised this capability and shipped it
+  non-functional.
+
 ## [20.5.0] - 2026-08-02 — On-Device Prompt Routing
 
 Privacy and correctness release. Symptom-triggered skills — the rules that fire
