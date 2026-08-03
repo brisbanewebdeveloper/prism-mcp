@@ -371,15 +371,22 @@ describe('skill routing — native path (bootstrap)', () => {
       .toMatch(/slice\(0, MAX_SYMPTOM_SKILLS\)/);
   });
 
-  it('states an action, not just a label (surfacing is not loading)', () => {
-    // The first version emitted a bare list that nothing consumed: a grep for
-    // "Symptom-triggered" returned only the emitter. Displayed is not loaded —
-    // transport mistaken for acceptance.
+  it('states an action the host can actually perform', () => {
+    // v1 emitted a bare list nothing consumed. v2 said "read them before
+    // proposing changes" — un-actionable on hosts that do not auto-load skill
+    // files. A live Gemini probe proved it: the body was NOT in context, and
+    // the agent could only produce it after calling knowledge_search. Naming
+    // the retrieval step is what makes the instruction executable everywhere;
+    // Claude Code auto-loads from ~/.claude/skills, Gemini has no such path.
     const src = readFileSync(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
       'utf8',
     );
-    expect(src).toMatch(/Read them before proposing changes/);
+    // Match within a single string literal: the sentence is split across a
+    // concatenation, so a phrase spanning the boundary never appears in source.
+    expect(src).toMatch(/proposing any change/);
+    expect(src, 'must name the retrieval step, not assume the body is resident')
+      .toMatch(/knowledge_search/);
   });
 
   it('gives the native path a version to detect table drift against', () => {

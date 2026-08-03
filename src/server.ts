@@ -435,7 +435,8 @@ export const PRISM_SERVER_INSTRUCTIONS =
   `prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used for routing ` +
   `only and never leaves the machine. Pass {} only when there is no user message. ` +
   `When the startup display lists "Symptom-triggered skills", those skills matched the first message's ` +
-  `trigger rules — read them before proposing any change. Surfacing a name is not loading it. ` +
+  `trigger rules — read each before proposing any change. Surfacing a name is not loading it: hosts that ` +
+  `do not auto-load skill files must fetch the body with knowledge_search("<skill name>") first. ` +
   `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
   `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
   `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +
