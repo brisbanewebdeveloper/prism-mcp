@@ -718,7 +718,7 @@ describe("prism connect", () => {
     // one subagent pinned to its cheapest fast model.
     expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: true });
     expect((gemini.agents as Record<string, any>).overrides.codebase_investigator.modelConfig)
-      .toMatchObject({ model: "gemini-3.6-flash" });
+      .toMatchObject({ model: "gemini-3-flash-preview" });
     expect(gemini.theme).toBe("dark");
     const codex = readTomlConfig(codexPath);
     expect(codex.features).toMatchObject({ memories: true, multi_agent: true });
@@ -2043,5 +2043,44 @@ describe("prism connect", () => {
     expect(readFileSync(instructionPath, "utf8")).toBe(original);
     expect(readFileSync(agentsPath, "utf8")).toBe(agents);
     expect(result.stdout).not.toContain("native startup instructions");
+  });
+});
+
+// ── Agent-policy regressions found in adversarial review, 2026-08-03 ─────────
+describe("prism connect — economy subagent policy", () => {
+  it("pins Gemini to a model the installed CLI can actually resolve", () => {
+    // The first version used `gemini-3.6-flash`, taken from the Gemini API
+    // docs. That ID appears in ZERO of the 116 files in gemini-cli 0.49.0 —
+    // the CLI and API do not share a model namespace. A pin naming an
+    // unresolvable model is worse than none: it fails silently.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src, "API-namespace model IDs must not reach CLI config")
+      .not.toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3\.6/);
+    expect(src).toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3-flash-preview"/);
+  });
+
+  it("does not force subagents back on for a user who disabled them", () => {
+    // Prism used to force enableAgents=false every run. Flipping that to an
+    // unconditional `true` repeats the mistake in the more intrusive
+    // direction. Enable only when the key is absent.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src).toMatch(/userDisabledDeliberately/);
+    expect(src, "must be conditional, never a bare assignment")
+      .toMatch(/if \(!userDisabledDeliberately\) experimental\.enableAgents = true/);
+  });
+
+  it("bounds Codex to one subagent, matching the policy's own wording", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    const block = src.split("CODEX_LOCAL_FIRST_POLICY = {")[1]?.slice(0, 600) ?? "";
+    expect(block).toMatch(/max_threads:\s*1/);   // "at most one"
+    expect(block).toMatch(/max_depth:\s*1/);     // "no nesting"
+  });
+
+  it("validates the Codex write against the declaration, not a literal", () => {
+    // The validator hardcoded `multi_agent === false`, so it rejected any
+    // policy change rather than verifying the write matched the policy.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src).not.toMatch(/isDeepStrictEqual\(parsedFeatures\.multi_agent, false\)/);
+    expect(src).toMatch(/Object\.entries\(CODEX_LOCAL_FIRST_POLICY\.features\)/);
   });
 });

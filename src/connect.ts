@@ -190,8 +190,17 @@ const INSTALLATION_RECEIPT_OWNER = "prism-connect";
 const CLAUDE_FALLBACK_SUBAGENT_MODEL = "sonnet";
 /** Fastest tier of the GPT-5.6 line (Sol > Terra > Luna) for simple work. */
 const CODEX_ECONOMY_SUBAGENT_MODEL = "gpt-5.6-luna";
-/** Gemini's speed tier for agentic work. */
-const GEMINI_ECONOMY_SUBAGENT_MODEL = "gemini-3.6-flash";
+/**
+ * Gemini's speed tier, as named by the CLI — not by the API.
+ *
+ * The first version of this used `gemini-3.6-flash`, taken from the Gemini API
+ * docs. That ID appears in ZERO of the 116 files in gemini-cli 0.49.0. The CLI
+ * and the API do not share a model namespace, and a config naming a model the
+ * CLI cannot resolve is worse than no config: the pin silently fails.
+ * `gemini-3-flash-preview` is the ID the CLI's own subagent documentation uses
+ * and is present in 6 of its files.
+ */
+const GEMINI_ECONOMY_SUBAGENT_MODEL = "gemini-3-flash-preview";
 
 const CODEX_LOCAL_FIRST_POLICY = {
   features: {
@@ -1111,11 +1120,18 @@ export function configureGeminiAgentPolicy(
       ? investigator.modelConfig
       : {}) as JsonObject;
 
-    const alreadyApplied = experimental.enableAgents === true
+    // Respect a deliberate opt-out. Prism previously forced enableAgents=false
+    // on every run; flipping that to an unconditional `true` would repeat the
+    // same mistake pointing the other way, and switching something ON that a
+    // user turned OFF is the more intrusive direction. Only enable when the
+    // key is absent — pin the model either way, so a user who keeps subagents
+    // off still gets the economy default if they later turn them on.
+    const userDisabledDeliberately = experimental.enableAgents === false;
+    const alreadyApplied = (userDisabledDeliberately || experimental.enableAgents === true)
       && modelConfig.model === GEMINI_ECONOMY_SUBAGENT_MODEL;
     if (alreadyApplied) return false;
 
-    experimental.enableAgents = true;
+    if (!userDisabledDeliberately) experimental.enableAgents = true;
     modelConfig.model = GEMINI_ECONOMY_SUBAGENT_MODEL;
     investigator.modelConfig = modelConfig;
     overrides.codebase_investigator = investigator;
