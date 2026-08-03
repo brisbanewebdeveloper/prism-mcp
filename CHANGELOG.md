@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.5.2] - 2026-08-02 — Startup Budget Regression
+
+Fixes a regression introduced in 20.5.1. **Upgrade if you auto-load more than
+one project**, which is when it bites.
+
+### Fixed
+- **The inlined rule could exceed the entire startup budget and erase the
+  session context.** 20.5.1 made the symptom-triggered block exempt from
+  truncation — correct, so a tight budget cannot silently drop the diagnostic
+  rule — but sized that block against the per-*level* limit while the display
+  is capped against `min(level, nativeMaxChars)`. Bootstrap divides the budget
+  across rendered projects, so the real per-project slice is routinely much
+  smaller. At a 512-character slice the display emitted 1,919 characters and
+  the session context was gone entirely, replaced by the rule meant to
+  annotate it.
+  The cap and the inline are now sized by one shared helper so they cannot
+  drift, and below a usable minimum the rule body is dropped in favour of the
+  name line, leaving the remaining space to context. Verified across slices:
+  512 in, 512 out, context retained.
+- The inlined rule no longer leads with the skill's YAML frontmatter. That was
+  ~161 characters of authoring provenance taken from the rule's own budget,
+  and it truncated the rule's Anti-Patterns section mid-word.
+
+### Notes
+- Single-project setups were unaffected by the overrun; the budget was never
+  tight enough to trigger it.
+
 ## [20.5.1] - 2026-08-02 — Symptom-Triggered Skills Actually Arrive
 
 20.5.0 surfaced the *name* of a matching skill and called that routing. It
