@@ -92,6 +92,18 @@ grounding becomes permanent."
 and needs its own evaluation; contradiction detection is a larger feature.
 Surfacing age was the cheap half and shipped first.
 
+**Constraint worth knowing.** A memory's content date can never be older than
+its row. `saveLedger` binds both `created_at` and `session_date` to now and
+discards the caller's values, and `patchLedger` rejects every date column. Only
+a direct SQL write can backdate a row, which is how the existing history was
+migrated. Good for integrity — provenance cannot be forged — but it means the
+age label is strictly ROW age, so anything imported through the public API
+reads as new regardless of how old its content is. Preferring `session_date`
+over `created_at` is therefore correct in principle and inert in practice:
+the two are equal on all 4758 existing rows.
+
+`tests/integration/grounding-staleness.test.ts` runs the reviewer's probe.
+
 **Done looks like.** Retrieval discounts stale entries for time-sensitive
 questions, and a memory that contradicts a newer one is flagged rather than
 cited with equal confidence.
