@@ -710,3 +710,73 @@ describe("describeAge — evidence carries its own age", () => {
         } as never)).toBe("");
     });
 });
+
+// ── Evidence plumbing: does the date actually reach the model? ───────────────
+// Every test above starts at describeAge with a hand-built object, so all of
+// them would still pass if the date never left the database. These cover the
+// layers in between: snippet JSON -> extractMemorySources -> evidence block.
+import {
+    extractMemorySources,
+    buildGroundedEvidenceContext,
+} from "../../src/tools/queryMemoryNaturalHandler.js";
+
+const snippetResult = (snippets: unknown[]) => ({
+    isError: false,
+    content: [{ type: "text" as const, text: JSON.stringify({ evidence_snippets: snippets }) }],
+});
+
+describe("evidence plumbing — recorded survives extraction", () => {
+    it("carries `recorded` from the snippet JSON into the source", () => {
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:1", recorded: "2025-05-28T10:00:00.000Z", content: "note" },
+        ]) as never);
+        expect(src).toMatchObject({ type: "memory", recorded: "2025-05-28T10:00:00.000Z" });
+    });
+
+    it("still extracts when the store supplies no date", () => {
+        // Older rows and backends that never wrote created_at must not vanish.
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:2", content: "undated note" },
+        ]) as never);
+        expect(src).toMatchObject({ type: "memory", content: "undated note" });
+        expect((src as { recorded?: string }).recorded).toBeUndefined();
+    });
+
+    it("ignores a non-string date rather than throwing", () => {
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:3", recorded: 1748424000000, content: "note" },
+        ]) as never);
+        expect((src as { recorded?: string }).recorded).toBeUndefined();
+    });
+
+    it("puts the age in the evidence block the model reads", () => {
+        const block = buildGroundedEvidenceContext([
+            { type: "memory", source: "knowledge_search:1", recorded: "2025-05-28T10:00:00.000Z", content: "old note" },
+        ] as never);
+        expect(block).toMatch(/\[SOURCE 1: knowledge_search:1 \(recorded 2025-05-28, \d+ days ago\)\]/);
+        expect(block).toContain("old note");
+    });
+
+    it("leaves an undated source's label exactly as before", () => {
+        const block = buildGroundedEvidenceContext([
+            { type: "memory", source: "knowledge_search:9", content: "note" },
+        ] as never);
+        expect(block).toContain("[SOURCE 1: knowledge_search:9]");
+        expect(block).not.toMatch(/recorded/);
+    });
+
+    it("does not starve evidence content to pay for the longer label", () => {
+        // The label is subtracted from the per-source content budget, so adding
+        // ~30 chars per source must not measurably shrink the evidence. Compare
+        // dated vs undated at the same total budget.
+        const many = (recorded?: string) => Array.from({ length: 8 }, (_, i) => ({
+            type: "memory" as const, source: `knowledge_search:${i}`,
+            ...(recorded ? { recorded } : {}), content: "x".repeat(2_000),
+        }));
+        const dated = buildGroundedEvidenceContext(many("2025-05-28T10:00:00.000Z") as never);
+        const undated = buildGroundedEvidenceContext(many() as never);
+        const payload = (s: string) => (s.match(/x/g) ?? []).length;
+        expect(payload(undated) - payload(dated)).toBeLessThan(400);
+        expect(payload(dated)).toBeGreaterThan(1_000);
+    });
+});

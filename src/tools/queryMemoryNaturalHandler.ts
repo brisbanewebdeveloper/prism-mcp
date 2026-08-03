@@ -123,7 +123,7 @@ export interface QueryMemoryNaturalDeps {
     getEntitlements: () => Promise<PrismEntitlements>;
 }
 
-function extractMemorySources(result: McpTextResult): QuerySource[] {
+export function extractMemorySources(result: McpTextResult): QuerySource[] {
     if (result.isError) {
         throw new Error(result.content[0]?.text || "knowledge_search failed");
     }
@@ -368,7 +368,7 @@ export function describeAge(source: QuerySource): string {
     return days === 0 ? ` (recorded ${day}, today)` : ` (recorded ${day}, ${days} days ago)`;
 }
 
-function buildGroundedEvidenceContext(sources: QuerySource[]): string {
+export function buildGroundedEvidenceContext(sources: QuerySource[]): string {
     let remaining = MAX_SYNTHESIS_EVIDENCE_CHARS;
     const evidenceBlocks: string[] = [];
 

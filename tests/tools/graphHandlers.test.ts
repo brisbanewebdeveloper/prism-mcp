@@ -506,3 +506,35 @@ describe("generateTestMeQuestions", () => {
     expect(out.reason).toBe("no_api_key");
   });
 });
+
+// ── Evidence snippets must carry the record date ────────────────────────────
+// The date exists in storage (sqlite.ts selects and maps l.created_at) and was
+// dropped here, at the snippet layer, so grounding evidence reached the model
+// undated. This pins the mapping — a structural test, because the snippet
+// builders are inline `.map()` calls with no seam to invoke directly.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+describe("evidence snippets carry the record date", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/tools/graphHandlers.ts"), "utf8");
+    const builders = [...src.matchAll(/evidenceSnippets\s*=\s*[\s\S]{0,900}?\.filter\([^)]*\)/g)].map(m => m[0]);
+
+    it("finds both snippet builders", () => {
+        // knowledge_search and session_search_memory. If a third appears, it
+        // needs the same treatment — this fails until the count is updated.
+        expect(builders).toHaveLength(2);
+    });
+
+    it.each([0, 1])("builder %i maps a date onto every snippet", (i) => {
+        expect(builders[i], "must carry created_at/updated_at/timestamp").toMatch(
+            /recorded:\s*r\.created_at\s*\?\?\s*r\.updated_at\s*\?\?\s*r\.timestamp/,
+        );
+    });
+
+    it.each([0, 1])("builder %i still requires content, not a date", (i) => {
+        // A row without a date must still be emitted — undated evidence beats
+        // no evidence, and describeAge renders nothing for it.
+        expect(builders[i]).toMatch(/\.filter\(/);
+        expect(builders[i], "date must be optional in the filter").not.toMatch(/s\.recorded/);
+    });
+});
