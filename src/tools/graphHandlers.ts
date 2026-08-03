@@ -356,7 +356,12 @@ export async function knowledgeSearchHandler(args: unknown) {
       // are indistinguishable in the grounding evidence, so a stale memory is
       // cited with the same confidence as a fresh one — local storage removes
       // the external correction pressure that would otherwise catch it.
-      recorded: r.created_at ?? r.updated_at ?? r.timestamp ?? undefined,
+      // session_date first: it is when the work HAPPENED, which is what a
+      // staleness signal needs. created_at is when the row was written and is
+      // assigned on save — it cannot be backdated, so an import would stamp
+      // every migrated memory as brand new, failing silently toward "fresh".
+      // sqlite.ts already treats session_date as authoritative.
+      recorded: r.session_date ?? r.created_at ?? r.updated_at ?? r.timestamp ?? undefined,
       content: (r.content ?? r.summary ?? r.text ?? "").slice(0, 1000),
     })).filter((s: any) => s.content);
     if (evidenceSnippets.length > 0) {
@@ -784,7 +789,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
     {
       const evidenceSnippets = results.map((r: any, i: number) => ({
         source: `session_search_memory:${r.id ?? i}`,
-        recorded: r.created_at ?? r.updated_at ?? r.timestamp ?? undefined,
+        recorded: r.session_date ?? r.created_at ?? r.updated_at ?? r.timestamp ?? undefined,
         content: (r.summary ?? "").slice(0, 1000),
       })).filter((s: any) => s.content);
       if (evidenceSnippets.length > 0) {

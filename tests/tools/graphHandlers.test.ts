@@ -517,7 +517,13 @@ import { resolve } from "node:path";
 
 describe("evidence snippets carry the record date", () => {
     const src = readFileSync(resolve(process.cwd(), "src/tools/graphHandlers.ts"), "utf8");
-    const builders = [...src.matchAll(/evidenceSnippets\s*=\s*[\s\S]{0,900}?\.filter\([^)]*\)/g)].map(m => m[0]);
+    // Index-based, not a fixed character window: a comment added inside a
+    // builder silently pushed it out of a 400- then 900-char window twice,
+    // which read as "builder missing" rather than "window too small".
+    const builders = [...src.matchAll(/evidenceSnippets\s*=/g)].map((m) => {
+        const end = src.indexOf(".filter(", m.index!);
+        return src.slice(m.index!, src.indexOf(")", end) + 1);
+    });
 
     it("finds both snippet builders", () => {
         // knowledge_search and session_search_memory. If a third appears, it
@@ -526,8 +532,14 @@ describe("evidence snippets carry the record date", () => {
     });
 
     it.each([0, 1])("builder %i maps a date onto every snippet", (i) => {
-        expect(builders[i], "must carry created_at/updated_at/timestamp").toMatch(
-            /recorded:\s*r\.created_at\s*\?\?\s*r\.updated_at\s*\?\?\s*r\.timestamp/,
+        // session_date FIRST. It is when the work happened; created_at is when
+        // the row was written and is assigned on save, so it cannot be
+        // backdated — an import would stamp every migrated memory as brand new,
+        // failing silently toward "fresh", the worst direction for a staleness
+        // signal. Proven by probe: a row seeded with a 431-day-old created_at
+        // came back stamped today.
+        expect(builders[i], "session_date must be preferred over write date").toMatch(
+            /recorded:\s*r\.session_date\s*\?\?\s*r\.created_at\s*\?\?\s*r\.updated_at\s*\?\?\s*r\.timestamp/,
         );
     });
 
