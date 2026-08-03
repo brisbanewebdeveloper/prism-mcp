@@ -124,7 +124,29 @@ match.
 
 ---
 
-## 6. Skill content is a distribution channel with no leak guard
+## 6. Gemini's agent flag lives in a namespace designed to be temporary
+
+**Symptom.** `prism connect` disables Gemini's native subagents by writing
+`experimental.enableAgents = false`. That is the path Gemini defines today, but
+`experimental` exists precisely so that flags graduate out of it.
+
+**Impact.** If Gemini promotes the flag, Prism keeps writing the old path and
+Gemini reads the new one. Host subagents turn back on, nothing errors, no test
+fails, and the settings file still reads `false`. The failure is silent and the
+config looks correct — the hardest shape to diagnose from the outside.
+
+**Why not fixed.** There is nothing to detect against until Gemini moves it, and
+guessing at a future key name would write dead config now. Documented in the
+README instead, so the next person reading a `false` flag beside running agents
+knows to check whether the key moved.
+
+**Done looks like.** `connect` verifies the flag took effect — reads Gemini's
+resolved config back, or asserts the key still exists where it was written —
+rather than assuming the write landed somewhere Gemini reads.
+
+---
+
+## 7. Skill content is a distribution channel with no leak guard
 
 **Symptom.** Skills are bundled and served to users through the manifest, so
 anything written into a `SKILL.md` reaches other machines. The repository-level

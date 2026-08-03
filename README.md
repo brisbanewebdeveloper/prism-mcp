@@ -56,6 +56,35 @@ Prism works locally without an account, API key, or cloud subscription. Add a
 Synalux subscription when you want cloud memory, paid-tier skills, or team
 features.
 
+### What `prism connect` changes about host subagents
+
+`connect` turns off each host's own subagent feature, so bounded work routes to
+`prism_infer` on your machine instead of the host spawning agents of its own.
+Prism's local workers stay available over MCP either way.
+
+| Host | Setting written | Why it looks different |
+|---|---|---|
+| Gemini CLI | `experimental.enableAgents = false` in `~/.gemini/settings.json` | Gemini exposes one boolean, so that is all there is to set |
+| Codex | `features.multi_agent = false` in `~/.codex/config.toml`, plus a bounded fallback: 2 threads, depth 1, cheap subagent model, 900s cap | Codex exposes tuning, so re-enabling deliberately lands somewhere bounded rather than unlimited |
+
+Two things worth knowing:
+
+- **`experimental` is Gemini's namespace, not ours.** Prism is not enabling
+  anything experimental — it writes `false` to a flag Gemini already defines at
+  that path. Writing anywhere else would have no effect.
+- **That namespace is by definition temporary.** If Gemini promotes
+  `enableAgents` out of `experimental`, Prism keeps writing the old path, Gemini
+  reads the new one, and host subagents quietly turn back on. Nothing errors and
+  the settings file still looks correct. If you see host subagents running while
+  `enableAgents` reads `false`, check whether the key has moved before assuming
+  `connect` failed to write it.
+
+Both writes are idempotent in the sense that a host already configured this way
+is left untouched — but they are **re-applied on every `prism connect` run**,
+not only on `--refresh`. If you deliberately re-enable host subagents, the next
+`connect` will turn them off again. Keep them on by not re-running `connect`,
+or by re-enabling after each run.
+
 ---
 
 <details>
