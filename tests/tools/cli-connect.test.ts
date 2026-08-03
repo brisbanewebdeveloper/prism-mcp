@@ -718,7 +718,7 @@ describe("prism connect", () => {
     // one subagent pinned to its cheapest fast model.
     expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: true });
     expect((gemini.agents as Record<string, any>).overrides.codebase_investigator.modelConfig)
-      .toMatchObject({ model: "gemini-3-flash-preview" });
+      .toMatchObject({ model: "gemini-3.6-flash" });
     expect(gemini.theme).toBe("dark");
     const codex = readTomlConfig(codexPath);
     expect(codex.features).toMatchObject({ memories: true, multi_agent: true });
@@ -2048,15 +2048,15 @@ describe("prism connect", () => {
 
 // ── Agent-policy regressions found in adversarial review, 2026-08-03 ─────────
 describe("prism connect — economy subagent policy", () => {
-  it("pins Gemini to a model the installed CLI can actually resolve", () => {
-    // The first version used `gemini-3.6-flash`, taken from the Gemini API
-    // docs. That ID appears in ZERO of the 116 files in gemini-cli 0.49.0 —
-    // the CLI and API do not share a model namespace. A pin naming an
-    // unresolvable model is worse than none: it fails silently.
+  it("pins Gemini to its speed tier", () => {
+    // An earlier revision "fixed" this to gemini-3-flash-preview because
+    // gemini-3.6-flash appears in none of gemini-cli 0.49.0's 116 files. That
+    // inference was wrong: the CLI does not validate Gemini model names — its
+    // only ALLOWED_MODELS list gates Whisper speech binaries — so names pass
+    // through to the API and bundle absence proves nothing. 3.6-flash is
+    // confirmed working in practice.
     const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
-    expect(src, "API-namespace model IDs must not reach CLI config")
-      .not.toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3\.6/);
-    expect(src).toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3-flash-preview"/);
+    expect(src).toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3\.6-flash"/);
   });
 
   it("does not force subagents back on for a user who disabled them", () => {

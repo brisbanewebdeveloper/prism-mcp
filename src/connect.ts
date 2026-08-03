@@ -191,16 +191,16 @@ const CLAUDE_FALLBACK_SUBAGENT_MODEL = "sonnet";
 /** Fastest tier of the GPT-5.6 line (Sol > Terra > Luna) for simple work. */
 const CODEX_ECONOMY_SUBAGENT_MODEL = "gpt-5.6-luna";
 /**
- * Gemini's speed tier, as named by the CLI — not by the API.
+ * Gemini's speed tier for agentic work.
  *
- * The first version of this used `gemini-3.6-flash`, taken from the Gemini API
- * docs. That ID appears in ZERO of the 116 files in gemini-cli 0.49.0. The CLI
- * and the API do not share a model namespace, and a config naming a model the
- * CLI cannot resolve is worse than no config: the pin silently fails.
- * `gemini-3-flash-preview` is the ID the CLI's own subagent documentation uses
- * and is present in 6 of its files.
+ * Confirmed working in practice. An earlier revision changed this to
+ * `gemini-3-flash-preview` because `gemini-3.6-flash` appears in none of the
+ * 116 files of gemini-cli 0.49.0 — but the CLI does not validate Gemini model
+ * names at all. Its only ALLOWED_MODELS list gates Whisper speech binaries.
+ * Model names are passed through to the API, so absence from the bundle says
+ * nothing about resolvability. That reversion was a regression to an older ID.
  */
-const GEMINI_ECONOMY_SUBAGENT_MODEL = "gemini-3-flash-preview";
+const GEMINI_ECONOMY_SUBAGENT_MODEL = "gemini-3.6-flash";
 
 const CODEX_LOCAL_FIRST_POLICY = {
   features: {
