@@ -75,22 +75,31 @@ fetch one.
 
 ---
 
-## 4. Retrieval does not weight or challenge stale memory
+## 4. Retrieval does not weight recency
 
-**Symptom.** Grounding evidence now carries each memory's age (external review,
-2026-08-02), but retrieval still ranks a two-year-old note the same as
-yesterday's, and nothing detects that a stored note contradicts newer evidence.
+**Symptom.** Grounding evidence carries each memory's age (external review,
+2026-08-02), but retrieval ranks a two-year-old note the same as yesterday's.
+Nothing detects contradiction between stored notes either — but that is the
+lesser problem, see below.
 
-**Impact.** The model can see a source is old and reason about it, which is the
-larger half. It cannot be told which of two conflicting memories supersedes the
-other, so a wrong note persists until someone runs `knowledge_forget` or
-`knowledge_downvote` by hand. Local storage removes the external correction
-pressure that would otherwise surface it — "the data stays local, but bad
-grounding becomes permanent."
+**Impact.** Reordered 2026-08-03 after measuring a real store: 4751 of 4758
+ledger entries predated the current month. At that shape a keyword search
+returning ten results returns ten OLD ones, and the fresh note that supersedes
+them is never retrieved at all.
 
-**Why not fixed.** Recency weighting changes retrieval ranking for every query
-and needs its own evaluation; contradiction detection is a larger feature.
-Surfacing age was the cheap half and shipped first.
+That inverts the priority. The dangerous case is not a stale note shown BESIDE
+a fresh one — the model can see both dates and weigh them. It is a stale note
+retrieved ALONE, with nothing to contradict, where the age label is the only
+defence left. Contradiction detection cannot help a query that never surfaces
+the contradicting record.
+
+So recency weighting is the fix that matters; contradiction detection is the
+refinement on top. The reverse of how this entry was originally written.
+
+**Why not fixed.** Recency weighting changes ranking for every query and needs
+its own evaluation — a naive recency boost buries durable architectural
+decisions under yesterday's noise, which is a different failure and arguably
+worse. Surfacing age was the cheap half and shipped first.
 
 **Constraint worth knowing.** A memory's content date can never be older than
 its row. `saveLedger` binds both `created_at` and `session_date` to now and
@@ -104,9 +113,9 @@ the two are equal on all 4758 existing rows.
 
 `tests/integration/grounding-staleness.test.ts` runs the reviewer's probe.
 
-**Done looks like.** Retrieval discounts stale entries for time-sensitive
-questions, and a memory that contradicts a newer one is flagged rather than
-cited with equal confidence.
+**Done looks like.** Time-sensitive questions surface the newest relevant
+records rather than the highest keyword match, without burying decisions that
+are old and still true. Contradiction flagging comes after that, not before.
 
 ---
 

@@ -121,9 +121,12 @@ the oldest memories, the ones most likely to be stale, appear freshest.
 seed a deliberately outdated note beside a contradicting fresh one and assert
 the model receives both, visibly dated. Anyone can run it.
 
-**Not solved, and not claimed:** retrieval still ranks a stale note the same as
-a fresh one, and nothing detects that two stored notes contradict. The model is
-*shown* the discrepancy, not *told* about it. Tracked as `TECH_DEBT.md` #4.
+**Not solved, and not claimed:** retrieval does not weight recency. A stale note
+shown *beside* a fresh one is the easy case — the model sees both dates and can
+weigh them. The hard case is a stale note retrieved *alone*, because ranking is
+by keyword match and an old store returns old results; then the age label is the
+only defence and there is no fresher record to compare against. Tracked as
+`TECH_DEBT.md` #4.
 
 ## What's New in v20.5.0 – v20.5.2
 
