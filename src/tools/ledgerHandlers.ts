@@ -1462,9 +1462,14 @@ export async function sessionLoadContextHandler(
           // else in the pipeline tells the agent to act on it.
           symptomSkillSuffix = `\n\n**Symptom-triggered skills:** ${shown.join(", ")}` +
             (overflow > 0 ? `, … ${overflow} more` : "") +
+            // Names are interpolated, never a placeholder. A `<skill name>`
+            // placeholder here rendered as knowledge_search("") on a real host
+            // — markdown/HTML display ate the angle brackets as an unknown
+            // tag, so the instruction told the agent to search for nothing.
+            // Never emit angle brackets in text a host will render.
             `\nThe first message matches these skills' trigger rules. Read each one before ` +
             `proposing any change; if it is not already in your context, load it first with ` +
-            `knowledge_search("<skill name>").\n`;
+            `${shown.map((n) => `knowledge_search("${n}")`).join(", ")}.\n`;
         }
       } catch (err) {
         // Advisory — never fail startup over routing. But do not go silent:

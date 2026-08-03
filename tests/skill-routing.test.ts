@@ -387,6 +387,12 @@ describe('skill routing — native path (bootstrap)', () => {
     expect(src).toMatch(/proposing any change/);
     expect(src, 'must name the retrieval step, not assume the body is resident')
       .toMatch(/knowledge_search/);
+    // The retrieval call must carry the REAL skill name. Shipped once as
+    // knowledge_search("<skill name>"); the host's markdown renderer ate the
+    // angle brackets as an unknown tag and the agent was told to search for
+    // the empty string. Interpolate, never placeholder.
+    expect(src, 'skill name must be interpolated into the retrieval call')
+      .toMatch(/knowledge_search\(\\"\$\{n\}\\"\)|knowledge_search\("\$\{/);
   });
 
   it('gives the native path a version to detect table drift against', () => {
@@ -631,5 +637,33 @@ describe('skill routing — auth', () => {
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
     expect(invalidateSynaluxJwt).not.toHaveBeenCalled();
     expect(result.isOffline).toBe(true);
+  });
+});
+
+// ── Host-rendered text must survive markdown/HTML display ───────────────────
+// Shipped `knowledge_search("<skill name>")`; a real host rendered it as
+// `knowledge_search("")` because the angle brackets were parsed as a tag. The
+// instruction survived every unit test and every packaged-dist assertion —
+// they all read source, and the defect only exists after rendering.
+describe('emitted startup text carries no strippable placeholders', () => {
+  it('the symptom-triggered block contains no <angle-bracket> placeholder', () => {
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    const block = src.split('Symptom-triggered skills (on-device prompt routing)')[1]?.slice(0, 3000) ?? '';
+    // Comments legitimately quote the broken placeholder to explain it; only
+    // real emitted code matters here.
+    const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    // Do NOT try to parse the template literals: the emitted line nests them
+    // (`...${x.map(n => `...`)}...`), and a naive /`([^`]*)`/ pairs the outer
+    // opener with the inner opener, so the payload is never captured. That
+    // exact bug made the first version of this guard pass while the broken
+    // placeholder was present. Match the placeholder shape directly instead:
+    // a quote immediately followed by `<` only happens in "<something>", never
+    // in a TS generic.
+    const placeholders = [...code.matchAll(/"<[^"]*>"/g)].map((m) => m[0]);
+    expect(placeholders, `host renderers strip these: ${placeholders.join(", ")}`).toEqual([]);
+    expect(code, 'skill name must be interpolated, not templated').toMatch(/knowledge_search\("\$\{/);
   });
 });
