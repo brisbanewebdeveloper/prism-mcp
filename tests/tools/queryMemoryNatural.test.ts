@@ -644,3 +644,43 @@ describe("query_memory_natural grounded fallback", () => {
         expect(result.sources).toHaveLength(1);
     });
 });
+
+// ── Evidence age (grounding visibility) ─────────────────────────────────────
+// External review, 2026-08-02: "the data stays local, but bad grounding becomes
+// permanent." The evidence block labelled sources but never dated them, so a
+// two-year-old note and yesterday's were indistinguishable to the model — and
+// local storage removes the external correction pressure that would otherwise
+// surface the staleness. Age now travels with the evidence.
+import { describeAge } from "../../src/tools/queryMemoryNaturalHandler.js";
+
+describe("describeAge — evidence carries its own age", () => {
+    const iso = (daysAgo: number) =>
+        new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+
+    it("labels an old memory with its date and age in days", () => {
+        const out = describeAge({ type: "memory", source: "s", recorded: iso(431), content: "c" });
+        expect(out).toMatch(/recorded \d{4}-\d{2}-\d{2}, 43[01] days ago/);
+    });
+
+    it("says today rather than '0 days ago'", () => {
+        expect(describeAge({ type: "memory", source: "s", recorded: iso(0), content: "c" }))
+            .toMatch(/, today\)$/);
+    });
+
+    it("stays SILENT when the store gave no date", () => {
+        // Must not default to now — that would make the oldest memories, the
+        // ones most likely to be stale, appear freshest.
+        expect(describeAge({ type: "memory", source: "s", content: "c" })).toBe("");
+    });
+
+    it("stays silent on an unparseable or future date rather than guessing", () => {
+        expect(describeAge({ type: "memory", source: "s", recorded: "not-a-date", content: "c" })).toBe("");
+        expect(describeAge({ type: "memory", source: "s", recorded: iso(-5), content: "c" })).toBe("");
+    });
+
+    it("does not annotate web sources, which carry their own provenance", () => {
+        expect(describeAge({
+            type: "web", source: "s", title: "t", url: "u", description: "d", content: "c",
+        } as never)).toBe("");
+    });
+});

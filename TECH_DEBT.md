@@ -75,7 +75,30 @@ fetch one.
 
 ---
 
-## 4. Free tier fetches the keyword table it cannot use
+## 4. Retrieval does not weight or challenge stale memory
+
+**Symptom.** Grounding evidence now carries each memory's age (external review,
+2026-08-02), but retrieval still ranks a two-year-old note the same as
+yesterday's, and nothing detects that a stored note contradicts newer evidence.
+
+**Impact.** The model can see a source is old and reason about it, which is the
+larger half. It cannot be told which of two conflicting memories supersedes the
+other, so a wrong note persists until someone runs `knowledge_forget` or
+`knowledge_downvote` by hand. Local storage removes the external correction
+pressure that would otherwise surface it — "the data stays local, but bad
+grounding becomes permanent."
+
+**Why not fixed.** Recency weighting changes retrieval ranking for every query
+and needs its own evaluation; contradiction detection is a larger feature.
+Surfacing age was the cheap half and shipped first.
+
+**Done looks like.** Retrieval discounts stale entries for time-sensitive
+questions, and a memory that contradicts a newer one is flagged rather than
+cited with equal confidence.
+
+---
+
+## 5. Free tier fetches the keyword table it cannot use
 
 **Symptom.** On the native path `resolvePromptSkillNames()` runs before
 entitlement filtering, so a free-tier caller fetches the public routing table
@@ -89,7 +112,7 @@ match.
 
 ---
 
-## 5. Skill content is a distribution channel with no leak guard
+## 6. Skill content is a distribution channel with no leak guard
 
 **Symptom.** Skills are bundled and served to users through the manifest, so
 anything written into a `SKILL.md` reaches other machines. The repository-level

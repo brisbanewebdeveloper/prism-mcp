@@ -90,6 +90,8 @@ export type QuerySource =
     | {
         type: "memory";
         source: string;
+        /** ISO date the memory was recorded, when the store supplies one. */
+        recorded?: string;
         content: string;
     }
     | {
@@ -138,7 +140,7 @@ function extractMemorySources(result: McpTextResult): QuerySource[] {
         }
 
         const snippets = (parsed as {
-            evidence_snippets?: Array<{ source?: unknown; content?: unknown }>;
+            evidence_snippets?: Array<{ source?: unknown; content?: unknown; recorded?: unknown }>;
         })?.evidence_snippets;
         if (!Array.isArray(snippets)) continue;
 
@@ -153,6 +155,7 @@ function extractMemorySources(result: McpTextResult): QuerySource[] {
             sources.push({
                 type: "memory",
                 source: snippet.source,
+                recorded: typeof snippet.recorded === "string" ? snippet.recorded : undefined,
                 content: snippet.content.slice(0, MAX_EVIDENCE_CHARS),
             });
         }
@@ -333,13 +336,32 @@ function toEvidence(sources: QuerySource[]) {
     return sources.map(({ source, content }) => ({ source, content }));
 }
 
+/**
+ * " (recorded 2026-08-02, 431 days ago)" — or "" when the store gave no date.
+ * Never guesses: an absent date stays absent rather than defaulting to now,
+ * which would make the oldest memories look freshest.
+ */
+export function describeAge(source: QuerySource): string {
+    const recorded = source.type === "memory" ? source.recorded : undefined;
+    if (!recorded) return "";
+    const at = Date.parse(recorded);
+    if (Number.isNaN(at)) return "";
+    const days = Math.floor((Date.now() - at) / 86_400_000);
+    if (days < 0) return "";
+    const day = recorded.slice(0, 10);
+    return days === 0 ? ` (recorded ${day}, today)` : ` (recorded ${day}, ${days} days ago)`;
+}
+
 function buildGroundedEvidenceContext(sources: QuerySource[]): string {
     let remaining = MAX_SYNTHESIS_EVIDENCE_CHARS;
     const evidenceBlocks: string[] = [];
 
     for (const [index, source] of sources.entries()) {
         if (remaining <= 0) break;
-        const label = `[SOURCE ${index + 1}: ${source.source}]`;
+        // Age belongs in the label, not just the payload. An undated fragment
+        // cannot be reasoned about; a fragment labelled two years old can be
+        // weighed against fresher evidence or challenged outright.
+        const label = `[SOURCE ${index + 1}: ${source.source}${describeAge(source)}]`;
         const availableForContent = Math.max(0, remaining - label.length - 1);
         if (availableForContent === 0) break;
         const block = `${label}\n${source.content.slice(0, availableForContent)}`;
