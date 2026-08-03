@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.5.3] - 2026-08-03 — Grounding Evidence Carries Its Age
+
+Prompted by an external review: *"the data stays local, but bad grounding
+becomes permanent."* Correct diagnosis for local-first memory — storing
+everything on your machine removes the outside pressure that would otherwise
+surface a stale note.
+
+### Added
+- **Memory evidence is dated.** `query_memory_natural` labelled its sources but
+  never dated them, so a two-year-old note and yesterday's reached the model
+  identically. Evidence now reads:
+
+  `[SOURCE 1: ledger:8286581d (recorded 2025-05-29, 431 days ago)]`
+
+  The date already existed in storage and was being dropped at the snippet
+  layer; this is plumbing, not new data collection.
+- `tests/integration/grounding-staleness.test.ts` runs the reviewer's own probe
+  — seed a deliberately outdated note alongside a contradicting fresh one and
+  assert the model receives both, visibly dated. Anyone can run it.
+
+### Fixed
+- **Zone-less timestamps parsed as local time.** SQLite writes
+  `YYYY-MM-DD HH:MM:SS` in UTC with no zone and `Date.parse` reads that as
+  local, so west of UTC a ten-minute-old record parsed hours into the future
+  and its age was suppressed entirely — the feature silently did nothing on the
+  freshest memories. Formats are not uniform across tables, so they are
+  normalised rather than assumed.
+- Clock skew between machines no longer suppresses a date; a stamp slightly
+  ahead reads as "today". Only more than a day ahead is treated as bad data.
+- An absent or unparseable date renders as nothing rather than defaulting to
+  now. Defaulting would make the oldest memories — the ones most likely to be
+  stale — appear freshest.
+
+### Notes
+- **Not solved, and not claimed:** retrieval still ranks a stale note the same
+  as a fresh one, and nothing detects that two stored notes contradict. The
+  model is *shown* the discrepancy, not *told* about it. Tracked as
+  `TECH_DEBT.md` #4.
+- A memory's content date can never be older than its row: `saveLedger` stamps
+  both date fields on write and `patchLedger` rejects date columns, so only a
+  direct SQL write can backdate one. Provenance cannot be forged, but the label
+  is strictly row age — anything imported through the public API reads as new.
+
 ## [20.5.2] - 2026-08-02 — Startup Budget Regression
 
 Fixes a regression introduced in 20.5.1. **Upgrade if you auto-load more than
