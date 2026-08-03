@@ -58,14 +58,16 @@ features.
 
 ### What `prism connect` changes about host subagents
 
-`connect` turns off each host's own subagent feature, so bounded work routes to
-`prism_infer` on your machine instead of the host spawning agents of its own.
-Prism's local workers stay available over MCP either way.
+`connect` steers bounded work to `prism_infer` on your machine rather than to
+host-spawned agents. What it writes differs per host, and **it does not disable
+subagents everywhere** — Claude Code keeps them and is pointed at an economy
+model instead. Prism's local workers stay available over MCP in every case.
 
-| Host | Setting written | Why it looks different |
+| Host | Setting written | Effect |
 |---|---|---|
-| Gemini CLI | `experimental.enableAgents = false` in `~/.gemini/settings.json` | Gemini exposes one boolean, so that is all there is to set |
-| Codex | `features.multi_agent = false` in `~/.codex/config.toml`, plus a bounded fallback: 2 threads, depth 1, cheap subagent model, 900s cap | Codex exposes tuning, so re-enabling deliberately lands somewhere bounded rather than unlimited |
+| Claude Code | `env.CLAUDE_CODE_SUBAGENT_MODEL = "sonnet"` in `~/.claude/settings.json` | Subagents stay **enabled**, pinned to an economy model. Fan-out is discouraged by policy text, not by config |
+| Gemini CLI | `experimental.enableAgents = false` in `~/.gemini/settings.json` | Subagents **off**. Gemini exposes one boolean, so that is all there is to set |
+| Codex | `features.multi_agent = false` in `$CODEX_HOME/config.toml` (default `~/.codex`), plus a bounded fallback: 2 threads, depth 1, cheap subagent model, 900s cap | Subagents **off**, with a bounded profile underneath so a deliberate re-enable lands somewhere sane |
 
 Two things worth knowing:
 
