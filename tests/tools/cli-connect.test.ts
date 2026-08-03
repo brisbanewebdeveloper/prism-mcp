@@ -710,14 +710,22 @@ describe("prism connect", () => {
     expect(claude.env).toMatchObject({ KEEP: "yes", CLAUDE_CODE_SUBAGENT_MODEL: "sonnet" });
     expect(claude.theme).toBe("dark");
     const gemini = readConfig(geminiPath);
-    expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: false });
+    // Flipped 2026-08-03. These pinned "subagents banned", which was stricter
+    // than the local-first policy Prism publishes — that allows one economy
+    // subagent, no nesting, and Claude was already configured that way. The
+    // stated reason for Gemini ("native/remote subagents") did not survive
+    // checking: its subagents run locally, in-process. Now every host permits
+    // one subagent pinned to its cheapest fast model.
+    expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: true });
+    expect((gemini.agents as Record<string, any>).overrides.codebase_investigator.modelConfig)
+      .toMatchObject({ model: "gemini-3.6-flash" });
     expect(gemini.theme).toBe("dark");
     const codex = readTomlConfig(codexPath);
-    expect(codex.features).toMatchObject({ memories: true, multi_agent: false });
+    expect(codex.features).toMatchObject({ memories: true, multi_agent: true });
     expect(codex.agents).toMatchObject({
-      max_threads: 2,
-      max_depth: 1,
-      default_subagent_model: "gpt-5.6-terra",
+      max_threads: 1,          // "at most one" — the policy's own words
+      max_depth: 1,            // "no nesting"
+      default_subagent_model: "gpt-5.6-luna",
       default_subagent_reasoning_effort: "low",
       job_max_runtime_seconds: 900,
     });
@@ -1937,7 +1945,7 @@ describe("prism connect", () => {
       expectEvidenceWorkflowPolicy(canonicalClaudeInstructions);
       expect(readFileSync(cursorHooks, "utf8")).toBe(cursorHookSentinel);
       expect(JSON.stringify(readConfig(geminiSettings).hooks)).toBe(geminiHooksBefore);
-      expect(readConfig(geminiSettings).experimental.enableAgents).toBe(false);
+      expect(readConfig(geminiSettings).experimental.enableAgents).toBe(true);
       const configuredGeminiInstructions = readFileSync(geminiInstructions, "utf8");
       expect(configuredGeminiInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
       expect(configuredGeminiInstructions).not.toContain("# Startup — MANDATORY");
@@ -1954,11 +1962,11 @@ describe("prism connect", () => {
       expectLocalFirstPolicy(configuredCodexInstructions);
       expectEvidenceWorkflowPolicy(configuredCodexInstructions);
       expect(readTomlConfig(join(codexHome, "config.toml"))).toMatchObject({
-        features: { multi_agent: false },
+        features: { multi_agent: true },
         agents: {
-          max_threads: 2,
+          max_threads: 1,
           max_depth: 1,
-          default_subagent_model: "gpt-5.6-terra",
+          default_subagent_model: "gpt-5.6-luna",
           default_subagent_reasoning_effort: "low",
         },
       });
