@@ -149,6 +149,24 @@ const MAX_SYMPTOM_SKILLS = 5;
  */
 const SYMPTOM_SKILL_INLINE_MAX = 1_800;
 const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
+/** Below this the inlined rule is too clipped to be worth the space it costs. */
+const SYMPTOM_SKILL_INLINE_MIN = 400;
+
+/**
+ * The character budget a native startup display will actually be capped to.
+ *
+ * Single source of truth: capNativeStartupText caps against this, and the
+ * inlined rule is sized from it. Sizing the rule from the LEVEL constant
+ * instead let the suffix exceed the whole allowance — bootstrap divides the
+ * budget across rendered projects, so a per-project slice of 512 against an
+ * 1,800-char exempt suffix produced a 1,919-char display (275% over) with the
+ * session context entirely gone. The suffix is truncation-exempt by design;
+ * that only works if it is sized against the real budget.
+ */
+function effectiveNativeBudget(level: NativeContextDepth, requestedMaxChars?: number): number {
+  const configuredLimit = NATIVE_STARTUP_MAX_CHARS[level];
+  return Math.max(512, Math.min(configuredLimit, requestedMaxChars ?? configuredLimit));
+}
 
 // Skill bodies are read via skillManifestSync.readNativeSkillBody, which owns
 // the canonical root. That path is overridable per caller and per home, so a
@@ -370,8 +388,7 @@ function capNativeStartupText(
   requestedMaxChars?: number,
   suffix = "",
 ): string {
-  const configuredLimit = NATIVE_STARTUP_MAX_CHARS[level];
-  const maxChars = Math.max(512, Math.min(configuredLimit, requestedMaxChars ?? configuredLimit));
+  const maxChars = effectiveNativeBudget(level, requestedMaxChars);
   if (text.length + suffix.length <= maxChars) return text + suffix;
 
   const marker = `\n\n… Additional ${level} context omitted to keep native startup within its display budget.`;
@@ -1514,11 +1531,17 @@ export async function sessionLoadContextHandler(
           // failed on that gap. Inlining removes the indirection entirely.
           const { readNativeSkillBody } = await import("../skillManifestSync.js");
           const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
-          if (body) {
-            const cap = Math.min(
-              SYMPTOM_SKILL_INLINE_MAX,
-              Math.floor(NATIVE_STARTUP_MAX_CHARS[level] * SYMPTOM_SKILL_BUDGET_SHARE),
-            );
+          // Size against the budget this display will ACTUALLY be capped to,
+          // not the level constant — bootstrap divides it across projects.
+          const cap = Math.min(
+            SYMPTOM_SKILL_INLINE_MAX,
+            Math.floor(
+              effectiveNativeBudget(level, options.nativeMaxChars) * SYMPTOM_SKILL_BUDGET_SHARE,
+            ),
+          );
+          // Too tight to carry a useful rule: keep the name line, which is
+          // small, and leave the remaining budget to the session context.
+          if (body && cap >= SYMPTOM_SKILL_INLINE_MIN) {
             const clipped = body.length > cap
               ? `${body.slice(0, cap).trimEnd()}\n… (rule truncated to fit the startup budget)`
               : body;

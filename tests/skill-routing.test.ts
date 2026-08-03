@@ -389,6 +389,28 @@ describe('skill routing — native path (bootstrap)', () => {
     expect(src, 'knowledge_search does not serve skill bodies').not.toMatch(/knowledge_search\("\$\{/);
   });
 
+  it('sizes the inlined rule against the ACTUAL budget, not the level constant', () => {
+    // Adversarial review of the inline: the suffix is truncation-exempt (that
+    // was the fix for the earlier silent-drop bug), so sizing it from
+    // NATIVE_STARTUP_MAX_CHARS[level] let it exceed the whole allowance.
+    // Bootstrap divides the budget across rendered projects, so a per-project
+    // slice of 512 against an 1,800-char suffix produced a 1,919-char display
+    // — 275% over — with the session context entirely gone. Measured, then
+    // fixed: 512 in, 512 out, context retained.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src, 'budget formula must be one function, not duplicated')
+      .toMatch(/function effectiveNativeBudget/);
+    expect(src, 'the cap must consume the real per-call budget')
+      .toMatch(/effectiveNativeBudget\(level, options\.nativeMaxChars\)/);
+    expect(src, 'capNativeStartupText must use the same helper')
+      .toMatch(/const maxChars = effectiveNativeBudget\(level, requestedMaxChars\)/);
+    expect(src, 'a too-tight budget must drop the body, not the context')
+      .toMatch(/cap >= SYMPTOM_SKILL_INLINE_MIN/);
+  });
+
   it('strips YAML frontmatter before inlining', () => {
     // ~161 chars of name/description/metadata on data-before-code — provenance
     // the agent does not need, taken straight out of the rule's budget. It is
