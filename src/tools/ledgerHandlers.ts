@@ -155,6 +155,28 @@ const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
 // literal copied to this module would be wrong on any machine that overrides
 // either — and would silently drift from the writer.
 
+/**
+ * Drop the YAML frontmatter before inlining.
+ *
+ * `name`/`description`/`metadata` are routing and authoring metadata — the
+ * agent already has the name from the line above, and the rest is provenance.
+ * Measured at ~161 chars on data-before-code, which is what pushed the
+ * Anti-Patterns list past the cap and truncated it mid-word. Every character
+ * here is taken from the rule it is supposed to deliver.
+ *
+ * Returns "" for absent input so the caller's single truthiness check covers
+ * both "no body" and "frontmatter only".
+ */
+function stripSkillFrontmatter(raw: string | null): string {
+  const text = (raw ?? "").trim();
+  if (!text.startsWith("---")) return text;
+  // Closing fence must be its own line; a body line of "---" mid-document is
+  // not a terminator, so anchor on the newline pair.
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return text; // unterminated frontmatter — inline as-is
+  return text.slice(text.indexOf("\n", end + 1) + 1).trim();
+}
+
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
   standard: 8_000,
@@ -1491,7 +1513,7 @@ export async function sessionLoadContextHandler(
           // the content — no MCP tool serves it. Three instruction rewrites
           // failed on that gap. Inlining removes the indirection entirely.
           const { readNativeSkillBody } = await import("../skillManifestSync.js");
-          const body = (await readNativeSkillBody(shown[0]))?.trim();
+          const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
           if (body) {
             const cap = Math.min(
               SYMPTOM_SKILL_INLINE_MAX,

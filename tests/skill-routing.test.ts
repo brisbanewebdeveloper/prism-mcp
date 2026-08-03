@@ -389,6 +389,23 @@ describe('skill routing — native path (bootstrap)', () => {
     expect(src, 'knowledge_search does not serve skill bodies').not.toMatch(/knowledge_search\("\$\{/);
   });
 
+  it('strips YAML frontmatter before inlining', () => {
+    // ~161 chars of name/description/metadata on data-before-code — provenance
+    // the agent does not need, taken straight out of the rule's budget. It is
+    // what pushed the Anti-Patterns list past the cap and truncated it
+    // mid-word on a live host. With it stripped the full rule fits.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(/stripSkillFrontmatter/);
+    expect(src, 'must apply the strip at the inline site')
+      .toMatch(/stripSkillFrontmatter\(await readNativeSkillBody/);
+    // Unterminated frontmatter must degrade to inlining as-is, never to "".
+    expect(src, 'unterminated frontmatter must not blank the rule')
+      .toMatch(/if \(end === -1\) return text/);
+  });
+
   it('reads the body via the canonical resolver, never a hardcoded path', () => {
     // The skills root is overridable per caller and per home, so a literal
     // copied into this module is wrong on any machine that overrides either,
