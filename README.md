@@ -61,6 +61,59 @@ features.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.5.3
+
+### Grounding Evidence Carries Its Age
+
+Memory-grounded answers labelled their sources but never dated them, so a
+two-year-old note and yesterday's reached the model identically. Nothing in the
+evidence let it discount the stale one. Prompted by an external review naming
+the right risk for local-first memory: *the data stays local, but bad grounding
+becomes permanent* — storing everything on your machine removes the outside
+pressure that would otherwise surface a stale note.
+
+Evidence now reads:
+
+```
+[SOURCE 1: ledger:8286581d (recorded 2025-05-29, 431 days ago)]
+```
+
+The date already existed in storage and was being dropped at the snippet layer,
+so this is plumbing rather than new data collection. Zone-less SQLite
+timestamps are normalised to UTC — read as local, a ten-minute-old record
+parsed hours into the future and its age was suppressed entirely, meaning the
+feature silently did nothing on the freshest memories. An absent or unparseable
+date renders as nothing rather than defaulting to now; defaulting would make
+the oldest memories, the ones most likely to be stale, appear freshest.
+
+`tests/integration/grounding-staleness.test.ts` runs the reviewer's own probe —
+seed a deliberately outdated note beside a contradicting fresh one and assert
+the model receives both, visibly dated. Anyone can run it.
+
+**Not solved, and not claimed:** retrieval still ranks a stale note the same as
+a fresh one, and nothing detects that two stored notes contradict. The model is
+*shown* the discrepancy, not *told* about it. Tracked as `TECH_DEBT.md` #4.
+
+## What's New in v20.5.0 – v20.5.2
+
+### The First Message Never Leaves Your Machine
+
+Symptom-triggered skills — the rules that fire on "can't see X", "no rows",
+"the list is empty" — are meant to load on the turn an incident report arrives.
+They never did: every host template called `session_bootstrap` with `{}`, so
+there was no prompt to match against.
+
+Fixing that raised the question of where matching happens. It now happens
+locally. The 28 keyword rules are already public, so there was nothing a local
+match could not compute, and `callPortal()` has no `prompt` parameter at all —
+the guarantee is structural, not a promise. The portal request carries the
+project and role only.
+
+A matched rule now arrives as **content**, not as a name. Native hosts outside
+the skill-file mirror had no way to read a rule they were only told about, so
+the rule body is inlined into the startup display, bounded and sized against
+the real per-project budget.
+
 ## What's New in v20.4.0
 
 ### An Explicitly Named Cloud Backend Fails Loud
