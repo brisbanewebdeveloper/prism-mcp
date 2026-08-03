@@ -171,7 +171,24 @@ not compute, and the raw first message no longer crosses the network.
 - Free tier is unchanged and was verified against a live anonymous identity: a
   non-offline empty skill set, no `Authorization` header, no keyword-table
   request, a manifest limited to `prism-startup`, and no symptom hint.
-- 20.4.0 shipped without a changelog entry; its changes are folded in here.
+
+## [20.4.0] - 2026-08-01 — An Explicitly Named Cloud Backend Fails Loud
+
+### Fixed
+- **`PRISM_STORAGE=synalux` or `=supabase` with incomplete credentials silently
+  downgraded to local SQLite.** The switch was logged to stderr, which MCP hosts
+  discard, so nothing surfaced it: sessions kept serving stale local context
+  while the cloud held newer history, and `context_source` read `local` rather
+  than any kind of warning. A session could run that way for weeks.
+  Naming a backend outright is a strong statement of intent, so it now throws —
+  naming the missing variables and the `PRISM_STORAGE=local` opt-out — instead
+  of quietly splitting your session history.
+- The skill block is budgeted by default rather than only when `max_tokens` is
+  passed, so a large skill payload cannot crowd out briefing and history.
+
+### Notes
+- `auto` is unchanged: it keeps its documented synalux > supabase > local
+  degradation, pinned by a test.
 
 ## [20.3.2] - 2026-07-30 — Web Scholar: SSRF Hardening
 
