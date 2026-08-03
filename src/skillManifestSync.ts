@@ -461,9 +461,36 @@ async function enforceNativeEntitlements(incomingNames: Iterable<string>, agents
   }
 }
 
+/**
+ * The cross-host canonical skills root — single source of truth.
+ *
+ * Do NOT re-derive this path anywhere else. It is overridable per caller
+ * (`agentsSkillsDir`) and per home (`homeDir`), so a literal copied into
+ * another module is wrong on any machine that overrides either.
+ */
+export function resolveCanonicalSkillsDir(options: SkillSyncOptions = {}): string {
+  return options.agentsSkillsDir ?? join(options.homeDir ?? homedir(), ".agents", "skills");
+}
+
+/**
+ * Read a skill's body from the canonical root. Returns null when absent or
+ * unreadable — callers must degrade, never fail startup over it.
+ */
+export async function readNativeSkillBody(
+  name: string,
+  options: SkillSyncOptions = {},
+): Promise<string | null> {
+  if (!SAFE_NAME.test(name)) return null; // no traversal via name
+  try {
+    return await readFile(join(resolveCanonicalSkillsDir(options), name, "SKILL.md"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 async function resolveNativeSkillsDirs(options: SkillSyncOptions): Promise<string[]> {
   const userHome = options.homeDir ?? homedir();
-  const canonical = options.agentsSkillsDir ?? join(userHome, ".agents", "skills");
+  const canonical = resolveCanonicalSkillsDir(options);
   let claudeCode: string | null = null;
   let cursor: string | null = null;
 

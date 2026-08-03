@@ -371,6 +371,42 @@ describe('skill routing — native path (bootstrap)', () => {
       .toMatch(/slice\(0, MAX_SYMPTOM_SKILLS\)/);
   });
 
+  it('INLINES the top matched skill body rather than pointing at it', () => {
+    // Naming a skill is not delivering it. Bodies reach agents only as files
+    // under the canonical root; hosts outside that mirror (Gemini) have no
+    // path to the content and no MCP tool serves it. A live probe obeyed
+    // `knowledge_search("data-before-code")` and got "No knowledge found",
+    // then fell back to grepping source — three instruction rewrites all
+    // failed on that same missing path. Inlining removes the indirection.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src, 'must read the body, not reference it').toMatch(/readNativeSkillBody/);
+    expect(src, 'must bound the inlined body').toMatch(/SYMPTOM_SKILL_INLINE_MAX/);
+    expect(src, 'bound must scale with the display budget').toMatch(/SYMPTOM_SKILL_BUDGET_SHARE/);
+    // The dead retrieval instruction must be gone, not merely supplemented.
+    expect(src, 'knowledge_search does not serve skill bodies').not.toMatch(/knowledge_search\("\$\{/);
+  });
+
+  it('reads the body via the canonical resolver, never a hardcoded path', () => {
+    // The skills root is overridable per caller and per home, so a literal
+    // copied into this module is wrong on any machine that overrides either,
+    // and drifts from the writer. skillManifestSync owns the path.
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/tools/ledgerHandlers.ts'),
+      'utf8',
+    );
+    expect(src, 'no duplicated skills-root literal').not.toMatch(/"\.agents"\s*,\s*"skills"/);
+    const sync = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/skillManifestSync.ts'),
+      'utf8',
+    );
+    expect(sync).toMatch(/export function resolveCanonicalSkillsDir/);
+    expect(sync, 'the writer must use the same resolver it exports')
+      .toMatch(/const canonical = resolveCanonicalSkillsDir\(options\)/);
+  });
+
   it('states an action the host can actually perform', () => {
     // v1 emitted a bare list nothing consumed. v2 said "read them before
     // proposing changes" — un-actionable on hosts that do not auto-load skill
@@ -385,14 +421,8 @@ describe('skill routing — native path (bootstrap)', () => {
     // Match within a single string literal: the sentence is split across a
     // concatenation, so a phrase spanning the boundary never appears in source.
     expect(src).toMatch(/proposing any change/);
-    expect(src, 'must name the retrieval step, not assume the body is resident')
-      .toMatch(/knowledge_search/);
-    // The retrieval call must carry the REAL skill name. Shipped once as
-    // knowledge_search("<skill name>"); the host's markdown renderer ate the
-    // angle brackets as an unknown tag and the agent was told to search for
-    // the empty string. Interpolate, never placeholder.
-    expect(src, 'skill name must be interpolated into the retrieval call')
-      .toMatch(/knowledge_search\(\\"\$\{n\}\\"\)|knowledge_search\("\$\{/);
+    // No retrieval instruction any more — the body is inlined, so there is
+    // nothing to fetch. Asserting the imperative alone.
   });
 
   it('gives the native path a version to detect table drift against', () => {
@@ -664,6 +694,6 @@ describe('emitted startup text carries no strippable placeholders', () => {
     // in a TS generic.
     const placeholders = [...code.matchAll(/"<[^"]*>"/g)].map((m) => m[0]);
     expect(placeholders, `host renderers strip these: ${placeholders.join(", ")}`).toEqual([]);
-    expect(code, 'skill name must be interpolated, not templated').toMatch(/knowledge_search\("\$\{/);
+    // (retrieval-call assertion removed: the body is inlined, not fetched)
   });
 });

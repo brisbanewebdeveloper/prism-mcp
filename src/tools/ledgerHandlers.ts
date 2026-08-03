@@ -139,6 +139,22 @@ type NativeContextDepth = "quick" | "standard" | "deep";
  */
 const MAX_SYMPTOM_SKILLS = 5;
 
+/**
+ * Hard ceiling on the inlined skill body, and the share of the display budget
+ * it may take. Naming a skill is not delivering it: skill bodies reach agents
+ * ONLY as files under resolveNativeSkillsDirs, and hosts outside that list
+ * (Gemini) have no path to the content at all — no MCP tool serves it. Three
+ * instruction rewrites failed for that reason before it was found. Inlining
+ * removes the indirection entirely: the rule is simply in context.
+ */
+const SYMPTOM_SKILL_INLINE_MAX = 1_800;
+const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
+
+// Skill bodies are read via skillManifestSync.readNativeSkillBody, which owns
+// the canonical root. That path is overridable per caller and per home, so a
+// literal copied to this module would be wrong on any machine that overrides
+// either — and would silently drift from the writer.
+
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
   standard: 8_000,
@@ -1460,16 +1476,32 @@ export async function sessionLoadContextHandler(
           const overflow = matched.length - shown.length;
           // Imperative, not a label: a bare list is decorative, and nothing
           // else in the pipeline tells the agent to act on it.
+          // Names are interpolated, never a placeholder. A `<skill name>`
+          // placeholder here rendered as knowledge_search("") on a real host —
+          // markdown/HTML display ate the angle brackets as an unknown tag.
+          // Never emit angle brackets in text a host will render.
           symptomSkillSuffix = `\n\n**Symptom-triggered skills:** ${shown.join(", ")}` +
             (overflow > 0 ? `, … ${overflow} more` : "") +
-            // Names are interpolated, never a placeholder. A `<skill name>`
-            // placeholder here rendered as knowledge_search("") on a real host
-            // — markdown/HTML display ate the angle brackets as an unknown
-            // tag, so the instruction told the agent to search for nothing.
-            // Never emit angle brackets in text a host will render.
-            `\nThe first message matches these skills' trigger rules. Read each one before ` +
-            `proposing any change; if it is not already in your context, load it first with ` +
-            `${shown.map((n) => `knowledge_search("${n}")`).join(", ")}.\n`;
+            `\nThe first message matches these skills' trigger rules. Follow them before ` +
+            `proposing any change.\n`;
+
+          // INLINE the top match's body rather than pointing at it. Naming a
+          // skill is not delivering it: bodies reach agents only as files under
+          // the canonical root, and hosts outside that mirror have no path to
+          // the content — no MCP tool serves it. Three instruction rewrites
+          // failed on that gap. Inlining removes the indirection entirely.
+          const { readNativeSkillBody } = await import("../skillManifestSync.js");
+          const body = (await readNativeSkillBody(shown[0]))?.trim();
+          if (body) {
+            const cap = Math.min(
+              SYMPTOM_SKILL_INLINE_MAX,
+              Math.floor(NATIVE_STARTUP_MAX_CHARS[level] * SYMPTOM_SKILL_BUDGET_SHARE),
+            );
+            const clipped = body.length > cap
+              ? `${body.slice(0, cap).trimEnd()}\n… (rule truncated to fit the startup budget)`
+              : body;
+            symptomSkillSuffix += `\n--- ${shown[0]} ---\n${clipped}\n`;
+          }
         }
       } catch (err) {
         // Advisory — never fail startup over routing. But do not go silent:
