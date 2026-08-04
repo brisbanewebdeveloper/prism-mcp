@@ -352,8 +352,20 @@ async function buildNativeSystemReadyBlock(
   const superSkillAliases = superSkills.map((name) => `${name.slice(0, -"-super-skill".length)} (${name})`);
   const otherTierSkills = snapshot.names.filter((name) =>
     !coreSkillSet.has(name) && !name.endsWith("-super-skill"));
+  // Conflicts must be LOUD, named, and actionable. This used to render as
+  // "· 2 local conflicts preserved" — a count with benign phrasing, so two
+  // safety skills (ask-first among them) sat 4 months stale on disk while
+  // every sync silently skipped them and nobody was ever told which ones.
   const conflictSuffix = snapshot.conflicts.length > 0
-    ? ` · ${snapshot.conflicts.length} local conflict${snapshot.conflicts.length === 1 ? "" : "s"} preserved`
+    ? ` · ${snapshot.conflicts.length} conflict${snapshot.conflicts.length === 1 ? "" : "s"} — see warning`
+    : "";
+  const conflictWarning = snapshot.conflicts.length > 0
+    ? `\n> - ⚠️ **SKILLS NOT UPDATING (local copy has no Prism ownership marker):** ` +
+      `${formatBoundedSkillNames([...snapshot.conflicts].sort(), "blocked")}. ` +
+      `Each named skill is frozen at whatever version is on disk — updates are ` +
+      `withheld to protect local edits. To resume updates: move the skill's ` +
+      `directory out of the native skills folder and rerun \`prism connect\` ` +
+      `(or a session bootstrap) to reinstall the managed copy.`
     : "";
   if (snapshot.source === "validated-partial") {
     return `> **Prism System Ready**\n>\n` +
@@ -363,14 +375,16 @@ async function buildNativeSystemReadyBlock(
       `> - 🧩 **Super-skill entitlements:** ${formatBoundedSkillNames(superSkillAliases, "entitled")}\n` +
       `> - 🛠️ **Other tier entitlements:** ${formatBoundedSkillNames(otherTierSkills, "entitled")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
-      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}`;
+      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}` +
+      conflictWarning;
   }
   if (snapshot.source === "tier-fallback") {
     return `> **Prism System Ready**\n>\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
-      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}`;
+      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}` +
+      conflictWarning;
   }
   return `> **Prism System Ready**\n>\n` +
     `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
@@ -379,7 +393,8 @@ async function buildNativeSystemReadyBlock(
     `> - 🧩 **Super-skills provisioned:** ${formatBoundedSkillNames(superSkillAliases, "provisioned")}\n` +
     `> - 🛠️ **Other tier skills provisioned:** ${formatBoundedSkillNames(otherTierSkills, "provisioned")}\n` +
     `> - 🧠 **Context depth:** ${depth}\n` +
-    `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · committed manifest${conflictSuffix}`;
+    `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · committed manifest${conflictSuffix}` +
+    conflictWarning;
 }
 
 function capNativeStartupText(

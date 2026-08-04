@@ -1545,7 +1545,13 @@ describe("ledgerHandlers", () => {
 
       const text = (await sessionBootstrapHandler({})).content[0].text as string;
       expect(text).toContain("Entitled skills (materialization incomplete)");
-      expect(text).toContain("1 local conflict preserved");
+      // 2026-08-03: conflicts must be named and actionable, not a benign
+      // count. "1 local conflict preserved" let ask-first sit 4 months stale
+      // while every sync silently skipped it.
+      expect(text).toContain("1 conflict — see warning");
+      expect(text).toContain("SKILLS NOT UPDATING");
+      expect(text).toContain("dev-engineering-super-skill");
+      expect(text).toContain("rerun `prism connect`");
       expect(text).not.toContain("Super-skills provisioned");
       expect(text).not.toContain("available");
     });
