@@ -152,8 +152,13 @@ describe('skill routing — backward compat', () => {
     // four-query pre-flight were both skipped during a live incident.
     // Offline inclusion is safe: session_load_context only inlines a fallback
     // entry when its content is actually cached locally.
-    expect(protectedNames).toHaveLength(14);
-    expect(OFFLINE_FALLBACK.universal).toHaveLength(14);
+    // 14 -> 16 on 2026-08-03: ask-first and feature-preservation joined after
+    // the demo-wipe audit — the floor exceeded every budget tranche, so an
+    // unprotected destruction gate was never delivered to any agent.
+    expect(protectedNames).toHaveLength(16);
+    expect(OFFLINE_FALLBACK.universal).toHaveLength(16);
+    expect(protectedNames).toContain('ask-first');
+    expect(protectedNames).toContain('feature-preservation');
     expect(OFFLINE_FALLBACK.universal.every((entry) => typeof entry !== 'string' && entry.protected)).toBe(true);
     expect(protectedNames).toContain('aba-precision-protocol');
     expect(protectedNames).not.toContain('current-staging-acceptance');

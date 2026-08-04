@@ -76,6 +76,13 @@ export const REQUIRED_PROTECTED_SKILL_NAMES = [
   // so the two sources disagreed. A portal test now asserts they match.
   'data-before-code',
   'critical-thinking-debug',
+  // Added 2026-08-03. The floor had grown past every budget tranche, so an
+  // unprotected universal skill could NEVER inline — including the destruction
+  // gate, during the very audit of a demo-venue wipe it should have prevented.
+  // If these two are absent, nothing tells the agent that announcing a wipe is
+  // not the same as being allowed to run it.
+  'ask-first',
+  'feature-preservation',
 ] as const;
 
 /**
