@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [20.6.0] - 2026-08-04 — Delivery Is Not a Suggestion
 
 ### Known limitation (disclosure)
 - **Skill delivery informs; it does not gate.** The 20.5.x on-device routing

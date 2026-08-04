@@ -92,6 +92,28 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.6.0
+
+### Delivery Is Not a Suggestion
+
+An audit of a real incident (an agent wiped demo data after *announcing* the
+wipe — with the ask-first rule committed, bundled, and absent from what any
+agent actually received) found the protected floor had outgrown every delivery
+budget: "unprotected" had quietly come to mean "never delivered".
+
+- **`ask-first` and `feature-preservation` join the protected floor** (14 → 16).
+  Protected skills are always inlined; these two now reach every session.
+- **Sync conflicts are loud and named.** Startup used to say "· 2 local
+  conflicts preserved" while safety skills sat months stale; it now names each
+  frozen skill and states how to resume updates.
+- **`--storage` accepts `auto` and `synalux`** — the CLI rejected its own
+  documented default and the production backend.
+- **Disclosure:** skill delivery informs; it does not gate. A live probe showed
+  a host agent still edit unverified source with the rule loaded. If your
+  threat model includes an agent acting against a loaded rule under task
+  pressure, pair this package with mechanical gates (hooks, permissions,
+  least-privilege roles). True of every prior release; stated from this one.
+
 ## What's New in v20.5.3
 
 ### Grounding Evidence Carries Its Age
