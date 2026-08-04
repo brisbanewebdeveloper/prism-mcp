@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Known limitation (disclosure)
+- **Skill delivery informs; it does not gate.** The 20.5.x on-device routing
+  work ensures behavioral rules reach the agent's context on turn one, but a
+  live cross-host probe during that work showed a host agent whose data path
+  was blocked still fall back to editing unverified source — with the rule
+  loaded. If your threat model includes an agent acting against a loaded rule
+  under task pressure, you need a mechanical gate outside the model (hooks,
+  permissions, least-privilege DB roles) in addition to this package. This has
+  been true of every 20.5.x release and was not stated in any of their notes;
+  stating it now.
+
+### Added
+- Startup names the skills a sync conflict is freezing (previously a bare
+  count on a status line while safety skills sat months stale), with the
+  resolution steps.
+- `ask-first` and `feature-preservation` join the protected floor (14 → 16):
+  the floor had outgrown every delivery budget, so unprotected skills were
+  never inlined at all.
+
+### Fixed
+- CLI `--storage` rejected `auto` (its own documented default) and `synalux`
+  (the production backend); the allowlist now mirrors the config union.
+
 ## [20.5.3] - 2026-08-03 — Grounding Evidence Carries Its Age
 
 Prompted by an external review: *"the data stays local, but bad grounding
