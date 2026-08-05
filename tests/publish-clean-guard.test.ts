@@ -93,3 +93,51 @@ describe("private identifiers must not appear in tracked files", () => {
     expect(hits, `private identifier leaked into: ${hits.join(", ")}`).toEqual([]);
   });
 });
+
+describe("published-version conflict guard", () => {
+    // The manifest guard proves server.json and package.json AGREE. It says
+    // nothing about whether the version ADVANCED — so main accumulated a
+    // session of shipped work while both files sat at 20.6.0, agreeing with
+    // each other and with npm, and disagreeing with reality. npm only
+    // rejected it after a full build and pack.
+    //
+    // Driven through the SUBPROCESS, not import(): importing this .mjs under
+    // vitest fails on Windows, while spawning it is already proven here.
+    function runGuardWithPublished(repo: string, published: string) {
+        return spawnSync(process.execPath, [SCRIPT], {
+            cwd: repo,
+            encoding: "utf8",
+            env: { ...process.env, PRISM_GUARD_PUBLISHED_VERSION: published },
+        });
+    }
+
+    function repoWithPackage(name: string, version: string): string {
+        const repo = createCommittedRepo();
+        writeFileSync(resolve(repo, "package.json"), JSON.stringify({ name, version }, null, 2));
+        execFileSync("git", ["add", "package.json"], { cwd: repo });
+        execFileSync("git", ["commit", "--quiet", "-m", "package"], { cwd: repo });
+        return repo;
+    }
+
+    it("blocks a version npm already serves", () => {
+        // Pinned via the seam, NOT the live registry: hard-coding a real
+        // published version made this test fail the moment 20.7.0 shipped.
+        const result = runGuardWithPublished(repoWithPackage("pkg", "20.6.0"), "20.6.0");
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("already published");
+        expect(result.stderr).toContain("server.json");
+    });
+
+    it("allows a version that advances past the published one", () => {
+        const result = runGuardWithPublished(repoWithPackage("pkg", "20.7.0"), "20.6.0");
+        expect(result.stderr).not.toContain("already published");
+        expect(result.status).toBe(0);
+    });
+
+    it("fails OPEN for a package the registry does not know", () => {
+        // A first release must still work, so an unknown package cannot block.
+        const result = runGuardWithPublished(repoWithPackage("pkg", "1.0.0"), "");
+        expect(result.stderr).not.toContain("already published");
+        expect(result.status).toBe(0);
+    });
+});
