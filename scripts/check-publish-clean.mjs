@@ -37,7 +37,10 @@ export function serverManifestVersionMismatches(packageJson, serverJson) {
  * — server.json was guarded, this was not. Any file listed here is held to
  * the same rule: if it declares a version, it must be package.json's.
  */
-const VERSIONED_MANIFESTS = ["plugins/prism/.codex-plugin/plugin.json"];
+const VERSIONED_MANIFESTS = [
+  "plugins/prism/.codex-plugin/plugin.json",
+  "plugins/prism/.claude-plugin/plugin.json",
+];
 
 function checkVersionedManifests(repoRoot, expected) {
   const problems = [];
