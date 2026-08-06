@@ -2,6 +2,112 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.7.1] - 2026-08-06 — The Guard That Blocked Its Own Release
+
+### Fixed
+- **`closeStorage()` could install a dead connection.** It assigned
+  `storageInstance = null` *after* `await close()`, so a throwing close left the
+  broken instance in the singleton slot and every later `getStorage()` handed it
+  to callers. The clear now happens in `finally`; the error still propagates so
+  a caller like `restoreFromBackup` aborts before touching the database file.
+- **Restore released the connection before swapping the file.** Replacing a
+  database beneath a live connection leaves it on a stale page cache with a WAL
+  that no longer describes the file — unsafe per SQLite's own documentation,
+  independent of platform.
+- **The publish gate blocked the registry republish it exists to protect.** The
+  20.7.0 registry publish failed with `prism-mcp-server@20.7.0 is already
+  published` — the guard is a `prepublishOnly` check, and the registry workflow
+  runs *after* npm publish, where "this version is on npm" is the correct
+  precondition. `--manifest-only` now scopes it. (An earlier commit removed a
+  *phantom* `--manifest-only` that the script never parsed and whose `||`
+  fallback failed open; this implements it for real, with both modes tested.)
+- **The Codex plugin manifest sat at 20.6.0 through the 20.7.0 release.**
+  `server.json` was guarded; that file was not, so a marketplace submission
+  would have advertised a version that no longer exists. Every file declaring a
+  version is now held to `package.json`.
+- Test teardown no longer fails suites whose assertions all pass. See the
+  disclosure below.
+
+### Added
+- `tests/verification/first-run-e2e.test.ts` drives the **built** server over
+  real stdio through the MCP client. Unit tests call handlers directly and
+  cannot catch a regression in transport, tool registration, or startup wiring.
+  Falsified before shipping: reintroducing the old greeting turns it red.
+- `.github/workflows/windows-diagnostic.yml` + a six-experiment probe. Six
+  attempts at a Windows failure had been designed blind against a ~7-minute
+  pass/fail matrix; this answers in **47 seconds** on windows-x64 and reports
+  facts rather than pass/fail.
+- `scripts/local-ci.sh` runs the CI job locally, and is explicit that it cannot
+  substitute for the Windows legs.
+- `scripts/ensure-dist.sh` rebuilds `dist/` when a checkout leaves it missing.
+  Both hosts launch the MCP server by absolute path into the working tree and
+  `dist/` is gitignored, so a clean or failed build stopped Prism loading in
+  every session on that machine — surfacing far from its cause as "the MCP
+  server won't connect".
+
+### Known limitation (disclosure)
+- **A dependency holds the database file open on Windows.** `libsql`'s
+  `close()` does not finalize outstanding prepared statements, so the
+  connection survives until GC runs finalizers
+  ([libsql-js#228](https://github.com/tursodatabase/libsql-js/issues/228)).
+  Measured on windows-x64: a `close()`, a WAL checkpoint, a 3-second wait, and a
+  raw client with WAL disabled all still report `EBUSY` on `unlink`.
+
+  **What it does not affect:** reading the file and overwriting it both
+  succeed, so backup, restore, and every shipped feature work normally. The
+  lock blocks `unlink`/`rename` only, and releases when the process exits.
+  Three test suites hit it during cleanup; their teardown now warns instead of
+  failing. An earlier draft of these notes claimed restore was broken on
+  Windows — that was inferred from the unlink failure rather than measured, and
+  the measurement refutes it.
+
+## [20.7.0] - 2026-08-05 — A First Run That Demonstrates Something
+
+A scrubbed-environment probe drove a brand-new install the way a host does. The
+first turn greeted a first-time user with **"Welcome back"**, three `Not loaded`
+rows, a warning, and three statements of what they did not have: no next step,
+no price, no dashboard, and the tool the greeting pointed at rejected its own
+documented bare call. The entire payload was absence.
+
+### Fixed
+- **First run is detected and answered with actions.** The greeting routes to
+  `onboarding_wizard`, surfaces the dashboard, and points at
+  `session_save_ledger`. Gated on a durable marker, so a user with saved
+  sessions but no configured name is no longer greeted as a stranger every
+  session.
+- **The paid tier appears on the one guaranteed impression.** `upgrade_url`
+  existed and was surfaced only *after* a user hit an entitlement gate; the
+  startup path referenced it zero times.
+- **`onboarding_wizard` honours the contract it advertises.** A bare call —
+  the exact call its own description documents, and the first tool a new user
+  touches — returned `Invalid arguments`, and `next`/`status`/`skip` all
+  silently re-rendered step 1 because the handler read fields the validator
+  never passed.
+- **The dashboard is reported honestly.** Its URL reached stderr only, which
+  MCP hosts discard. It is now in the payload, verified by requesting
+  `/api/health` rather than by opening a socket: the default port is 3000, the
+  most commonly occupied port on a developer machine, so a liveness check would
+  have pointed a first-run user at their own dev server.
+- `analytics._resetDb()` dropped its sqlite client without closing it.
+
+### Added
+- **Agent definitions ship through the skill-manifest pipeline.** Subagent
+  routing policy — model tier, effort cap, tool surface — becomes versioned,
+  reviewed, deployed content instead of a per-machine hand edit, materialized
+  into Claude Code (`~/.claude/agents`), Codex (`.toml`, keys verified against
+  the 0.146.0 binary), and Gemini CLI (reduced frontmatter). Hand-edited files
+  are never overwritten; ownership is proven by digest, not assumed.
+- Agents ride the manifest under their own `agents_generation`. Folding them
+  into the skills hash would have broken every deployed client, which
+  recomputes it and fails closed.
+
+### Security
+- Closed the check-then-act races CodeQL flagged in agent materialization:
+  mutations claim a file out of the discovery root and re-hash the claimed
+  bytes before acting, and installs use `link(2)` exclusivity. A racing edit is
+  restored byte-identical and reported as a conflict rather than clobbered.
+- Resolved all 10 outstanding `npm audit` findings (3 high, 7 moderate).
+
 ## [20.6.0] - 2026-08-04 — Delivery Is Not a Suggestion
 
 ### Known limitation (disclosure)
