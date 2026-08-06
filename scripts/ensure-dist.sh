@@ -18,6 +18,14 @@
 #
 # Deliberately best-effort: a hook must never block a checkout or merge. If
 # the build fails, say so and let the developer decide.
+#
+# The calling hook must also guard on this file EXISTING — it is tracked, so
+# checking out any commit that predates it would otherwise make the hook
+# itself fail with "No such file or directory" on an ordinary checkout:
+#
+#   GUARD="$(git rev-parse --show-toplevel)/scripts/ensure-dist.sh"
+#   [ -x "$GUARD" ] || exit 0
+#   exec "$GUARD"
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
