@@ -56,6 +56,30 @@ Prism works locally without an account, API key, or cloud subscription. Add a
 Synalux subscription when you want cloud memory, paid-tier skills, or team
 features.
 
+### Install as a plugin
+
+Prism also ships as a plugin, which registers the MCP server and the startup
+skill for you.
+
+**Claude Code** — from the community marketplace:
+
+```bash
+/plugin marketplace add anthropics/claude-plugins-community
+/plugin install synalux-prism@claude-community
+```
+
+**Codex** — this repository is itself a plugin marketplace:
+
+```bash
+codex plugin marketplace add dcostenco/prism-coder
+codex plugin add synalux-prism@prism
+```
+
+The plugin registers `prism-mcp` via `npx -y prism-mcp-server`. If you already
+configured Prism by hand — `prism connect` writes an `mcp_servers.prism-mcp`
+entry — you have that server twice under one key. Install the plugin **or**
+run `prism connect`, not both.
+
 ### What `prism connect` changes about host subagents
 
 `connect` steers bounded work to `prism_infer` on your machine rather than to
