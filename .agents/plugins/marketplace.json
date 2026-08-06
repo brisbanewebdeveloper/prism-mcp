@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "prism",
+      "name": "synalux-prism",
       "source": {
         "source": "local",
         "path": "./plugins/prism"

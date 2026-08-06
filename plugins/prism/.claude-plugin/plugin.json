@@ -1,5 +1,5 @@
 {
-  "name": "prism",
+  "name": "synalux-prism",
   "description": "Persistent session memory for Claude Code. Prism restores what you were doing across sessions \u2014 decisions, open TODOs, changed files \u2014 and carries knowledge search, drift detection, and local-first inference. Memory stays in SQLite on your machine by default.",
   "version": "20.7.1",
   "author": {

@@ -1,7 +1,7 @@
 {
-  "name": "prism",
+  "name": "synalux-prism",
   "version": "20.7.1",
-  "description": "Persistent session memory for Codex. Prism restores what you were doing across sessions — decisions, open TODOs, changed files — and carries knowledge search, drift detection, and local-first inference. Memory stays in SQLite on your machine by default.\n\nOn the first user turn of a conversation, call session_bootstrap once before answering, then print its result verbatim as the startup display.",
+  "description": "Persistent session memory for Codex. Prism restores what you were doing across sessions \u2014 decisions, open TODOs, changed files \u2014 and carries knowledge search, drift detection, and local-first inference. Memory stays in SQLite on your machine by default.\n\nOn the first user turn of a conversation, call session_bootstrap once before answering, then print its result verbatim as the startup display.",
   "author": {
     "name": "Synalux"
   },
@@ -24,7 +24,10 @@
     "longDescription": "Prism gives Codex a memory that outlives a single conversation. It restores prior decisions, open TODOs, and changed files at the start of each session, searches an indexed knowledge store, and detects when a long session has drifted from its original goal. Memory is stored in SQLite on your own machine by default; a subscription may be used instead for multi-device sync.",
     "developerName": "Synalux",
     "category": "Engineering",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://synalux.ai",
     "defaultPrompt": [
       "What was I working on last session?"
