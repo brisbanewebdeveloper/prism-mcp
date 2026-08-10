@@ -163,7 +163,84 @@ describe("subscription-tier skill manifest sync", () => {
     }
   });
 
-    // POSIX-only: Windows chmod maps to the read-only attribute alone and lstat
+    it.skipIf(process.platform === "win32")("advances the materialized generation only when files actually land", async () => {
+    // THE CLASS, not a cause: the DB half commits before the file half by
+    // design (committed names drive offline pruning after a crash), so any
+    // materialization failure leaves the DB claiming a generation no file
+    // ever reached. This durable marker is how the next startup can SEE that
+    // divergence instead of trusting "unchanged" for nine days.
+    const agentsSkillsDir = await root();
+    const applied: Array<Record<string, string>> = [];
+    const applyManifest = vi.fn(async (state: { generation: string }) => {
+      applied.push({ generation: state.generation });
+    });
+    // A UNIQUE paid skill so this manifest's generation differs from every
+    // other test's: the config DB is per-process, not per-test, and the
+    // deterministic default generation was already recorded as materialized by
+    // an earlier successful sync in this file — which made the "did not
+    // advance" assertion vacuously false. Caught when the file ran as a whole
+    // after passing in isolation.
+    const snapshot = manifest("enterprise", ["marker-divergence-probe"]);
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .not.toBe(snapshot.generation);
+
+    // Fail AFTER the DB commit, which is the split this marker exists to
+    // expose. A broken root fails at the lock, BEFORE fetch and DB apply --
+    // reviewing this very test caught that wrong shape -- so the failure is
+    // injected at native staging instead, which runs after dbApplied = true.
+    const failed = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest,
+      fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+      beforeNativeStage: async () => { throw new Error("injected materialization failure"); },
+      ...paidAuth,
+    });
+    expect(failed.status).toBe("partial");
+    expect(applied.length).toBe(1);                     // DB half DID commit
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .not.toBe(snapshot.generation);                   // file half did NOT
+
+    const good = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest,
+      fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+      ...paidAuth,
+    });
+    expect(good.status).toBe("applied");
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .toBe(snapshot.generation);
+  });
+
+  // POSIX-only. Found by adversarial review of the FIRST fix: repairing a
+  // pre-existing directory does nothing about a umask that is STILL restrictive,
+  // because mkdtemp and every nested mkdir then create fresh untraversable
+  // directories. The reviewer reproduced the original split-commit against the
+  // rebuilt dist -- DB committed, disk ENOENT -- through a repaired transaction
+  // base containing a brand-new unusable txn-* directory.
+  it.skipIf(process.platform === "win32")("materializes under a persistent umask that strips owner-execute", async () => {
+    // The temp base is made BEFORE the umask changes: root() is harness, not the
+    // code under test. Everything below it is created by the sync itself while
+    // the restrictive umask is active, which is the real scenario.
+    const base = await root();
+    const previous = process.umask(0o177);   // every mkdir/mkdtemp lands 0o600
+    try {
+      const agentsSkillsDir = join(base, "nested", "skills");   // ancestors must be created too
+      const result = await synchronizeSkillManifest({
+        agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+        applyManifest: vi.fn(async () => undefined),
+        fetchImpl: vi.fn(() => jsonResponse(manifest("enterprise", ["enterprise-skill"]))) as unknown as typeof fetch,
+        ...paidAuth,
+      });
+      expect(result.error).toBeFalsy();
+      expect(result.status).toBe("applied");
+      expect(await readFile(join(agentsSkillsDir, "prism-startup", "SKILL.md"), "utf8"))
+        .toContain("name: prism-startup");
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  // POSIX-only: Windows chmod maps to the read-only attribute alone and lstat
   // reports 0o666 for every writable directory, so a directory that cannot be
   // entered has no Windows analogue and the mode assertion is meaningless
   // there. Ran red on windows-latest with "expected 438 to be 448" before this.

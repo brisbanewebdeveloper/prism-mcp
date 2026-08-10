@@ -7,7 +7,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  applyManagedSkillManifest, getSetting, refreshConfigStorageCache,
+  applyManagedSkillManifest, getSetting, refreshConfigStorageCache, setSetting,
 } from "./storage/configStorage.js";
 import {
   materializeAgentDefinitions, renderClaudeAgent, renderCodexAgent, renderGeminiAgent,
@@ -16,6 +16,18 @@ import {
 } from "./agentManifestSync.js";
 import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "./tools/skillRouting.js";
 import { getSynaluxJwt, invalidateSynaluxJwt } from "./utils/synaluxJwt.js";
+import { mkdirUsable, repairOwnerAccess } from "./utils/usableDirectory.js";
+
+/**
+ * Generation whose files actually reached disk, as opposed to the generation
+ * the config DB accepted. They diverge exactly when materialization fails, and
+ * that divergence is what made the 2026-08-10 outage invisible: the DB half
+ * commits first (deliberately -- committed names are what let a crashed run
+ * prune obsolete skills offline on restart), so the client reported the new
+ * generation while every managed root stayed frozen for nine days. Only a
+ * completed materialization advances this key.
+ */
+export const MATERIALIZED_GENERATION_KEY = "skill_manifest:materialized_generation";
 
 const OWNER = "prism-skill-sync-v1";
 const MARKER = ".prism-managed.json";
@@ -369,12 +381,12 @@ async function matchesIncomingSkill(path: string, skill: ManifestSkill): Promise
 
 async function stageSkill(root: string, skill: ManifestSkill, generation: string): Promise<string> {
   const target = join(root, skill.name);
-  await mkdir(target, { recursive: true, mode: 0o700 });
+  await mkdirUsable(target);
   const digests: Record<string, string> = Object.create(null);
   for (const [file, encoded] of Object.entries(skill.files)) {
     const path = resolve(target, file);
     if (!path.startsWith(`${target}${sep}`)) throw new Error(`unsafe resolved path: ${file}`);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await mkdirUsable(dirname(path));
     await writeFile(path, decodeFile(encoded), { mode: 0o600 });
     digests[file] = encoded.digest;
   }
@@ -388,29 +400,10 @@ type NativeOperation =
   | { type: "update"; name: string; target: string; backup: string }
   | { type: "prune"; name: string; target: string; backup: string };
 
-/**
- * Restore owner rwx on a managed directory that exists but cannot be entered.
- *
- * Restores 0o700 EXACTLY rather than OR-ing owner bits onto whatever is there.
- * These directories stage entitled skill content and pre-rollback backups, and
- * every creation site already asks for 0o700; repairing 0o066 to 0o766 would
- * "fix" an outage by leaving the staging area group- and world-accessible. It
- * only fires on a directory already missing owner rwx — broken by definition —
- * so no deliberate sharing mode is overridden.
- *
- * POSIX only. On Windows chmod maps to the read-only attribute alone and lstat
- * reports 0o666 for every writable directory, so the condition can never be
- * satisfied: without this guard the repair would fire on every call, chmod
- * pointlessly, and still read back 0o666. The failure being repaired — a umask
- * clearing the owner-execute bit — has no Windows analogue.
- */
-async function repairOwnerAccess(path: string, mode: number): Promise<void> {
-  if (process.platform === "win32") return;
-  if ((mode & 0o700) !== 0o700) await chmod(path, 0o700);
-}
+
 
 async function ensureRealDirectory(path: string): Promise<void> {
-  if (!(await exists(path))) await mkdir(path, { recursive: true, mode: 0o700 });
+  if (!(await exists(path))) await mkdirUsable(path);
   const stat = await lstat(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`managed path must be a real directory: ${path}`);
   // Existing-but-unusable is the failure this repairs. mkdir's mode is masked
@@ -653,7 +646,7 @@ async function materializeNative(
   agentsSkillsDir: string,
   hooks: Pick<SkillSyncOptions, "afterNativePrune" | "beforeNativeStage" | "beforeNativeCommit" | "beforeNativeCleanup">,
 ): Promise<Pick<SkillSyncResult, "installed" | "updated" | "pruned" | "conflicts">> {
-  await mkdir(agentsSkillsDir, { recursive: true, mode: 0o700 });
+  await mkdirUsable(agentsSkillsDir);
   const rootStat = await lstat(agentsSkillsDir);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("native skills root must be a real directory");
   // The readdir immediately below is the first thing an unusable root breaks.
@@ -666,6 +659,10 @@ async function materializeNative(
   await ensureRealDirectory(transactionBase);
   await removeExpiredTransactions(transactionBase);
   const transactionRoot = await mkdtemp(join(transactionBase, "txn-"));
+  // mkdtemp is umask-masked too, and nothing else revisits this path. A
+  // persistent restrictive umask therefore produced a REPAIRED base holding a
+  // brand-new unusable txn-* directory -- the original outage one level deeper.
+  await repairOwnerAccess(transactionRoot, (await lstat(transactionRoot)).mode);
   const stageRoot = join(transactionRoot, "stage");
   const backupRoot = join(transactionRoot, "backup");
   await ensureRealDirectory(stageRoot);
@@ -882,7 +879,7 @@ async function fetchManifest(options: SkillSyncOptions): Promise<SkillManifest> 
 }
 
 async function acquireSyncLock(agentsSkillsDir: string, waitMs = LOCK_WAIT_MS): Promise<() => Promise<void>> {
-  await mkdir(agentsSkillsDir, { recursive: true, mode: 0o700 });
+  await mkdirUsable(agentsSkillsDir);
   const rootStat = await lstat(agentsSkillsDir);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("native skills root must be a real directory");
   // Same repair as ensureRealDirectory. This site takes the lock before any
@@ -1035,6 +1032,10 @@ export async function synchronizeSkillManifest(options: SkillSyncOptions = {}): 
       native.conflicts.push(...outcome.conflicts);
     }
     const status = native.installed.length || native.updated.length || native.pruned.length ? "applied" : "unchanged";
+    // Reached only when every native root materialized. A failure above throws
+    // past this point, leaving the previous value so the mismatch persists and
+    // stays visible until a sync genuinely succeeds.
+    await setSetting(MATERIALIZED_GENERATION_KEY, manifest.generation);
     return {
       status,
       tier: manifest.tier,
