@@ -644,3 +644,139 @@ describe("query_memory_natural grounded fallback", () => {
         expect(result.sources).toHaveLength(1);
     });
 });
+
+// ── Evidence age (grounding visibility) ─────────────────────────────────────
+// External review, 2026-08-02: "the data stays local, but bad grounding becomes
+// permanent." The evidence block labelled sources but never dated them, so a
+// two-year-old note and yesterday's were indistinguishable to the model — and
+// local storage removes the external correction pressure that would otherwise
+// surface the staleness. Age now travels with the evidence.
+import { describeAge } from "../../src/tools/queryMemoryNaturalHandler.js";
+
+describe("describeAge — evidence carries its own age", () => {
+    const iso = (daysAgo: number) =>
+        new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+
+    it("labels an old memory with its date and age in days", () => {
+        const out = describeAge({ type: "memory", source: "s", recorded: iso(431), content: "c" });
+        expect(out).toMatch(/recorded \d{4}-\d{2}-\d{2}, 43[01] days ago/);
+    });
+
+    it("says today rather than '0 days ago'", () => {
+        expect(describeAge({ type: "memory", source: "s", recorded: iso(0), content: "c" }))
+            .toMatch(/, today\)$/);
+    });
+
+    it("stays SILENT when the store gave no date", () => {
+        // Must not default to now — that would make the oldest memories, the
+        // ones most likely to be stale, appear freshest.
+        expect(describeAge({ type: "memory", source: "s", content: "c" })).toBe("");
+    });
+
+    it("stays silent on an unparseable date, or one more than a day ahead", () => {
+        expect(describeAge({ type: "memory", source: "s", recorded: "not-a-date", content: "c" })).toBe("");
+        expect(describeAge({ type: "memory", source: "s", recorded: iso(-5), content: "c" })).toBe("");
+    });
+
+    it("reads a zone-less SQLite stamp as UTC, not local", () => {
+        // Adversarial review: SQLite CURRENT_TIMESTAMP writes
+        // "YYYY-MM-DD HH:MM:SS" in UTC with no zone; Date.parse reads that as
+        // LOCAL. Formats are not uniform — semantic_knowledge writes ISO+Z,
+        // memory_links does not.
+        //
+        // Dated 3 days + 1 hour back so the offset changes the DAY count: west
+        // of UTC a raw parse yields "2 days ago". A "today"-based assertion was
+        // vacuous, because the clock-skew tolerance below absorbs a few hours
+        // and both implementations agreed. (Under TZ=UTC there is no offset to
+        // detect, so this asserts correctness rather than catching the bug.)
+        const d = new Date(Date.now() - (3 * 86_400_000 + 3_600_000));
+        const p2 = (n: number) => String(n).padStart(2, "0");
+        const zoneless = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`
+            + ` ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+        expect(describeAge({ type: "memory", source: "s", recorded: zoneless, content: "c" }))
+            .toMatch(/, 3 days ago\)$/);
+    });
+
+    it("tolerates small clock skew instead of going silent", () => {
+        // A stamp a few minutes ahead (skew between machines) is "today".
+        const skewed = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        expect(describeAge({ type: "memory", source: "s", recorded: skewed, content: "c" }))
+            .toMatch(/, today\)$/);
+    });
+
+    it("does not annotate web sources, which carry their own provenance", () => {
+        expect(describeAge({
+            type: "web", source: "s", title: "t", url: "u", description: "d", content: "c",
+        } as never)).toBe("");
+    });
+});
+
+// ── Evidence plumbing: does the date actually reach the model? ───────────────
+// Every test above starts at describeAge with a hand-built object, so all of
+// them would still pass if the date never left the database. These cover the
+// layers in between: snippet JSON -> extractMemorySources -> evidence block.
+import {
+    extractMemorySources,
+    buildGroundedEvidenceContext,
+} from "../../src/tools/queryMemoryNaturalHandler.js";
+
+const snippetResult = (snippets: unknown[]) => ({
+    isError: false,
+    content: [{ type: "text" as const, text: JSON.stringify({ evidence_snippets: snippets }) }],
+});
+
+describe("evidence plumbing — recorded survives extraction", () => {
+    it("carries `recorded` from the snippet JSON into the source", () => {
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:1", recorded: "2025-05-28T10:00:00.000Z", content: "note" },
+        ]) as never);
+        expect(src).toMatchObject({ type: "memory", recorded: "2025-05-28T10:00:00.000Z" });
+    });
+
+    it("still extracts when the store supplies no date", () => {
+        // Older rows and backends that never wrote created_at must not vanish.
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:2", content: "undated note" },
+        ]) as never);
+        expect(src).toMatchObject({ type: "memory", content: "undated note" });
+        expect((src as { recorded?: string }).recorded).toBeUndefined();
+    });
+
+    it("ignores a non-string date rather than throwing", () => {
+        const [src] = extractMemorySources(snippetResult([
+            { source: "knowledge_search:3", recorded: 1748424000000, content: "note" },
+        ]) as never);
+        expect((src as { recorded?: string }).recorded).toBeUndefined();
+    });
+
+    it("puts the age in the evidence block the model reads", () => {
+        const block = buildGroundedEvidenceContext([
+            { type: "memory", source: "knowledge_search:1", recorded: "2025-05-28T10:00:00.000Z", content: "old note" },
+        ] as never);
+        expect(block).toMatch(/\[SOURCE 1: knowledge_search:1 \(recorded 2025-05-28, \d+ days ago\)\]/);
+        expect(block).toContain("old note");
+    });
+
+    it("leaves an undated source's label exactly as before", () => {
+        const block = buildGroundedEvidenceContext([
+            { type: "memory", source: "knowledge_search:9", content: "note" },
+        ] as never);
+        expect(block).toContain("[SOURCE 1: knowledge_search:9]");
+        expect(block).not.toMatch(/recorded/);
+    });
+
+    it("does not starve evidence content to pay for the longer label", () => {
+        // The label is subtracted from the per-source content budget, so adding
+        // ~30 chars per source must not measurably shrink the evidence. Compare
+        // dated vs undated at the same total budget.
+        const many = (recorded?: string) => Array.from({ length: 8 }, (_, i) => ({
+            type: "memory" as const, source: `knowledge_search:${i}`,
+            ...(recorded ? { recorded } : {}), content: "x".repeat(2_000),
+        }));
+        const dated = buildGroundedEvidenceContext(many("2025-05-28T10:00:00.000Z") as never);
+        const undated = buildGroundedEvidenceContext(many() as never);
+        const payload = (s: string) => (s.match(/x/g) ?? []).length;
+        expect(payload(undated) - payload(dated)).toBeLessThan(400);
+        expect(payload(dated)).toBeGreaterThan(1_000);
+    });
+});

@@ -14,7 +14,7 @@ export const SESSION_SAVE_LEDGER_TOOL: Tool = {
     properties: {
       project: {
         type: "string",
-        description: "Project identifier (e.g. 'bcba-private', 'my-app'). Used to group and filter sessions.",
+        description: "Project identifier (e.g. 'my-app', 'acme-api'). Used to group and filter sessions.",
       },
       conversation_id: {
         type: "string",
@@ -176,7 +176,10 @@ export const SESSION_BOOTSTRAP_TOOL: Tool = {
   name: "session_bootstrap",
   description:
     "IMPORTANT: On the first user turn of every conversation, including a greeting, call this tool exactly once " +
-    "with an empty object before any user-facing response. Do not substitute session_load_context when this tool is available. " +
+    "before any user-facing response, passing the user's verbatim first message as {prompt: \"<first user message>\"}. " +
+    "The prompt is matched against prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used " +
+    "for routing only and never leaves the machine. Pass {} only when there is no user message. " +
+    "Do not substitute session_load_context when this tool is available. " +
     "This starts a Prism-backed conversation without host hooks. " +
     "Prism reads the dashboard's Auto-Load Projects, Context Depth (quick/standard/deep), developer name, and default role, " +
     "then returns the greeting and correctly scoped prior-session context. Emit no preamble. Print the complete tool result " +
@@ -200,7 +203,8 @@ export const SESSION_BOOTSTRAP_TOOL: Tool = {
       },
       prompt: {
         type: "string",
-        description: "Optional initial user prompt for prompt-routed skill selection.",
+        description: "The user's verbatim first message. Matched against prompt_keywords ON-DEVICE for " +
+          "symptom-triggered skill routing; it is never transmitted. Omit only when there is no user message.",
       },
     },
     required: [],
@@ -981,7 +985,7 @@ export const SESSION_EXPORT_MEMORY_TOOL: Tool = {
         type: "string",
         description:
           "Absolute path to the directory where the export file(s) will be written. " +
-          "Must exist and be writable. Example: '/Users/admin/Desktop'.",
+          "Must exist and be writable. Example: '~/Desktop'.",
       },
     },
     required: ["output_dir"],
@@ -1636,8 +1640,8 @@ export const ONBOARDING_WIZARD_TOOL: Tool = {
     "Interactive setup wizard for new Prism users. Provides a step-by-step " +
     "guided experience to get productive in under 3 minutes.\n\n" +
     "**Actions:**\n" +
-    "- `start` — Begin the wizard from step 1\n" +
-    "- `next` — Advance to the next step\n" +
+    "- `start` (default when omitted) — Begin the wizard from step 1\n" +
+    "- `next` — Advance past `step` (pass the step number you are on)\n" +
     "- `status` — Check current wizard progress\n" +
     "- `skip` — Skip to completion\n\n" +
     "Each step returns instructions, code snippets, and progress percentage.",
@@ -1647,7 +1651,12 @@ export const ONBOARDING_WIZARD_TOOL: Tool = {
       action: {
         type: "string",
         enum: ["start", "next", "status", "skip"],
-        description: "Wizard action to perform.",
+        description: "Wizard action to perform. Omitted = start.",
+      },
+      step: {
+        type: "integer",
+        minimum: 0,
+        description: "The step_index from the previous response; used by `next` and `status`.",
       },
       project_name: {
         type: "string",
@@ -1659,12 +1668,12 @@ export const ONBOARDING_WIZARD_TOOL: Tool = {
         description: "IDE client for config generation.",
       },
     },
-    required: ["action"],
   },
 };
 
 export interface OnboardingWizardArgs {
-  action: "start" | "next" | "status" | "skip";
+  action?: "start" | "next" | "status" | "skip";
+  step?: number;
   project_name?: string;
   ide_client?: string;
 }
@@ -1674,8 +1683,15 @@ export function isOnboardingWizardArgs(
 ): args is OnboardingWizardArgs {
   if (typeof args !== "object" || args === null) return false;
   const a = args as Record<string, unknown>;
-  if (typeof a.action !== "string") return false;
-  if (!["start", "next", "status", "skip"].includes(a.action)) return false;
+  // A bare call is the front door for brand-new users (the startup greeting
+  // routes here) — it must work, defaulting to `start`. Measured 2026-08-05:
+  // requiring `action` made the tool the first thing a new user touches AND
+  // the first error they see.
+  if (a.action !== undefined &&
+      (typeof a.action !== "string" || !["start", "next", "status", "skip"].includes(a.action))) {
+    return false;
+  }
+  if (a.step !== undefined && (!Number.isInteger(a.step) || (a.step as number) < 0)) return false;
   if (a.project_name !== undefined && typeof a.project_name !== "string") return false;
   if (a.ide_client !== undefined && typeof a.ide_client !== "string") return false;
   return true;

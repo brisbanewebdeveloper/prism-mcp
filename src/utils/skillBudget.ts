@@ -45,6 +45,58 @@ function render(e: SkillEntryForBudget): string {
     return `\n\n[📜 ${label}: ${e.name}]\n${e.content.trim()}`;
 }
 
+export type SkillBudgetLevel = "quick" | "standard" | "deep";
+
+/**
+ * Skill tranche used when the caller sets no `max_tokens`.
+ *
+ * Sized against the ~25k-token host tool-result cap: at the 3.5 chars/token
+ * heuristic that is ~87k chars for the WHOLE response, so the skill block has
+ * to leave room for briefing, handoff, and history.
+ *
+ * These are ADDITIVE on top of the protected floor, not a total. Protected
+ * skills inline even when the budget is already blown (assembleSkillBlock), and
+ * the repo-measured v26 floor is ~39k chars on its own — so the ceiling here is
+ * roughly 87k - 39k - memory. `standard` matches the 8,400-char tranche the
+ * existing v26 shape test already treats as the standard budget (60% of 14k
+ * tokens); `deep` doubles it and still leaves headroom for deep history.
+ *
+ * `quick` is deliberately near-nothing — it is the setting a caller picks to
+ * minimize context, and before this it still inlined the full skill payload,
+ * because `level` gated only the memory portion, which is the small part.
+ *
+ * Every value is finite and > 0 on purpose: assembleSkillBlock treats ≤ 0 and
+ * non-finite as "unbudgeted", so a zero here would silently restore the very
+ * bug this table exists to fix.
+ */
+export const DEFAULT_SKILL_BUDGET_CHARS: Record<SkillBudgetLevel, number> = {
+    quick: 2_000,
+    standard: 8_400,
+    deep: 16_000,
+};
+
+/**
+ * Resolve the skill-block budget for one call.
+ *
+ * 2026-08-01: this previously evaluated to POSITIVE_INFINITY whenever
+ * `max_tokens` was absent — which is the documented default and therefore the
+ * common call shape. Routing v25 (76 -> 95 skills, 19 moved to auto-load) then
+ * pushed the unbudgeted block to 91,578 chars, past the host cap, and the host
+ * diverted the ENTIRE response to a file: the agent received no context at all.
+ * The budget must be armed by default, not only when a caller opts in.
+ */
+export function resolveSkillBudgetChars(
+    maxTokens: number | undefined,
+    level: SkillBudgetLevel,
+): number {
+    // 60% of the response allowance: skills must not saturate it, or the
+    // briefing and history this tool exists to deliver get truncated away.
+    if (typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
+        return Math.max(1, Math.floor(maxTokens * 3.5 * 0.6));
+    }
+    return DEFAULT_SKILL_BUDGET_CHARS[level] ?? DEFAULT_SKILL_BUDGET_CHARS.standard;
+}
+
 /**
  * Assemble the skill block within `budgetChars`. `budgetChars` ≤ 0 or
  * non-finite means unbudgeted (legacy behavior: inline everything).

@@ -557,3 +557,47 @@ describe("generateTestMeQuestions", () => {
     expect(out.reason).toBe("no_api_key");
   });
 });
+
+// ── Evidence snippets must carry the record date ────────────────────────────
+// The date exists in storage (sqlite.ts selects and maps l.created_at) and was
+// dropped here, at the snippet layer, so grounding evidence reached the model
+// undated. This pins the mapping — a structural test, because the snippet
+// builders are inline `.map()` calls with no seam to invoke directly.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+describe("evidence snippets carry the record date", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/tools/graphHandlers.ts"), "utf8");
+    // Index-based, not a fixed character window: a comment added inside a
+    // builder silently pushed it out of a 400- then 900-char window twice,
+    // which read as "builder missing" rather than "window too small".
+    const builders = [...src.matchAll(/evidenceSnippets\s*=/g)].map((m) => {
+        const end = src.indexOf(".filter(", m.index!);
+        return src.slice(m.index!, src.indexOf(")", end) + 1);
+    });
+
+    it("finds both snippet builders", () => {
+        // knowledge_search and session_search_memory. If a third appears, it
+        // needs the same treatment — this fails until the count is updated.
+        expect(builders).toHaveLength(2);
+    });
+
+    it.each([0, 1])("builder %i maps a date onto every snippet", (i) => {
+        // session_date FIRST. It is when the work happened; created_at is when
+        // the row was written and is assigned on save, so it cannot be
+        // backdated — an import would stamp every migrated memory as brand new,
+        // failing silently toward "fresh", the worst direction for a staleness
+        // signal. Proven by probe: a row seeded with a 431-day-old created_at
+        // came back stamped today.
+        expect(builders[i], "session_date must be preferred over write date").toMatch(
+            /recorded:\s*r\.session_date\s*\?\?\s*r\.created_at\s*\?\?\s*r\.updated_at\s*\?\?\s*r\.timestamp/,
+        );
+    });
+
+    it.each([0, 1])("builder %i still requires content, not a date", (i) => {
+        // A row without a date must still be emitted — undated evidence beats
+        // no evidence, and describeAge renders nothing for it.
+        expect(builders[i]).toMatch(/\.filter\(/);
+        expect(builders[i], "date must be optional in the filter").not.toMatch(/s\.recorded/);
+    });
+});

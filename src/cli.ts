@@ -440,7 +440,11 @@ program
       // v9.2.2: --storage flag overrides PRISM_STORAGE env var to prevent
       // split-brain when CLI environment differs from MCP server config.
       if (storage) {
-        const validStorages = ['local', 'supabase'];
+        // Must mirror the PRISM_STORAGE union in config.ts. This list shipped
+        // as ['local','supabase'] — rejecting 'auto' (the documented default in
+        // this very command's --storage help text) and 'synalux' (the actual
+        // production backend). Found 2026-08-03; the config type is the truth.
+        const validStorages = ['auto', 'local', 'supabase', 'synalux'];
         if (!validStorages.includes(storage)) {
           console.error(`Error: Invalid storage "${storage}". Must be one of: ${validStorages.join(', ')}`);
           process.exit(1);
@@ -577,7 +581,11 @@ saveCmd
     try {
       // Storage override
       if (options.storage) {
-        const validStorages = ['local', 'supabase'];
+        // Must mirror the PRISM_STORAGE union in config.ts. This list shipped
+        // as ['local','supabase'] — rejecting 'auto' (the documented default in
+        // this very command's --storage help text) and 'synalux' (the actual
+        // production backend). Found 2026-08-03; the config type is the truth.
+        const validStorages = ['auto', 'local', 'supabase', 'synalux'];
         if (!validStorages.includes(options.storage)) {
           console.error(`Error: Invalid storage "${options.storage}". Must be one of: ${validStorages.join(', ')}`);
           process.exit(1);
@@ -643,7 +651,11 @@ saveCmd
     try {
       // Storage override
       if (options.storage) {
-        const validStorages = ['local', 'supabase'];
+        // Must mirror the PRISM_STORAGE union in config.ts. This list shipped
+        // as ['local','supabase'] — rejecting 'auto' (the documented default in
+        // this very command's --storage help text) and 'synalux' (the actual
+        // production backend). Found 2026-08-03; the config type is the truth.
+        const validStorages = ['auto', 'local', 'supabase', 'synalux'];
         if (!validStorages.includes(options.storage)) {
           console.error(`Error: Invalid storage "${options.storage}". Must be one of: ${validStorages.join(', ')}`);
           process.exit(1);

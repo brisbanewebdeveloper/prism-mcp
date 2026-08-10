@@ -90,6 +90,8 @@ export type QuerySource =
     | {
         type: "memory";
         source: string;
+        /** ISO date the memory was recorded, when the store supplies one. */
+        recorded?: string;
         content: string;
     }
     | {
@@ -121,7 +123,7 @@ export interface QueryMemoryNaturalDeps {
     getEntitlements: () => Promise<PrismEntitlements>;
 }
 
-function extractMemorySources(result: McpTextResult): QuerySource[] {
+export function extractMemorySources(result: McpTextResult): QuerySource[] {
     if (result.isError) {
         throw new Error(result.content[0]?.text || "knowledge_search failed");
     }
@@ -138,7 +140,7 @@ function extractMemorySources(result: McpTextResult): QuerySource[] {
         }
 
         const snippets = (parsed as {
-            evidence_snippets?: Array<{ source?: unknown; content?: unknown }>;
+            evidence_snippets?: Array<{ source?: unknown; content?: unknown; recorded?: unknown }>;
         })?.evidence_snippets;
         if (!Array.isArray(snippets)) continue;
 
@@ -153,6 +155,7 @@ function extractMemorySources(result: McpTextResult): QuerySource[] {
             sources.push({
                 type: "memory",
                 source: snippet.source,
+                recorded: typeof snippet.recorded === "string" ? snippet.recorded : undefined,
                 content: snippet.content.slice(0, MAX_EVIDENCE_CHARS),
             });
         }
@@ -333,13 +336,48 @@ function toEvidence(sources: QuerySource[]) {
     return sources.map(({ source, content }) => ({ source, content }));
 }
 
-function buildGroundedEvidenceContext(sources: QuerySource[]): string {
+/**
+ * SQLite `CURRENT_TIMESTAMP` writes "YYYY-MM-DD HH:MM:SS" in UTC with no zone,
+ * and `Date.parse` reads a zone-less stamp as LOCAL time. West of UTC that puts
+ * a ten-minute-old record hours in the FUTURE, which the guard above then hid
+ * entirely — the age disappeared exactly when the memory was freshest. Formats
+ * are not uniform across tables (semantic_knowledge writes ISO+Z, memory_links
+ * does not), so normalise rather than assume.
+ */
+function parseRecordedAt(raw: string): number {
+    const zoneless = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+    return Date.parse(zoneless.test(raw) ? `${raw.replace(" ", "T")}Z` : raw);
+}
+
+/**
+ * " (recorded 2026-08-02, 431 days ago)" — or "" when the store gave no date.
+ * Never guesses: an absent date stays absent rather than defaulting to now,
+ * which would make the oldest memories look freshest.
+ */
+export function describeAge(source: QuerySource): string {
+    const recorded = source.type === "memory" ? source.recorded : undefined;
+    if (!recorded) return "";
+    const at = parseRecordedAt(recorded);
+    if (Number.isNaN(at)) return "";
+    const elapsed = Date.now() - at;
+    // Tolerate clock skew between machines: slightly-future stamps are "today",
+    // not silence. Only a stamp more than a day ahead is treated as bad data.
+    if (elapsed < -86_400_000) return "";
+    const days = Math.max(0, Math.floor(elapsed / 86_400_000));
+    const day = recorded.slice(0, 10);
+    return days === 0 ? ` (recorded ${day}, today)` : ` (recorded ${day}, ${days} days ago)`;
+}
+
+export function buildGroundedEvidenceContext(sources: QuerySource[]): string {
     let remaining = MAX_SYNTHESIS_EVIDENCE_CHARS;
     const evidenceBlocks: string[] = [];
 
     for (const [index, source] of sources.entries()) {
         if (remaining <= 0) break;
-        const label = `[SOURCE ${index + 1}: ${source.source}]`;
+        // Age belongs in the label, not just the payload. An undated fragment
+        // cannot be reasoned about; a fragment labelled two years old can be
+        // weighed against fresher evidence or challenged outright.
+        const label = `[SOURCE ${index + 1}: ${source.source}${describeAge(source)}]`;
         const availableForContent = Math.max(0, remaining - label.length - 1);
         if (availableForContent === 0) break;
         const block = `${label}\n${source.content.slice(0, availableForContent)}`;

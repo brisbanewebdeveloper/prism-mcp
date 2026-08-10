@@ -252,7 +252,7 @@ const FIXTURE_SETTINGS: Record<string, string> = {
   webhook_secret:      "wh_sec_abc123",  // → REDACTED
   password:            "supersecret",    // → REDACTED
   theme:               "dark",           // → pass-through
-  autoload_projects:   "prism-mcp,bcba-private", // → pass-through
+  autoload_projects:   "prism-mcp,acme-clinic", // → pass-through
   embedding_provider:  "gemini",         // → pass-through
   llm_provider:        "anthropic",      // → pass-through
 };
@@ -481,7 +481,7 @@ describe("sessionExportMemoryHandler — session_export_memory", () => {
     it("does NOT redact safe settings (theme, autoload_projects, providers)", async () => {
       const s = await getSettings();
       expect(s.theme).toBe("dark");
-      expect(s.autoload_projects).toBe("prism-mcp,bcba-private");
+      expect(s.autoload_projects).toBe("prism-mcp,acme-clinic");
       expect(s.embedding_provider).toBe("gemini");
       expect(s.llm_provider).toBe("anthropic");
     });

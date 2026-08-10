@@ -65,6 +65,14 @@ function expectVerbatimStartupContract(instructions: string): void {
   expect(normalized).toContain(
     "For a greeting-only prompt, stop after the verbatim startup display.",
   );
+  // Every host template must (a) pass the first message so turn-one keyword
+  // routing fires, and (b) disclose that matching is local. Asserted here
+  // rather than per-host so a new template cannot ship without both.
+  expect(normalized).toMatch(/prompt-keyword skill routing fires? on turn one/);
+  expect(normalized).toContain("on-device");
+  expect(normalized).toContain("never transmitted");
+  // The zero-argument contract is what made routing dead on turn one.
+  expect(normalized).not.toMatch(/exactly once with an empty object/);
 }
 
 function expectLocalFirstPolicy(instructions: string): void {
@@ -549,7 +557,7 @@ describe("prism connect", () => {
     expect(configureGeminiNativeStartup(homeDir)).toMatchObject({ status: "installed" });
     const configured = readFileSync(instructionPath, "utf8");
     expect(configured).toContain("<!-- >>> prism connect managed: native startup -->");
-    expect(configured).toContain("`session_bootstrap({})`, exactly once");
+    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
     expect(configured).toContain("native tool discovery/ToolSearch");
     expect(configured).toContain("Do not use shell commands, file reads, subagents");
     expect(configured).toContain("`Prism startup failure` and stop");
@@ -636,7 +644,7 @@ describe("prism connect", () => {
     const configured = readFileSync(instructionPath, "utf8");
     expect(configured.startsWith(`${original}\r\n`)).toBe(true);
     expect(configured).toContain("<!-- >>> prism connect managed: codex native startup -->");
-    expect(configured).toContain("`session_bootstrap({})`, exactly once");
+    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
     expect(configured).toContain("Do not call `session_load_context`");
     expect(configured.replaceAll("\r\n", "")).not.toContain("\n");
     expectPosixMode(instructionPath, 0o640);
@@ -702,14 +710,22 @@ describe("prism connect", () => {
     expect(claude.env).toMatchObject({ KEEP: "yes", CLAUDE_CODE_SUBAGENT_MODEL: "sonnet" });
     expect(claude.theme).toBe("dark");
     const gemini = readConfig(geminiPath);
-    expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: false });
+    // Flipped 2026-08-03. These pinned "subagents banned", which was stricter
+    // than the local-first policy Prism publishes — that allows one economy
+    // subagent, no nesting, and Claude was already configured that way. The
+    // stated reason for Gemini ("native/remote subagents") did not survive
+    // checking: its subagents run locally, in-process. Now every host permits
+    // one subagent pinned to its cheapest fast model.
+    expect(gemini.experimental).toMatchObject({ worktrees: true, enableAgents: true });
+    expect((gemini.agents as Record<string, any>).overrides.codebase_investigator.modelConfig)
+      .toMatchObject({ model: "gemini-3.6-flash" });
     expect(gemini.theme).toBe("dark");
     const codex = readTomlConfig(codexPath);
-    expect(codex.features).toMatchObject({ memories: true, multi_agent: false });
+    expect(codex.features).toMatchObject({ memories: true, multi_agent: true });
     expect(codex.agents).toMatchObject({
-      max_threads: 2,
-      max_depth: 1,
-      default_subagent_model: "gpt-5.6-terra",
+      max_threads: 1,          // "at most one" — the policy's own words
+      max_depth: 1,            // "no nesting"
+      default_subagent_model: "gpt-5.6-luna",
       default_subagent_reasoning_effort: "low",
       job_max_runtime_seconds: 900,
     });
@@ -1929,9 +1945,9 @@ describe("prism connect", () => {
       expectEvidenceWorkflowPolicy(canonicalClaudeInstructions);
       expect(readFileSync(cursorHooks, "utf8")).toBe(cursorHookSentinel);
       expect(JSON.stringify(readConfig(geminiSettings).hooks)).toBe(geminiHooksBefore);
-      expect(readConfig(geminiSettings).experimental.enableAgents).toBe(false);
+      expect(readConfig(geminiSettings).experimental.enableAgents).toBe(true);
       const configuredGeminiInstructions = readFileSync(geminiInstructions, "utf8");
-      expect(configuredGeminiInstructions).toContain("`session_bootstrap({})`, exactly once");
+      expect(configuredGeminiInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
       expect(configuredGeminiInstructions).not.toContain("# Startup — MANDATORY");
       expect(configuredGeminiInstructions).toContain("# Paths\n\n- Keep this user rule.\n");
       expectVerbatimStartupContract(configuredGeminiInstructions);
@@ -1941,16 +1957,16 @@ describe("prism connect", () => {
       const configuredCodexInstructions = readFileSync(codexInstructions, "utf8");
       expect(configuredCodexInstructions.startsWith(`${codexInstructionsSentinel}\n`)).toBe(true);
       expect(configuredCodexInstructions).toContain("prism connect managed: codex native startup");
-      expect(configuredCodexInstructions).toContain("`session_bootstrap({})`, exactly once");
+      expect(configuredCodexInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
       expectVerbatimStartupContract(configuredCodexInstructions);
       expectLocalFirstPolicy(configuredCodexInstructions);
       expectEvidenceWorkflowPolicy(configuredCodexInstructions);
       expect(readTomlConfig(join(codexHome, "config.toml"))).toMatchObject({
-        features: { multi_agent: false },
+        features: { multi_agent: true },
         agents: {
-          max_threads: 2,
+          max_threads: 1,
           max_depth: 1,
-          default_subagent_model: "gpt-5.6-terra",
+          default_subagent_model: "gpt-5.6-luna",
           default_subagent_reasoning_effort: "low",
         },
       });
@@ -2027,5 +2043,44 @@ describe("prism connect", () => {
     expect(readFileSync(instructionPath, "utf8")).toBe(original);
     expect(readFileSync(agentsPath, "utf8")).toBe(agents);
     expect(result.stdout).not.toContain("native startup instructions");
+  });
+});
+
+// ── Agent-policy regressions found in adversarial review, 2026-08-03 ─────────
+describe("prism connect — economy subagent policy", () => {
+  it("pins Gemini to its speed tier", () => {
+    // An earlier revision "fixed" this to gemini-3-flash-preview because
+    // gemini-3.6-flash appears in none of gemini-cli 0.49.0's 116 files. That
+    // inference was wrong: the CLI does not validate Gemini model names — its
+    // only ALLOWED_MODELS list gates Whisper speech binaries — so names pass
+    // through to the API and bundle absence proves nothing. 3.6-flash is
+    // confirmed working in practice.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src).toMatch(/GEMINI_ECONOMY_SUBAGENT_MODEL\s*=\s*"gemini-3\.6-flash"/);
+  });
+
+  it("does not force subagents back on for a user who disabled them", () => {
+    // Prism used to force enableAgents=false every run. Flipping that to an
+    // unconditional `true` repeats the mistake in the more intrusive
+    // direction. Enable only when the key is absent.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src).toMatch(/userDisabledDeliberately/);
+    expect(src, "must be conditional, never a bare assignment")
+      .toMatch(/if \(!userDisabledDeliberately\) experimental\.enableAgents = true/);
+  });
+
+  it("bounds Codex to one subagent, matching the policy's own wording", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    const block = src.split("CODEX_LOCAL_FIRST_POLICY = {")[1]?.slice(0, 600) ?? "";
+    expect(block).toMatch(/max_threads:\s*1/);   // "at most one"
+    expect(block).toMatch(/max_depth:\s*1/);     // "no nesting"
+  });
+
+  it("validates the Codex write against the declaration, not a literal", () => {
+    // The validator hardcoded `multi_agent === false`, so it rejected any
+    // policy change rather than verifying the write matched the policy.
+    const src = readFileSync(resolve(process.cwd(), "src/connect.ts"), "utf8");
+    expect(src).not.toMatch(/isDeepStrictEqual\(parsedFeatures\.multi_agent, false\)/);
+    expect(src).toMatch(/Object\.entries\(CODEX_LOCAL_FIRST_POLICY\.features\)/);
   });
 });

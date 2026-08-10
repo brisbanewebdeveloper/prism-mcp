@@ -197,6 +197,124 @@ describe("subscription-tier skill manifest sync", () => {
     }
   });
 
+  it("PRESERVES a hand-edited managed skill instead of overwriting it, and reports the conflict", async () => {
+    // The safety property the 2026-08-04 audit depended on. An operator edits a
+    // Prism-managed skill in place; the next sync recomputes every file digest,
+    // sees it no longer matches the ownership marker, and must classify the
+    // skill as a CONFLICT — preserving the edit rather than replacing it.
+    //
+    // A refactor that dropped the digest comparison would silently destroy
+    // local work on every sync, and nothing else in this suite would notice.
+    const fixture = await mkdtemp(join(tmpdir(), "prism-handedit-sync-"));
+    roots.push(fixture);
+    const agentsSkillsDir = join(fixture, ".agents", "skills");
+    const claudeCodeSkillsDir = join(fixture, ".claude", "skills");
+    const cursorSkillsDir = join(fixture, ".cursor", "skills");
+    const common = {
+      agentsSkillsDir, claudeCodeSkillsDir, cursorSkillsDir,
+      applyManifest: vi.fn(async () => undefined), ...paidAuth,
+    };
+
+    const first = manifest("standard", ["local-browser"]);
+    const installed = await synchronizeSkillManifest({
+      ...common,
+      fetchImpl: vi.fn(() => jsonResponse(first)) as unknown as typeof fetch,
+    });
+    expect(installed.status).toBe("applied");
+    expect(installed.installed).toContain("local-browser");
+
+    // The operator edits it in place — exactly what a developer does when
+    // iterating on skill text locally.
+    const edited = "---\nname: local-browser\n---\n# EDITED BY OPERATOR\n";
+    const target = join(agentsSkillsDir, "local-browser", "SKILL.md");
+    await writeFile(target, edited);
+
+    // A newer manifest arrives carrying different content for that skill.
+    const second = manifest("standard", ["local-browser"]);
+    const incoming = second.skills.find((item) => item.name === "local-browser")!;
+    const serverContent = "---\nname: local-browser\n---\n# SERVER VERSION 2\n";
+    incoming.files["SKILL.md"] = {
+      content: serverContent, digest: digest(serverContent), encoding: "utf8",
+    };
+    incoming.content = serverContent;
+    incoming.digest = digest(serverContent);
+    second.generation = computeSkillManifestGeneration(second);
+
+    const result = await synchronizeSkillManifest({
+      ...common,
+      fetchImpl: vi.fn(() => jsonResponse(second)) as unknown as typeof fetch,
+    });
+
+    expect(result.status).toBe("applied");
+    // The edit survives — this is the whole point.
+    expect(await readFile(target, "utf8")).toBe(edited);
+    expect(result.conflicts).toContain("local-browser");
+
+    // Per-root semantics, worth pinning because it surprises: results are the
+    // UNION across host roots, so the same skill is both "conflicts" (the root
+    // that was edited, preserved) and "updated" (the untouched roots, which
+    // took the new server content). One edited terminal does not freeze the
+    // skill everywhere.
+    expect(await readFile(join(claudeCodeSkillsDir, "local-browser", "SKILL.md"), "utf8"))
+      .toBe(serverContent);
+    expect(await readFile(join(cursorSkillsDir, "local-browser", "SKILL.md"), "utf8"))
+      .toBe(serverContent);
+    expect(result.updated).toContain("local-browser");
+  });
+
+  it("BACKS UP the previous content before replacing a pristine managed skill", async () => {
+    // The recovery property: an update renames the old directory into the
+    // transaction backup before moving the staged one in, so a replaced skill
+    // is never simply gone. Proven by asserting the skill really was updated
+    // (not conflicted) AND that a backup directory holding the old body exists.
+    const fixture = await mkdtemp(join(tmpdir(), "prism-backup-sync-"));
+    roots.push(fixture);
+    const agentsSkillsDir = join(fixture, ".agents", "skills");
+    const claudeCodeSkillsDir = join(fixture, ".claude", "skills");
+    const cursorSkillsDir = join(fixture, ".cursor", "skills");
+    const transactionsDir = join(fixture, ".agents", ".prism-skill-transactions");
+    const common = {
+      agentsSkillsDir, claudeCodeSkillsDir, cursorSkillsDir, transactionsDir,
+      applyManifest: vi.fn(async () => undefined), ...paidAuth,
+    };
+
+    const first = manifest("standard", ["local-browser"]);
+    const v1 = first.skills.find((item) => item.name === "local-browser")!;
+    const originalContent = "---\nname: local-browser\n---\n# ORIGINAL\n";
+    v1.files["SKILL.md"] = {
+      content: originalContent, digest: digest(originalContent), encoding: "utf8",
+    };
+    v1.content = originalContent;
+    v1.digest = digest(originalContent);
+    first.generation = computeSkillManifestGeneration(first);
+    await synchronizeSkillManifest({
+      ...common,
+      fetchImpl: vi.fn(() => jsonResponse(first)) as unknown as typeof fetch,
+    });
+    const target = join(agentsSkillsDir, "local-browser", "SKILL.md");
+    expect(await readFile(target, "utf8")).toBe(originalContent);
+
+    // Untouched by the operator, so it stays pristine and IS eligible to update.
+    const second = manifest("standard", ["local-browser"]);
+    const v2 = second.skills.find((item) => item.name === "local-browser")!;
+    const nextContent = "---\nname: local-browser\n---\n# VERSION 2\n";
+    v2.files["SKILL.md"] = {
+      content: nextContent, digest: digest(nextContent), encoding: "utf8",
+    };
+    v2.content = nextContent;
+    v2.digest = digest(nextContent);
+    second.generation = computeSkillManifestGeneration(second);
+
+    const result = await synchronizeSkillManifest({
+      ...common,
+      fetchImpl: vi.fn(() => jsonResponse(second)) as unknown as typeof fetch,
+    });
+
+    expect(result.status).toBe("applied");
+    expect(result.updated).toContain("local-browser");
+    expect(await readFile(target, "utf8")).toBe(nextContent);
+  });
+
   it("materializes the prompt-routed direct Synalux local-browser package in every native host root", async () => {
     const fixture = await mkdtemp(join(tmpdir(), "prism-local-browser-sync-"));
     roots.push(fixture);

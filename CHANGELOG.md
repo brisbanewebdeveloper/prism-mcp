@@ -2,6 +2,393 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.8.1] - 2026-08-07 — The Dashboard Was Never Loading
+
+### Fixed
+- **The dashboard's inline script has been parse-dead since 2026-05-29.** A
+  quoting typo (`data-id='''`) introduced by the May XSS fix was a
+  SyntaxError that killed the entire script at parse time — every dashboard
+  from 20.6 through 20.8.0 rendered "Loading projects..." forever: project
+  selector, neural graph, session ledger, all dead. Found while capturing a
+  real screenshot for the README; the picture would not populate, and the
+  reason was real. Fixed with a double-quoted attribute (escapeHtml escapes
+  the quotes, so it stays injection-safe) and verified live: projects load,
+  the graph renders, zero page errors.
+- **The ES5 dashboard lint now parses the built output.** The lint existed
+  precisely for quote-escaping traps and stayed green through ten weeks of a
+  parse-dead dashboard, because it pattern-matched known traps instead of
+  parsing. It now renders the built dashboard HTML and runs node --check on
+  every inline script block — proven against this exact defect: broken source
+  fails naming the line, fixed source passes.
+
+### Changed
+- README hero and docs images are now real captures of the running v20.8
+  dashboard (scrubbed profile, authored demo data), replacing the generated
+  mockup. Dead BFCL blog link now points at the canonical leaderboard, and the
+  missing "What's New" entries for 20.7–20.8.0 are in place.
+
+## [20.8.0] - 2026-08-06 — Found, Then Kept
+
+### Added
+- **First run proves the memory works instead of describing it.** A memory
+  product's payoff is structurally deferred: "it remembered" cannot be felt
+  until you come back, and most trial users never do. `session_bootstrap` now
+  seeds one demo memory on first run and shows it *recalled* — rendered
+  exclusively from the storage read-back, so a broken backend produces no block
+  rather than a convincing fake one. Lives in its own `prism-demo` project,
+  announces its own removability, one-shot via the durable first-run marker,
+  and idempotent so concurrent first runs cannot double-seed.
+
+### Changed
+- **Discovery metadata rewritten across every surface.** The MCP Registry
+  search is name-only: `memory`, `session memory`, and `coding agent memory`
+  each returned Prism zero times, so nobody who did not already know the name
+  could find it. npm descriptions led with acronyms ("SLERP-optimized GRPO
+  alignment, Zero-Search HDC/HRR retrieval") and `package.json` carried 62
+  keywords including `telepathy`, `morning-briefing`, and `reality-drift` — a
+  spam signal registries downrank. Descriptions now lead with the four things
+  measured as rare among 73 direct competitors (local inference: 2, drift
+  detection: 2, associative recall: ~6 of 2298); keywords trimmed 62 -> 12.
+- **Plugin description leads with the differentiators**, not the commodity
+  phrase four community competitors use verbatim.
+
+### Fixed
+- **Codex plugin detection required only a cached manifest, never an enabled
+  plugin.** A disabled or half-removed plugin leaves its `.mcp.json` on disk, so
+  `connect` could skip its own registration for a plugin that was not providing
+  the server — leaving the user with no `prism-mcp` at all.
+- **The registry rejects a description over 100 characters (422).** npm has no
+  such cap, so the rewrite passed every local gate and failed after merge. The
+  publish guard now enforces the limit in the PR, bounded in bytes.
+- **Registry publish no longer reports a red X for metadata-only merges.**
+  Registry versions are immutable, so a `server.json` change without a version
+  bump always returns "cannot publish duplicate version" — the expected
+  outcome, not a failure. Only that rejection is tolerated; every other error
+  still fails the job.
+- **TLS is enforced rather than assumed** for cloud storage URLs: a remote
+  `http://` endpoint is upgraded to `https://` instead of silently sending
+  session content in the clear. The privacy policy's claim is now true by
+  construction.
+
+## [20.7.1] - 2026-08-06 — The Guard That Blocked Its Own Release
+
+### Fixed
+- **`closeStorage()` could install a dead connection.** It assigned
+  `storageInstance = null` *after* `await close()`, so a throwing close left the
+  broken instance in the singleton slot and every later `getStorage()` handed it
+  to callers. The clear now happens in `finally`; the error still propagates so
+  a caller like `restoreFromBackup` aborts before touching the database file.
+- **Restore released the connection before swapping the file.** Replacing a
+  database beneath a live connection leaves it on a stale page cache with a WAL
+  that no longer describes the file — unsafe per SQLite's own documentation,
+  independent of platform.
+- **The publish gate blocked the registry republish it exists to protect.** The
+  20.7.0 registry publish failed with `prism-mcp-server@20.7.0 is already
+  published` — the guard is a `prepublishOnly` check, and the registry workflow
+  runs *after* npm publish, where "this version is on npm" is the correct
+  precondition. `--manifest-only` now scopes it. (An earlier commit removed a
+  *phantom* `--manifest-only` that the script never parsed and whose `||`
+  fallback failed open; this implements it for real, with both modes tested.)
+- **The Codex plugin manifest sat at 20.6.0 through the 20.7.0 release.**
+  `server.json` was guarded; that file was not, so a marketplace submission
+  would have advertised a version that no longer exists. Every file declaring a
+  version is now held to `package.json`.
+- Test teardown no longer fails suites whose assertions all pass. See the
+  disclosure below.
+
+### Added
+- `tests/verification/first-run-e2e.test.ts` drives the **built** server over
+  real stdio through the MCP client. Unit tests call handlers directly and
+  cannot catch a regression in transport, tool registration, or startup wiring.
+  Falsified before shipping: reintroducing the old greeting turns it red.
+- `.github/workflows/windows-diagnostic.yml` + a six-experiment probe. Six
+  attempts at a Windows failure had been designed blind against a ~7-minute
+  pass/fail matrix; this answers in **47 seconds** on windows-x64 and reports
+  facts rather than pass/fail.
+- `scripts/local-ci.sh` runs the CI job locally, and is explicit that it cannot
+  substitute for the Windows legs.
+- `scripts/ensure-dist.sh` rebuilds `dist/` when a checkout leaves it missing.
+  Both hosts launch the MCP server by absolute path into the working tree and
+  `dist/` is gitignored, so a clean or failed build stopped Prism loading in
+  every session on that machine — surfacing far from its cause as "the MCP
+  server won't connect".
+
+### Known limitation (disclosure)
+- **A dependency holds the database file open on Windows.** `libsql`'s
+  `close()` does not finalize outstanding prepared statements, so the
+  connection survives until GC runs finalizers
+  ([libsql-js#228](https://github.com/tursodatabase/libsql-js/issues/228)).
+  Measured on windows-x64: a `close()`, a WAL checkpoint, a 3-second wait, and a
+  raw client with WAL disabled all still report `EBUSY` on `unlink`.
+
+  **What it does not affect:** reading the file and overwriting it both
+  succeed, so backup, restore, and every shipped feature work normally. The
+  lock blocks `unlink`/`rename` only, and releases when the process exits.
+  Three test suites hit it during cleanup; their teardown now warns instead of
+  failing. An earlier draft of these notes claimed restore was broken on
+  Windows — that was inferred from the unlink failure rather than measured, and
+  the measurement refutes it.
+
+## [20.7.0] - 2026-08-05 — A First Run That Demonstrates Something
+
+A scrubbed-environment probe drove a brand-new install the way a host does. The
+first turn greeted a first-time user with **"Welcome back"**, three `Not loaded`
+rows, a warning, and three statements of what they did not have: no next step,
+no price, no dashboard, and the tool the greeting pointed at rejected its own
+documented bare call. The entire payload was absence.
+
+### Fixed
+- **First run is detected and answered with actions.** The greeting routes to
+  `onboarding_wizard`, surfaces the dashboard, and points at
+  `session_save_ledger`. Gated on a durable marker, so a user with saved
+  sessions but no configured name is no longer greeted as a stranger every
+  session.
+- **The paid tier appears on the one guaranteed impression.** `upgrade_url`
+  existed and was surfaced only *after* a user hit an entitlement gate; the
+  startup path referenced it zero times.
+- **`onboarding_wizard` honours the contract it advertises.** A bare call —
+  the exact call its own description documents, and the first tool a new user
+  touches — returned `Invalid arguments`, and `next`/`status`/`skip` all
+  silently re-rendered step 1 because the handler read fields the validator
+  never passed.
+- **The dashboard is reported honestly.** Its URL reached stderr only, which
+  MCP hosts discard. It is now in the payload, verified by requesting
+  `/api/health` rather than by opening a socket: the default port is 3000, the
+  most commonly occupied port on a developer machine, so a liveness check would
+  have pointed a first-run user at their own dev server.
+- `analytics._resetDb()` dropped its sqlite client without closing it.
+
+### Added
+- **Agent definitions ship through the skill-manifest pipeline.** Subagent
+  routing policy — model tier, effort cap, tool surface — becomes versioned,
+  reviewed, deployed content instead of a per-machine hand edit, materialized
+  into Claude Code (`~/.claude/agents`), Codex (`.toml`, keys verified against
+  the 0.146.0 binary), and Gemini CLI (reduced frontmatter). Hand-edited files
+  are never overwritten; ownership is proven by digest, not assumed.
+- Agents ride the manifest under their own `agents_generation`. Folding them
+  into the skills hash would have broken every deployed client, which
+  recomputes it and fails closed.
+
+### Security
+- Closed the check-then-act races CodeQL flagged in agent materialization:
+  mutations claim a file out of the discovery root and re-hash the claimed
+  bytes before acting, and installs use `link(2)` exclusivity. A racing edit is
+  restored byte-identical and reported as a conflict rather than clobbered.
+- Resolved all 10 outstanding `npm audit` findings (3 high, 7 moderate).
+
+## [20.6.0] - 2026-08-04 — Delivery Is Not a Suggestion
+
+### Known limitation (disclosure)
+- **Skill delivery informs; it does not gate.** The 20.5.x on-device routing
+  work ensures behavioral rules reach the agent's context on turn one, but a
+  live cross-host probe during that work showed a host agent whose data path
+  was blocked still fall back to editing unverified source — with the rule
+  loaded. If your threat model includes an agent acting against a loaded rule
+  under task pressure, you need a mechanical gate outside the model (hooks,
+  permissions, least-privilege DB roles) in addition to this package. This has
+  been true of every 20.5.x release and was not stated in any of their notes;
+  stating it now.
+
+### Added
+- Startup names the skills a sync conflict is freezing (previously a bare
+  count on a status line while safety skills sat months stale), with the
+  resolution steps.
+- `ask-first` and `feature-preservation` join the protected floor (14 → 16):
+  the floor had outgrown every delivery budget, so unprotected skills were
+  never inlined at all.
+
+### Fixed
+- CLI `--storage` rejected `auto` (its own documented default) and `synalux`
+  (the production backend); the allowlist now mirrors the config union.
+
+## [20.5.3] - 2026-08-03 — Grounding Evidence Carries Its Age
+
+Prompted by an external review: *"the data stays local, but bad grounding
+becomes permanent."* Correct diagnosis for local-first memory — storing
+everything on your machine removes the outside pressure that would otherwise
+surface a stale note.
+
+### Added
+- **Memory evidence is dated.** `query_memory_natural` labelled its sources but
+  never dated them, so a two-year-old note and yesterday's reached the model
+  identically. Evidence now reads:
+
+  `[SOURCE 1: ledger:8286581d (recorded 2025-05-29, 431 days ago)]`
+
+  The date already existed in storage and was being dropped at the snippet
+  layer; this is plumbing, not new data collection.
+- `tests/integration/grounding-staleness.test.ts` runs the reviewer's own probe
+  — seed a deliberately outdated note alongside a contradicting fresh one and
+  assert the model receives both, visibly dated. Anyone can run it.
+
+### Fixed
+- **Zone-less timestamps parsed as local time.** SQLite writes
+  `YYYY-MM-DD HH:MM:SS` in UTC with no zone and `Date.parse` reads that as
+  local, so west of UTC a ten-minute-old record parsed hours into the future
+  and its age was suppressed entirely — the feature silently did nothing on the
+  freshest memories. Formats are not uniform across tables, so they are
+  normalised rather than assumed.
+- Clock skew between machines no longer suppresses a date; a stamp slightly
+  ahead reads as "today". Only more than a day ahead is treated as bad data.
+- An absent or unparseable date renders as nothing rather than defaulting to
+  now. Defaulting would make the oldest memories — the ones most likely to be
+  stale — appear freshest.
+
+### Notes
+- **Not solved, and not claimed:** retrieval still ranks a stale note the same
+  as a fresh one, and nothing detects that two stored notes contradict. The
+  model is *shown* the discrepancy, not *told* about it. Tracked as
+  `TECH_DEBT.md` #4.
+- A memory's content date can never be older than its row: `saveLedger` stamps
+  both date fields on write and `patchLedger` rejects date columns, so only a
+  direct SQL write can backdate one. Provenance cannot be forged, but the label
+  is strictly row age — anything imported through the public API reads as new.
+
+## [20.5.2] - 2026-08-02 — Startup Budget Regression
+
+Fixes a regression introduced in 20.5.1. **Upgrade if you auto-load more than
+one project**, which is when it bites.
+
+### Fixed
+- **The inlined rule could exceed the entire startup budget and erase the
+  session context.** 20.5.1 made the symptom-triggered block exempt from
+  truncation — correct, so a tight budget cannot silently drop the diagnostic
+  rule — but sized that block against the per-*level* limit while the display
+  is capped against `min(level, nativeMaxChars)`. Bootstrap divides the budget
+  across rendered projects, so the real per-project slice is routinely much
+  smaller. At a 512-character slice the display emitted 1,919 characters and
+  the session context was gone entirely, replaced by the rule meant to
+  annotate it.
+  The cap and the inline are now sized by one shared helper so they cannot
+  drift, and below a usable minimum the rule body is dropped in favour of the
+  name line, leaving the remaining space to context. Verified across slices:
+  512 in, 512 out, context retained.
+- The inlined rule no longer leads with the skill's YAML frontmatter. That was
+  ~161 characters of authoring provenance taken from the rule's own budget,
+  and it truncated the rule's Anti-Patterns section mid-word.
+
+### Notes
+- Single-project setups were unaffected by the overrun; the budget was never
+  tight enough to trigger it.
+
+## [20.5.1] - 2026-08-02 — Symptom-Triggered Skills Actually Arrive
+
+20.5.0 surfaced the *name* of a matching skill and called that routing. It
+wasn't. A live probe on a third-party host followed the instruction exactly,
+got nothing back, and fell back to guessing at source — which is the failure
+the routed skill exists to prevent.
+
+### Fixed
+- **The matched skill's body is now inlined in the startup display.** Naming a
+  skill was never delivering it: bodies reach agents only as files under the
+  canonical skills root, hosts outside that mirror have no path to the content,
+  and no MCP tool serves it. 20.5.0's line pointed at a rule the agent had no
+  way to read. It now carries the rule.
+  Bounded to the top match, capped at the smaller of 1,800 characters and 40%
+  of the display budget, so it cannot starve the context it annotates.
+- **`knowledge_search("<skill name>")` rendered as `knowledge_search("")`.**
+  The angle-bracket placeholder was parsed as an unknown tag by the host's
+  markdown display and dropped, so the instruction asked the agent to search
+  for the empty string. Text a host renders no longer contains placeholders.
+- The canonical skills root is resolved through one exported helper rather than
+  a path literal duplicated per module. It is overridable per caller and per
+  home, so the copy was wrong on any machine that overrides either.
+
+### Notes
+- Requires a restart. Server instructions are dynamic; static host files are
+  refreshed by `prism connect --refresh`.
+- Whether an in-context rule changes agent behaviour is **not** claimed here.
+  It is the one thing still unmeasured, and the reason this is a patch rather
+  than a feature release: 20.5.0 advertised this capability and shipped it
+  non-functional.
+
+## [20.5.0] - 2026-08-02 — On-Device Prompt Routing
+
+Privacy and correctness release. Symptom-triggered skills — the rules that fire
+on "can't see X", "no rows", "the list is empty" — are meant to load on the turn
+an incident report arrives. They never did: every host template told the agent
+to call `session_bootstrap` with `{}`, so there was no prompt to match against.
+
+Fixing the templates exposed a second, structural failure, and closing that
+required deciding where matching happens. It now happens on your machine: the
+28 keyword rules are already public, so there was nothing a local match could
+not compute, and the raw first message no longer crosses the network.
+
+### Security
+- **The user's first message is no longer transmitted.** `/api/v1/prism/resolve`
+  now receives `{project, role}` only. The keyword rules are fetched from the
+  public routing table and matched on-device. `callPortal()` has no `prompt`
+  parameter at all, so the message is out of scope at the only place a request
+  body is built — the guarantee is structural, not a convention.
+  Free and anonymous callers previously paid this privacy cost for nothing: the
+  portal gates them to an empty skill set, so the prompt was transmitted, matched
+  and discarded.
+- **Paid skill *content* is unaffected.** It is gated at `/api/v1/prism/skill-manifest`,
+  a separate authenticated route this change does not touch.
+- **The private-identifier leak guard now covers four classes, not one.** It had
+  checked a single term and stayed green while a private Vercel team slug, a
+  private client project name and maintainer-local absolute paths shipped in the
+  published package. It runs in CI *and* in `npm test`, so it fails before a
+  publish rather than after one.
+
+### Fixed
+- **Turn-one routing never ran.** `session_bootstrap` passes the prompt into
+  `sessionLoadContextHandler`, which sets `includeSkillContent:false` and returns
+  from the native-context branch *before* skill resolution. The prompt was
+  threaded all the way in and dropped. Bootstrap now routes before that return.
+- **Offline routing died at the next restart.** Last-good persistence was wired
+  below the same early return, so the bootstrap path could never cache the
+  keyword table. Keyword routing now survives an unreachable portal — the
+  incident case a diagnostic skill exists for.
+- **`session_bootstrap`'s own tool description still said "call with an empty
+  object."** That is the text a host reads to decide *how* to call a tool, so it
+  outranked the server instructions in practice and kept hosts passing `{}`.
+- **"Open vercel" sent every user to one maintainer's dashboard.** The cloud
+  tool-link rules were hardcoded to a private Vercel team and doc repo. They are
+  now vendor-generic and overridable via `buildRule7Cloud(links)`.
+- `data-before-code` and `critical-thinking-debug` were marked protected by the
+  portal but missing from the server's own hardcoded floor, so the two sources
+  disagreed and both skills could arrive as bare names on a small budget.
+
+### Added
+- **Symptom-triggered skills are surfaced in the startup display.** Native hosts
+  already hold every entitled skill as a file on disk, so routing cannot gate
+  delivery — it names which skills the first message implicates, with an
+  instruction to read them before proposing changes. Entitlement comes from the
+  already-loaded manifest, so this costs no portal call.
+  The line is carried in the display suffix, which the cap reserves space for:
+  appended to the body it was the first thing truncated on a tight budget, which
+  is exactly when a diagnostic rule matters most.
+- Routing responses are cached per `(project, role)` instead of per prompt. The
+  old key included the prompt, so it never hit and grew one dead entry per
+  message.
+
+### Notes
+- Requires a restart to take effect. Server instructions are dynamic; the static
+  host files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) are refreshed by
+  `prism connect --refresh`.
+- Free tier is unchanged and was verified against a live anonymous identity: a
+  non-offline empty skill set, no `Authorization` header, no keyword-table
+  request, a manifest limited to `prism-startup`, and no symptom hint.
+
+## [20.4.0] - 2026-08-01 — An Explicitly Named Cloud Backend Fails Loud
+
+### Fixed
+- **`PRISM_STORAGE=synalux` or `=supabase` with incomplete credentials silently
+  downgraded to local SQLite.** The switch was logged to stderr, which MCP hosts
+  discard, so nothing surfaced it: sessions kept serving stale local context
+  while the cloud held newer history, and `context_source` read `local` rather
+  than any kind of warning. A session could run that way for weeks.
+  Naming a backend outright is a strong statement of intent, so it now throws —
+  naming the missing variables and the `PRISM_STORAGE=local` opt-out — instead
+  of quietly splitting your session history.
+- The skill block is budgeted by default rather than only when `max_tokens` is
+  passed, so a large skill payload cannot crowd out briefing and history.
+
+### Notes
+- `auto` is unchanged: it keeps its documented synalux > supabase > local
+  degradation, pinned by a test.
+
 ## [20.3.2] - 2026-07-30 — Web Scholar: SSRF Hardening
 
 Security release. Web Scholar fetches article URLs taken from search-engine

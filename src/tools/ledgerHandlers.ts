@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import * as os from "node:os";
+import * as http from "node:http";
 import { randomUUID } from "node:crypto";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import { scanAndRedactPHI } from "../utils/phiGuard.js";
@@ -25,11 +26,12 @@ import { buildVaultDirectory } from "../utils/vaultExporter.js";
  */
 
 import { debugLog } from "../utils/logger.js";
+import { FREE_ENTITLEMENTS } from "../utils/entitlements.js";
 import { getStorage, activeStorageBackend } from "../storage/index.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
-import { getSetting, getAllSettings, refreshConfigStorageCache } from "../storage/configStorage.js";
+import { getSetting, setSetting, getAllSettings, refreshConfigStorageCache } from "../storage/configStorage.js";
 import type { SkillSyncResult } from "../skillManifestSync.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
 import { resolveProject } from "../utils/projectResolver.js";
@@ -128,6 +130,69 @@ const MEMORY_BOUNDARY_PREFIX =
 const MEMORY_BOUNDARY_SUFFIX = '\n</prism_memory>';
 
 type NativeContextDepth = "quick" | "standard" | "deep";
+
+/**
+ * Cap on names listed in the symptom-triggered line. The line is carried in
+ * the display suffix, which capNativeStartupText subtracts from the body
+ * budget — an unbounded list would starve the context it is meant to annotate.
+ */
+const MAX_SYMPTOM_SKILLS = 5;
+
+/**
+ * Hard ceiling on the inlined skill body, and the share of the display budget
+ * it may take. Naming a skill is not delivering it: skill bodies reach agents
+ * ONLY as files under resolveNativeSkillsDirs, and hosts outside that list
+ * (Gemini) have no path to the content at all — no MCP tool serves it. Three
+ * instruction rewrites failed for that reason before it was found. Inlining
+ * removes the indirection entirely: the rule is simply in context.
+ */
+const SYMPTOM_SKILL_INLINE_MAX = 1_800;
+const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
+/** Below this the inlined rule is too clipped to be worth the space it costs. */
+const SYMPTOM_SKILL_INLINE_MIN = 400;
+
+/**
+ * The character budget a native startup display will actually be capped to.
+ *
+ * Single source of truth: capNativeStartupText caps against this, and the
+ * inlined rule is sized from it. Sizing the rule from the LEVEL constant
+ * instead let the suffix exceed the whole allowance — bootstrap divides the
+ * budget across rendered projects, so a per-project slice of 512 against an
+ * 1,800-char exempt suffix produced a 1,919-char display (275% over) with the
+ * session context entirely gone. The suffix is truncation-exempt by design;
+ * that only works if it is sized against the real budget.
+ */
+function effectiveNativeBudget(level: NativeContextDepth, requestedMaxChars?: number): number {
+  const configuredLimit = NATIVE_STARTUP_MAX_CHARS[level];
+  return Math.max(512, Math.min(configuredLimit, requestedMaxChars ?? configuredLimit));
+}
+
+// Skill bodies are read via skillManifestSync.readNativeSkillBody, which owns
+// the canonical root. That path is overridable per caller and per home, so a
+// literal copied to this module would be wrong on any machine that overrides
+// either — and would silently drift from the writer.
+
+/**
+ * Drop the YAML frontmatter before inlining.
+ *
+ * `name`/`description`/`metadata` are routing and authoring metadata — the
+ * agent already has the name from the line above, and the rest is provenance.
+ * Measured at ~161 chars on data-before-code, which is what pushed the
+ * Anti-Patterns list past the cap and truncated it mid-word. Every character
+ * here is taken from the rule it is supposed to deliver.
+ *
+ * Returns "" for absent input so the caller's single truthiness check covers
+ * both "no body" and "frontmatter only".
+ */
+function stripSkillFrontmatter(raw: string | null): string {
+  const text = (raw ?? "").trim();
+  if (!text.startsWith("---")) return text;
+  // Closing fence must be its own line; a body line of "---" mid-document is
+  // not a terminator, so anchor on the newline pair.
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return text; // unterminated frontmatter — inline as-is
+  return text.slice(text.indexOf("\n", end + 1) + 1).trim();
+}
 
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
@@ -286,8 +351,20 @@ async function buildNativeSystemReadyBlock(
   const superSkillAliases = superSkills.map((name) => `${name.slice(0, -"-super-skill".length)} (${name})`);
   const otherTierSkills = snapshot.names.filter((name) =>
     !coreSkillSet.has(name) && !name.endsWith("-super-skill"));
+  // Conflicts must be LOUD, named, and actionable. This used to render as
+  // "· 2 local conflicts preserved" — a count with benign phrasing, so two
+  // safety skills (ask-first among them) sat 4 months stale on disk while
+  // every sync silently skipped them and nobody was ever told which ones.
   const conflictSuffix = snapshot.conflicts.length > 0
-    ? ` · ${snapshot.conflicts.length} local conflict${snapshot.conflicts.length === 1 ? "" : "s"} preserved`
+    ? ` · ${snapshot.conflicts.length} conflict${snapshot.conflicts.length === 1 ? "" : "s"} — see warning`
+    : "";
+  const conflictWarning = snapshot.conflicts.length > 0
+    ? `\n> - ⚠️ **SKILLS NOT UPDATING (local copy has no Prism ownership marker):** ` +
+      `${formatBoundedSkillNames([...snapshot.conflicts].sort(), "blocked")}. ` +
+      `Each named skill is frozen at whatever version is on disk — updates are ` +
+      `withheld to protect local edits. To resume updates: move the skill's ` +
+      `directory out of the native skills folder and rerun \`prism connect\` ` +
+      `(or a session bootstrap) to reinstall the managed copy.`
     : "";
   if (snapshot.source === "validated-partial") {
     return `> **Prism System Ready**\n>\n` +
@@ -297,14 +374,18 @@ async function buildNativeSystemReadyBlock(
       `> - 🧩 **Super-skill entitlements:** ${formatBoundedSkillNames(superSkillAliases, "entitled")}\n` +
       `> - 🛠️ **Other tier entitlements:** ${formatBoundedSkillNames(otherTierSkills, "entitled")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
-      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}`;
+      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}` +
+      conflictWarning +
+      freeTierUpgradeLine(snapshot.tier);
   }
   if (snapshot.source === "tier-fallback") {
     return `> **Prism System Ready**\n>\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
-      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}`;
+      `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}` +
+      conflictWarning +
+      freeTierUpgradeLine(snapshot.tier);
   }
   return `> **Prism System Ready**\n>\n` +
     `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
@@ -313,7 +394,64 @@ async function buildNativeSystemReadyBlock(
     `> - 🧩 **Super-skills provisioned:** ${formatBoundedSkillNames(superSkillAliases, "provisioned")}\n` +
     `> - 🛠️ **Other tier skills provisioned:** ${formatBoundedSkillNames(otherTierSkills, "provisioned")}\n` +
     `> - 🧠 **Context depth:** ${depth}\n` +
-    `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · committed manifest${conflictSuffix}`;
+    `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · committed manifest${conflictSuffix}` +
+    conflictWarning +
+    freeTierUpgradeLine(snapshot.tier);
+}
+
+/**
+ * The paid funnel's one startup line. Before 2026-08-05 the upgrade_url was
+ * surfaced only AFTER a user hit an entitlement gate (sessionDriftHandler,
+ * queryMemoryNaturalHandler); the startup path — the only guaranteed
+ * impression — referenced it zero times.
+ */
+function freeTierUpgradeLine(tier: string): string {
+  if (tier !== "free") return "";
+  return `\n> - 💎 **Free tier:** paid plans unlock the full skill library, ` +
+    `super-skills, and agent routing → ${FREE_ENTITLEMENTS.upgrade_url}`;
+}
+
+/**
+ * Dashboard URL for startup output. The bound port is announced on stderr
+ * only (MCP stdio owns stdout), so users never saw it; the dashboard also
+ * writes the port to ~/.prism-mcp/dashboard.port — read that, then the env
+ * override, then the default.
+ */
+async function readDashboardUrl(): Promise<string | null> {
+  // Precedence: explicit env override > recorded port file > default. The
+  // file is written by whatever dashboard ran last and persists across boots,
+  // so it must never outrank configuration the operator set for THIS process.
+  let port = (process.env.PRISM_DASHBOARD_PORT || "").trim();
+  if (!port) {
+    try {
+      const recorded = fs.readFileSync(nodePath.join(os.homedir(), ".prism-mcp", "dashboard.port"), "utf8").trim();
+      if (/^\d{2,5}$/.test(recorded)) port = recorded;
+    } catch {
+      // port file absent — dashboard not started yet this boot; default holds
+    }
+  }
+  if (!port) port = "3000";
+  // The port file persists across boots and is never cleaned up, so it is
+  // evidence of a PREVIOUS dashboard, not a running one. Advertising a dead
+  // URL as the first-run headline action is worse than omitting it.
+  //
+  // A TCP connect is NOT sufficient: it proves something is listening, not
+  // that it is Prism. The default is 3000 — the single most commonly occupied
+  // port on a developer machine — so a bare liveness check would confidently
+  // point a first-run user at their own dev server. Hit the dashboard's
+  // /api/health instead, so identity is verified rather than assumed.
+  const healthy = await new Promise<boolean>((resolveProbe) => {
+    const request = http.get(
+      { host: "127.0.0.1", port: Number(port), path: "/api/health", timeout: 300 },
+      (response) => {
+        response.resume(); // drain so the socket can close
+        resolveProbe(response.statusCode === 200);
+      },
+    );
+    request.once("timeout", () => { request.destroy(); resolveProbe(false); });
+    request.once("error", () => resolveProbe(false));
+  });
+  return healthy ? `http://localhost:${port}` : null;
 }
 
 function capNativeStartupText(
@@ -322,8 +460,7 @@ function capNativeStartupText(
   requestedMaxChars?: number,
   suffix = "",
 ): string {
-  const configuredLimit = NATIVE_STARTUP_MAX_CHARS[level];
-  const maxChars = Math.max(512, Math.min(configuredLimit, requestedMaxChars ?? configuredLimit));
+  const maxChars = effectiveNativeBudget(level, requestedMaxChars);
   if (text.length + suffix.length <= maxChars) return text + suffix;
 
   const marker = `\n\n… Additional ${level} context omitted to keep native startup within its display budget.`;
@@ -1091,6 +1228,18 @@ export async function sessionLoadContextHandler(
   const manifestSnapshot = await resolveNativeSkillManifestSnapshot(skillSyncResult);
   const entitledSkillNames = new Set(manifestSnapshot.names);
 
+  // Wire last-good persistence BEFORE any early return. This sat below the
+  // native-context branch, so session_bootstrap — the one path that runs on
+  // every first turn — could never persist the keyword table, and offline
+  // keyword routing died at the next restart. Cheap and idempotent.
+  {
+    const { _setStorage } = await import("./skillRouting.js");
+    _setStorage(
+      async (k, v) => { try { await storage.setSetting?.(k, v); } catch { /* cache-only */ } },
+      async (k) => { try { return await getSetting(k, ""); } catch { return ""; } },
+    );
+  }
+
   const storage = options.storageOverride ?? await getStorage();
   const effectiveRole = role || await getSetting("default_role", "") || undefined;
   const loadEntitledRoleSkill = async (): Promise<string> => {
@@ -1436,6 +1585,80 @@ export async function sessionLoadContextHandler(
         (d.keywords.length > keywords.length ? `, … ${d.keywords.length - keywords.length} more omitted` : "") + `\n`;
     }
     nativeContext += `\n**Session Version:** ${version === null || version === undefined ? "None" : compact(version, 40)}\n`;
+
+    let symptomSkillSuffix = "";
+    // ─── Symptom-triggered skills (on-device prompt routing) ───
+    // Native hosts already hold every entitled skill as a FILE on disk, so
+    // routing cannot gate delivery here — it surfaces WHICH ones the first
+    // message implicates, on the turn an incident report actually arrives.
+    //
+    // Entitlement comes from manifestSnapshot (already loaded, tier-gated), so
+    // this costs no portal call; the keyword table is matched on-device and
+    // the prompt never leaves the machine. Filtering by entitledSkillNames is
+    // required — the public table lists names for every tier.
+    //
+    // Carried as a SUFFIX, not appended to nativeContext. capNativeStartupText
+    // truncates from the END, so appending made this the first casualty on a
+    // tight budget — silently, and bootstrap divides the budget across
+    // projects. That is the 2026-08-01 failure mode exactly: the diagnostic
+    // skill absent precisely when context is scarce. The cap reserves space
+    // for the suffix, mirroring how the protected floor is exempt from the
+    // skill budget.
+    if (typeof prompt === "string" && prompt.trim()) {
+      try {
+        const { resolvePromptSkillNames } = await import("./skillRouting.js");
+        // The manifest's routing_version is the only version signal available
+        // here; without it a stale cached table would never be detected on
+        // this path, since there is no portal response to compare against.
+        const manifestVersion = Number(await getSetting("skill_manifest:routing_version", ""));
+        const matched = (await resolvePromptSkillNames(
+          prompt,
+          Number.isFinite(manifestVersion) && manifestVersion > 0 ? manifestVersion : undefined,
+        )).filter((name) => entitledSkillNames.has(name));
+        if (matched.length > 0) {
+          const shown = matched.slice(0, MAX_SYMPTOM_SKILLS);
+          const overflow = matched.length - shown.length;
+          // Imperative, not a label: a bare list is decorative, and nothing
+          // else in the pipeline tells the agent to act on it.
+          // Names are interpolated, never a placeholder. A `<skill name>`
+          // placeholder here rendered as knowledge_search("") on a real host —
+          // markdown/HTML display ate the angle brackets as an unknown tag.
+          // Never emit angle brackets in text a host will render.
+          symptomSkillSuffix = `\n\n**Symptom-triggered skills:** ${shown.join(", ")}` +
+            (overflow > 0 ? `, … ${overflow} more` : "") +
+            `\nThe first message matches these skills' trigger rules. Follow them before ` +
+            `proposing any change.\n`;
+
+          // INLINE the top match's body rather than pointing at it. Naming a
+          // skill is not delivering it: bodies reach agents only as files under
+          // the canonical root, and hosts outside that mirror have no path to
+          // the content — no MCP tool serves it. Three instruction rewrites
+          // failed on that gap. Inlining removes the indirection entirely.
+          const { readNativeSkillBody } = await import("../skillManifestSync.js");
+          const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
+          // Size against the budget this display will ACTUALLY be capped to,
+          // not the level constant — bootstrap divides it across projects.
+          const cap = Math.min(
+            SYMPTOM_SKILL_INLINE_MAX,
+            Math.floor(
+              effectiveNativeBudget(level, options.nativeMaxChars) * SYMPTOM_SKILL_BUDGET_SHARE,
+            ),
+          );
+          // Too tight to carry a useful rule: keep the name line, which is
+          // small, and leave the remaining budget to the session context.
+          if (body && cap >= SYMPTOM_SKILL_INLINE_MIN) {
+            const clipped = body.length > cap
+              ? `${body.slice(0, cap).trimEnd()}\n… (rule truncated to fit the startup budget)`
+              : body;
+            symptomSkillSuffix += `\n--- ${shown[0]} ---\n${clipped}\n`;
+          }
+        }
+      } catch (err) {
+        // Advisory — never fail startup over routing. But do not go silent:
+        // a permanently broken table would otherwise be invisible forever.
+        debugLog(`[session_load_context] prompt routing skipped: ${(err as Error)?.message}`);
+      }
+    }
     if (convId) {
       const { registerContextLoaded } = await import("../session/sessionContext.js");
       const { BOUNDARIES_VERSION } = await import("../boundaries/boundaries.js");
@@ -1444,7 +1667,10 @@ export async function sessionLoadContextHandler(
     return {
       content: [{
         type: "text",
-        text: capNativeStartupText(nativeContext, level, options.nativeMaxChars, MEMORY_BOUNDARY_SUFFIX),
+        text: capNativeStartupText(
+          nativeContext, level, options.nativeMaxChars,
+          symptomSkillSuffix + MEMORY_BOUNDARY_SUFFIX,
+        ),
       }],
       isError: false,
     };
@@ -1517,11 +1743,8 @@ export async function sessionLoadContextHandler(
   }
 
   // ─── All other skills resolved by portal API ───────────────
-  const { resolveSkills, _setStorage } = await import("./skillRouting.js");
-  _setStorage(
-    async (k, v) => { try { await storage.setSetting?.(k, v); } catch {} },
-    async (k) => { try { return await getSetting(k, ""); } catch { return ""; } },
-  );
+  // Storage is wired above, before the native-context early return.
+  const { resolveSkills } = await import("./skillRouting.js");
   const skillResolution = await resolveSkills(project, prompt, effectiveRole);
 
   // Client-renders-content: portal returns names, we load content from local DB
@@ -1573,8 +1796,12 @@ export async function sessionLoadContextHandler(
   // exists to deliver. The protected floor may still exceed this tranche
   // (always inlined); the reserved 40% keeps history alive whenever the
   // caller's budget covers the floor at all.
-  const skillBudgetChars = maxTokens && maxTokens > 0 ? Math.floor(maxTokens * 3.5 * 0.6) : Number.POSITIVE_INFINITY;
-  const { assembleSkillBlock } = await import("../utils/skillBudget.js");
+  // Armed by DEFAULT, not only when the caller passes max_tokens — see
+  // resolveSkillBudgetChars for why an unbudgeted default cost the agent its
+  // entire response on 2026-08-01. `level` scales the tranche so `quick`
+  // actually means quick.
+  const { assembleSkillBlock, resolveSkillBudgetChars } = await import("../utils/skillBudget.js");
+  const skillBudgetChars = resolveSkillBudgetChars(maxTokens, level);
   const budgeted = assembleSkillBlock(skillEntries, skillBudgetChars);
   skillBlock = budgeted.block;
   loadedSkills.push(...budgeted.inlined);
@@ -1737,6 +1964,66 @@ async function createLocalStartupStorage(): Promise<StorageBackend> {
   return storage;
 }
 
+/** Project name for the first-run demo memory. Its own project so it can never
+ * mix with real work, and trivially removable as a unit. */
+const DEMO_PROJECT = "prism-demo";
+
+/**
+ * First-run seed-and-show: write one demo ledger entry, then READ IT BACK
+ * through the storage layer and render from the read-back row.
+ *
+ * The read-back is the point. Rendering the local variable would prove
+ * nothing — a broken storage backend would still print a convincing
+ * "recalled" block. Rendering only what getLedgerEntries returned means the
+ * block the user sees IS evidence the save→recall loop works on their
+ * machine. If either half fails we return null and the greeting simply
+ * omits the demo — a first run must never break on a demo.
+ */
+export async function seedAndRecallDemoMemory(conversationId: string): Promise<string | null> {
+  try {
+    const storage = await getStorage();
+    // Idempotence before insert: the first_bootstrap_at marker is
+    // check-then-set, so two hosts bootstrapping a fresh machine at once BOTH
+    // take the first-run branch (observed setups run several agents
+    // concurrently). Seeding only when no demo row exists narrows that race
+    // from "every concurrent first run inserts" to a near-simultaneous
+    // read-read window, and the loser still renders the winner's row — the
+    // user sees one demo either way.
+    const existing = (await storage.getLedgerEntries({
+      project: `eq.${DEMO_PROJECT}`,
+      user_id: `eq.${PRISM_USER_ID}`,
+      limit: "1",
+    })) as unknown[];
+    if (existing.length === 0) {
+      await storage.saveLedger({
+        project: DEMO_PROJECT,
+        conversation_id: conversationId,
+        user_id: PRISM_USER_ID,
+        summary: "Prism saved this memory during your first session to demonstrate recall.",
+        todos: ["Try it yourself: ask your agent to `session_save_ledger` at the end of this session"],
+        decisions: ["Demo memory — delete anytime with session_forget_memory or from the dashboard"],
+        keywords: ["demo", "first-run"],
+      });
+    }
+    const rows = (await storage.getLedgerEntries({
+      project: `eq.${DEMO_PROJECT}`,
+      user_id: `eq.${PRISM_USER_ID}`,
+      order: "created_at.desc",
+      limit: "1",
+    })) as Array<{ summary?: string; todos?: string[] }>;
+    const recalled = rows[0];
+    if (!recalled?.summary) return null;
+    const todo = Array.isArray(recalled.todos) && recalled.todos[0] ? `\n  - TODO it carried: ${recalled.todos[0]}` : "";
+    return (
+      `- 🧠 **Watch this — Prism just saved a memory and recalled it from disk:**\n` +
+      `  - "${recalled.summary}"${todo}\n` +
+      `  - This round-trip is what every future session gets: your decisions, TODOs, and changed files, back the moment you return. (Demo lives in the \`${DEMO_PROJECT}\` project — delete it anytime.)`
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function sessionBootstrapHandler(
   args: unknown = {},
   options: SessionBootstrapOptions = {},
@@ -1779,16 +2066,67 @@ export async function sessionBootstrapHandler(
   const role = sanitizeNativeIdentity(defaultRole) || "global";
   const manifestSnapshot = await resolveNativeSkillManifestSnapshot(skillSyncResult);
   const systemReadyBlock = await buildNativeSystemReadyBlock(manifestSnapshot, depth);
-  const greeting = `👋 Welcome back, ${greetingName}. Prism is loading ${depth} context.`;
+  // First run = the dashboard has never been touched: no agent identity AND no
+  // projects. Measured 2026-08-05: a brand-new free-tier install was greeted
+  // with "Welcome back", three "Not loaded" rows, a warning, and three
+  // statements of what it doesn't have — an all-absence payload with no next
+  // step, no dashboard URL (stderr-only), and no path to the paid tier.
+  // First run must mean NEW, not merely unconfigured: a user with saved
+  // sessions who never set a name or projects would otherwise be told "first
+  // run detected" every single session. A durable marker is written after the
+  // first bootstrap, so this is decisive rather than heuristic.
+  const bootstrapSeen = (await getSetting("first_bootstrap_at", "")).trim();
+  const isFirstRun = projects.length === 0 && !configuredGreetingName && !bootstrapSeen;
+  if (!bootstrapSeen) {
+    try {
+      await setSetting("first_bootstrap_at", new Date().toISOString());
+    } catch {
+      // Marker is an optimization; a write failure must never block startup.
+    }
+  }
+  const greeting = isFirstRun
+    ? `👋 Welcome to Prism — first run detected. Let's get you productive in a few minutes.`
+    : `👋 Welcome back, ${greetingName}. Prism is loading ${depth} context.`;
   const identityBlock = `- 🤖 **Agent Identity:** ${escapeNativeMarkdown(compactWithOmissionCount(role, 80))} — ${greetingName}`;
-  const startupHeader = `${greeting}\n\n${identityBlock}`;
+  const startupHeader = isFirstRun ? greeting : `${greeting}\n\n${identityBlock}`;
 
   if (projects.length === 0) {
+    const dashboardUrl = await readDashboardUrl();
+    const dashboardLine = dashboardUrl
+      ? `- 🎛️ **Dashboard:** ${dashboardUrl} — configure projects, identity, and context depth`
+      : `- 🎛️ **Dashboard:** not running — start Prism's dashboard to configure projects, identity, and context depth`;
+    if (isFirstRun) {
+      // Action-first instead of absence-first: every line is a capability or
+      // a next step. The wizard exists and is well-built; route to it.
+      //
+      // Seed-and-show: a memory product's payoff is structurally deferred to
+      // session 2 — "it remembered" can't be felt until you come back. So the
+      // first run seeds one clearly-marked demo memory and shows it RECALLED,
+      // read back through the real storage layer (not string theater), so the
+      // save→recall loop is felt in session 1. The demo lives in its own
+      // project so it never mixes with real work, and this branch only runs
+      // once — the first_bootstrap_at marker above is durable.
+      const demoRecall = await seedAndRecallDemoMemory(conversationId);
+      const firstRunText = `${greeting}\n\n` +
+        (demoRecall ? `${demoRecall}\n` : "") +
+        `- 🚀 **Get started:** run the \`onboarding_wizard\` tool (guided setup, ~3 minutes)\n` +
+        `${dashboardLine}\n` +
+        `- 💾 **Already working?** \`session_save_ledger\` records this session; the next one resumes with full context\n\n` +
+        `${systemReadyBlock}`;
+      return {
+        content: [{
+          type: "text",
+          text: capNativeStartupText(firstRunText, depth),
+        }],
+        isError: false,
+        structuredContent: { conversation_id: conversationId, projects: [], depth, first_run: true },
+      };
+    }
     const unconfiguredState = (depth === "quick" ? "" : `\n- 📝 **Last Session Summary:** Not loaded`) +
       `\n- ✅ **Open TODOs:** Not loaded` +
       `\n- 🔄 **Session Version:** Not loaded`;
     const noProjectsText = `${startupHeader}${unconfiguredState}\n\n` +
-      `⚠️ No Auto-Load Projects are configured in the Prism dashboard.\n\n${systemReadyBlock}`;
+      `⚠️ No Auto-Load Projects are configured in the Prism dashboard.\n${dashboardLine}\n\n${systemReadyBlock}`;
     return {
       content: [{
         type: "text",

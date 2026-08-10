@@ -4,7 +4,12 @@
  * overflow listed by name, never silently dropped.
  */
 import { describe, it, expect } from 'vitest';
-import { assembleSkillBlock, type SkillEntryForBudget } from '../src/utils/skillBudget.js';
+import {
+  assembleSkillBlock,
+  resolveSkillBudgetChars,
+  DEFAULT_SKILL_BUDGET_CHARS,
+  type SkillEntryForBudget,
+} from '../src/utils/skillBudget.js';
 
 const K = (n: number) => 'x'.repeat(n);
 
@@ -83,5 +88,70 @@ describe('assembleSkillBlock', () => {
     expect(r.inlined.filter(n => n.startsWith('tail')).length).toBe(0);  // tail waits for budget
     expect(r.overflow.length).toBe(19);                                  // flood prevented, all named
     expect(r.block.length).toBeLessThan(44_000);                         // preserves >1k headroom
+  });
+});
+
+/**
+ * 2026-08-01 regression: resolveSkillBudgetChars previously returned
+ * POSITIVE_INFINITY whenever max_tokens was absent — the documented default,
+ * and therefore the common call shape. Routing v25 (76 -> 95 skills) then grew
+ * the unbudgeted block to 91,578 chars, past the host tool-result cap, and the
+ * host diverted the WHOLE response to a file: the agent got no context at all.
+ */
+describe('resolveSkillBudgetChars', () => {
+  const LEVELS = ['quick', 'standard', 'deep'] as const;
+
+  it.each(LEVELS)('is finite and budgeted for %s with no max_tokens', (level) => {
+    const budget = resolveSkillBudgetChars(undefined, level);
+
+    expect(Number.isFinite(budget)).toBe(true);
+    expect(budget).toBeGreaterThan(0);
+  });
+
+  it.each(LEVELS)('never returns a value assembleSkillBlock treats as unbudgeted (%s)', (level) => {
+    // The contract coupling that matters: assembleSkillBlock reads <= 0 and
+    // non-finite as "inline everything", so either would silently restore the
+    // incident while still looking like a configured number.
+    const budget = resolveSkillBudgetChars(undefined, level);
+    const oversized = { content: 'y'.repeat(budget + 5_000), protected: false } as const;
+
+    const r = assembleSkillBlock([
+      entry({ name: 'fits', content: 'x'.repeat(10) }),
+      entry({ name: 'huge', ...oversized }),
+    ], budget);
+
+    expect(r.overflow).toContain('huge');
+    expect(r.block).toContain('SKILLS NOT INLINED');
+  });
+
+  it('gives quick a materially smaller tranche than standard or deep', () => {
+    // `quick` is chosen to minimize context; before the fix `level` gated only
+    // the memory portion, so quick still inlined the full skill payload.
+    const quick = resolveSkillBudgetChars(undefined, 'quick');
+
+    expect(quick).toBeLessThan(resolveSkillBudgetChars(undefined, 'standard'));
+    expect(resolveSkillBudgetChars(undefined, 'standard'))
+      .toBeLessThan(resolveSkillBudgetChars(undefined, 'deep'));
+  });
+
+  it('keeps the default well under the ~25k-token host cap', () => {
+    // 3.5 chars/token heuristic; the diverted response was 91,578 chars. The
+    // skill tranche alone must leave room for briefing, handoff and history.
+    for (const level of LEVELS) {
+      expect(resolveSkillBudgetChars(undefined, level)).toBeLessThan(50_000);
+    }
+  });
+
+  it('still honors an explicit max_tokens at 60% of the allowance', () => {
+    // Explicit callers keep the old arithmetic; only the default changed.
+    expect(resolveSkillBudgetChars(10_000, 'standard')).toBe(Math.floor(10_000 * 3.5 * 0.6));
+  });
+
+  it('falls back to the standard tranche for a non-positive or junk max_tokens', () => {
+    expect(resolveSkillBudgetChars(0, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
+    expect(resolveSkillBudgetChars(-1, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
+    expect(resolveSkillBudgetChars(Number.NaN, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
+    expect(resolveSkillBudgetChars(Number.POSITIVE_INFINITY, 'standard'))
+      .toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
   });
 });

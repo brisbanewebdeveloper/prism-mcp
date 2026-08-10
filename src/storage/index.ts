@@ -12,9 +12,53 @@ import { getSetting } from "./configStorage.js";
 export function isValidHttpUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    if (parsed.protocol === "https:") return true;
+    // Plain http is accepted ONLY for loopback, where the traffic never leaves
+    // the machine — the local Supabase stack runs on 127.0.0.1:54321.
+    //
+    // Every caller of this function is gating a CLOUD backend, so accepting
+    // http for a remote host meant session content — summaries, decisions,
+    // filenames — could be sent unencrypted. The privacy policy states this
+    // traffic travels over TLS; before this change that was true only because
+    // the default base URL happens to be https, not because anything enforced
+    // it. A published claim should be guaranteed by the code, not by a default
+    // the user can silently override.
+    if (parsed.protocol !== "http:") return false;
+    const host = parsed.hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
   } catch {
     return false;
+  }
+}
+
+/**
+ * Upgrade a remote http:// cloud URL to https:// rather than rejecting it.
+ *
+ * Rejecting was the first fix for the plaintext gap, and it closed the hole
+ * but reported it badly: a user who set an http base URL got "credentials are
+ * missing or invalid", which says nothing about the protocol being the
+ * problem. Upgrading keeps the guarantee — session content never leaves over
+ * plaintext — while letting a working configuration keep working.
+ *
+ * Loopback is left alone: http on 127.0.0.1 never crosses a network, and the
+ * local Supabase stack serves plain http on 54321.
+ *
+ * The upgrade is announced, not silent. If the host genuinely has no TLS
+ * listener the connection fails afterwards, and the log line is what explains
+ * why.
+ */
+export function upgradeInsecureCloudUrl(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:") return raw;
+    const host = parsed.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") return raw;
+    parsed.protocol = "https:";
+    const upgraded = parsed.toString().replace(/\/+$/, "");
+    debugLog(`[Prism Storage] Upgraded ${raw} to ${upgraded}: session content is never sent over plaintext to a remote host.`);
+    return upgraded;
+  } catch {
+    return raw;
   }
 }
 
@@ -27,11 +71,13 @@ export async function ensureSynaluxCredentials(): Promise<boolean> {
   // Re-check process.env directly: SYNALUX_CONFIGURED is captured at module
   // load, so credentials injected later by another caller would be invisible
   // to it. Mirrors ensureSupabaseCredentials below.
-  const envUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim();
+  const rawEnvUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim();
+  const envUrl = rawEnvUrl ? upgradeInsecureCloudUrl(rawEnvUrl) : rawEnvUrl;
   const envKey = process.env.PRISM_SYNALUX_API_KEY?.trim();
   if (envUrl && envKey && isValidHttpUrl(envUrl)) return true;
-  const url = (await getSetting("PRISM_SYNALUX_BASE_URL"))?.trim() ||
+  const rawUrl = (await getSetting("PRISM_SYNALUX_BASE_URL"))?.trim() ||
     (await getSetting("SYNALUX_BASE_URL"))?.trim();
+  const url = rawUrl ? upgradeInsecureCloudUrl(rawUrl) : rawUrl;
   const key = (await getSetting("PRISM_SYNALUX_API_KEY"))?.trim();
   if (url && key && isValidHttpUrl(url)) {
     process.env.PRISM_SYNALUX_BASE_URL = url;
@@ -48,10 +94,12 @@ export async function ensureSynaluxCredentials(): Promise<boolean> {
  */
 async function ensureSupabaseCredentials(): Promise<boolean> {
   if (SUPABASE_CONFIGURED) return true;
-  const envUrl = process.env.SUPABASE_URL?.trim();
+  const rawEnvUrl = process.env.SUPABASE_URL?.trim();
+  const envUrl = rawEnvUrl ? upgradeInsecureCloudUrl(rawEnvUrl) : rawEnvUrl;
   const envKey = process.env.SUPABASE_KEY?.trim();
   if (envUrl && envKey && isValidHttpUrl(envUrl)) return true;
-  const url = (await getSetting("SUPABASE_URL"))?.trim();
+  const rawUrl = (await getSetting("SUPABASE_URL"))?.trim();
+  const url = rawUrl ? upgradeInsecureCloudUrl(rawUrl) : rawUrl;
   const key = (await getSetting("SUPABASE_KEY"))?.trim();
   if (url && key && isValidHttpUrl(url)) {
     process.env.SUPABASE_URL = url;
@@ -102,17 +150,38 @@ export async function getStorage(): Promise<StorageBackend> {
   }
 
   // ─── Validate explicit backend has credentials ────────────────
+  // An explicitly requested cloud backend with missing credentials must fail
+  // loud. Silently serving local SQLite splits session history: the caller
+  // keeps working against a stale local copy while believing it is on the
+  // cloud, and console.error goes to stderr, which MCP hosts discard. "auto"
+  // already refuses to fall back for this exact reason (see above); naming a
+  // backend outright is a stronger statement of intent, so it must not be
+  // weaker about protecting history.
+  //
+  // Observed in the field: a base URL present without its API key (a
+  // `prism connect` run from a shell that never exported the key strips it)
+  // downgraded every subsequent session to local storage for weeks. The local
+  // copy kept serving months-old context while the cloud held current history,
+  // and nothing in-band surfaced the downgrade.
+  //
+  // This throw is deliberately NOT matched by isRecoverableStartupStorageError
+  // (startupRecovery.ts): a missing credential is a configuration fault, not a
+  // transient one, so startup must not paper over it with last-good context.
   if (requested === "synalux" && !(await ensureSynaluxCredentials())) {
-    console.error(
-      "[Prism Storage] Synalux backend requested but PRISM_SYNALUX_BASE_URL/PRISM_SYNALUX_API_KEY are missing or invalid. Falling back to local storage."
+    throw new Error(
+      "[Prism Storage] PRISM_STORAGE=synalux but Synalux credentials are missing or invalid " +
+      "(need PRISM_SYNALUX_BASE_URL and PRISM_SYNALUX_API_KEY). " +
+      "Refusing to fall back to local storage because that silently splits session history. " +
+      "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
     );
-    requested = "local";
   }
   if (requested === "supabase" && !(await ensureSupabaseCredentials())) {
-    console.error(
-      "[Prism Storage] Supabase backend requested but SUPABASE_URL/SUPABASE_KEY are missing or invalid. Falling back to local storage."
+    throw new Error(
+      "[Prism Storage] PRISM_STORAGE=supabase but Supabase credentials are missing or invalid " +
+      "(need SUPABASE_URL and SUPABASE_KEY). " +
+      "Refusing to fall back to local storage because that silently splits session history. " +
+      "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
     );
-    requested = "local";
   }
 
   // ─── Initialize ───────────────────────────────────────────────
@@ -153,13 +222,35 @@ export async function getStorage(): Promise<StorageBackend> {
 }
 
 export async function closeStorage(): Promise<void> {
-  if (storageInstance) {
-    await storageInstance.close();
+  if (!storageInstance) return;
+  const closing = storageInstance;
+  // Clear the slot in `finally`: if close() throws, the previous code left a
+  // DEAD instance installed as the singleton, and every later getStorage()
+  // handed that broken connection to callers. An empty slot is strictly
+  // safer — the next getStorage() re-opens cleanly. The error still
+  // propagates, so a caller like restoreFromBackup can abort before swapping
+  // the database file.
+  try {
+    await closing.close();
+  } finally {
     storageInstance = null;
   }
 }
 
-/** Test-only: inject a pre-initialized storage instance into the singleton slot. */
+/**
+ * Test-only: inject a pre-initialized storage instance into the singleton slot.
+ *
+ * CONTRACT: the CALLER owns the lifecycle of what it injects. This function
+ * deliberately does NOT close the instance it replaces — callers pair the
+ * injection with their own cleanup (see createTestDb().cleanup), so closing
+ * here would double-close a storage the test still owns.
+ *
+ * Worth knowing when auditing handle leaks: an instance dropped without
+ * close() keeps its sqlite lock, and on Windows that lock blocks unlink of
+ * the database file until the process exits (libsql close() does not release
+ * it either — tursodatabase/libsql-js#228 — so closing is hygiene, not a
+ * guarantee).
+ */
 export function _setStorageForTesting(instance: StorageBackend | null): void {
   storageInstance = instance;
 }

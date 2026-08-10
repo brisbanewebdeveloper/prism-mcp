@@ -41,19 +41,19 @@ describe("commonPathPrefix", () => {
   it("returns longest shared directory across multiple files", () => {
     expect(
       commonPathPrefix([
-        "/Users/admin/prism-aac/src/index.ts",
-        "/Users/admin/prism-aac/src/tts.ts",
+        "/Users/example/prism-aac/src/index.ts",
+        "/Users/example/prism-aac/src/tts.ts",
       ])
-    ).toBe("/Users/admin/prism-aac/src");
+    ).toBe("/Users/example/prism-aac/src");
   });
 
   it("falls back to repo root when files diverge into subdirs", () => {
     expect(
       commonPathPrefix([
-        "/Users/admin/prism-aac/src/index.ts",
-        "/Users/admin/prism-aac/tests/foo.test.ts",
+        "/Users/example/prism-aac/src/index.ts",
+        "/Users/example/prism-aac/tests/foo.test.ts",
       ])
-    ).toBe("/Users/admin/prism-aac");
+    ).toBe("/Users/example/prism-aac");
   });
 
   it("returns empty string when only a single file with no parent dir", () => {
@@ -93,13 +93,13 @@ describe("resolveProject", () => {
 
   it("REJECTS the original prism-aac → prism-mcp memory-loss case", async () => {
     mockGetAllSettings.mockResolvedValue({
-      "repo_path:prism-aac": "/Users/admin/prism-aac",
-      "repo_path:prism-mcp": "/Users/admin/prism",
+      "repo_path:prism-aac": "/Users/example/prism-aac",
+      "repo_path:prism-mcp": "/Users/example/prism",
     });
 
     const result = await resolveProject("prism-mcp", [
-      "/Users/admin/prism-aac/src/index.ts",
-      "/Users/admin/prism-aac/services/aiProvider.ts",
+      "/Users/example/prism-aac/src/index.ts",
+      "/Users/example/prism-aac/services/aiProvider.ts",
     ]);
 
     expect(result.ok).toBe(false);
@@ -112,11 +112,11 @@ describe("resolveProject", () => {
 
   it("accepts when declared project matches the registry-derived project", async () => {
     mockGetAllSettings.mockResolvedValue({
-      "repo_path:prism-aac": "/Users/admin/prism-aac",
+      "repo_path:prism-aac": "/Users/example/prism-aac",
     });
 
     const result = await resolveProject("prism-aac", [
-      "/Users/admin/prism-aac/src/index.ts",
+      "/Users/example/prism-aac/src/index.ts",
     ]);
 
     expect(result).toEqual({ ok: true, project: "prism-aac" });
@@ -126,8 +126,8 @@ describe("resolveProject", () => {
     mockGetAllSettings.mockResolvedValue({});
 
     const result = await resolveProject("fresh-project", [
-      "/Users/admin/fresh-project/src/index.ts",
-      "/Users/admin/fresh-project/src/main.ts",
+      "/Users/example/fresh-project/src/index.ts",
+      "/Users/example/fresh-project/src/main.ts",
     ]);
 
     expect(result).toEqual({
@@ -137,7 +137,7 @@ describe("resolveProject", () => {
     });
     expect(mockSetSetting).toHaveBeenCalledWith(
       "repo_path:fresh-project",
-      "/Users/admin/fresh-project/src"
+      "/Users/example/fresh-project/src"
     );
   });
 
@@ -152,7 +152,7 @@ describe("resolveProject", () => {
 
   it("ignores non-repo_path keys in the settings table", async () => {
     mockGetAllSettings.mockResolvedValue({
-      "repo_path:prism-aac": "/Users/admin/prism-aac",
+      "repo_path:prism-aac": "/Users/example/prism-aac",
       "compaction_auto": "true",
       "agent_name": "claude",
       "default_role": "dev",
@@ -160,7 +160,7 @@ describe("resolveProject", () => {
     });
 
     const result = await resolveProject("prism-aac", [
-      "/Users/admin/prism-aac/src/index.ts",
+      "/Users/example/prism-aac/src/index.ts",
     ]);
 
     expect(result).toEqual({ ok: true, project: "prism-aac" });
@@ -168,12 +168,12 @@ describe("resolveProject", () => {
 
   it("picks the longest matching repo_path when registry has nested entries", async () => {
     mockGetAllSettings.mockResolvedValue({
-      "repo_path:monorepo": "/Users/admin",
-      "repo_path:prism-aac": "/Users/admin/prism-aac",
+      "repo_path:monorepo": "/Users/example",
+      "repo_path:prism-aac": "/Users/example/prism-aac",
     });
 
     const result = await resolveProject("monorepo", [
-      "/Users/admin/prism-aac/src/index.ts",
+      "/Users/example/prism-aac/src/index.ts",
     ]);
 
     expect(result.ok).toBe(false);
@@ -187,8 +187,8 @@ describe("resolveProject", () => {
     mockSetSetting.mockRejectedValueOnce(new Error("disk full"));
 
     const result = await resolveProject("fresh", [
-      "/Users/admin/fresh/a.ts",
-      "/Users/admin/fresh/b.ts",
+      "/Users/example/fresh/a.ts",
+      "/Users/example/fresh/b.ts",
     ]);
 
     expect(result).toEqual({
@@ -200,13 +200,13 @@ describe("resolveProject", () => {
 
   it("trims and ignores empty repo_path values", async () => {
     mockGetAllSettings.mockResolvedValue({
-      "repo_path:prism-aac": "/Users/admin/prism-aac",
+      "repo_path:prism-aac": "/Users/example/prism-aac",
       "repo_path:empty-one": "",
       "repo_path:whitespace": "   ",
     });
 
     const result = await resolveProject("prism-aac", [
-      "/Users/admin/prism-aac/src/index.ts",
+      "/Users/example/prism-aac/src/index.ts",
     ]);
 
     expect(result).toEqual({ ok: true, project: "prism-aac" });

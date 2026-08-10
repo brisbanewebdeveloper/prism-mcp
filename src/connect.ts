@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   statSync,
@@ -145,7 +146,10 @@ const CODEX_STARTUP_MANAGED_END = "<!-- <<< prism connect managed: codex native 
 const CODEX_STARTUP_BODY = [
   "## Prism session startup",
   "On the first user turn of every conversation, including a greeting, your first action must be",
-  "`session_bootstrap({})`, exactly once. Emit no preamble. Print the complete tool result verbatim as the",
+  "`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once — the prompt is what makes",
+  "prompt-keyword skill routing fire on turn one (matched on-device; the prompt is never transmitted).",
+  "Pass `{}` only when there is no user message. Emit no",
+  "preamble. Print the complete tool result verbatim as the",
   "entire first-turn startup display, before any optional answer. Do not summarize, paraphrase, rename headings,",
   "reformat, or omit any returned section. Preserve its order and line content. For a greeting-only prompt, stop",
   "after the verbatim startup display. If `session_bootstrap` is deferred, use native tool discovery to load that",
@@ -166,15 +170,49 @@ const LEGACY_CLAUDE_PROJECT_PRISM_ENTRY = {
 };
 const INSTALLATION_RECEIPT_SCHEMA_VERSION = 1;
 const INSTALLATION_RECEIPT_OWNER = "prism-connect";
+/**
+ * Economy subagent model per host.
+ *
+ * The local-first policy already permits exactly this — "a host-native subagent
+ * is a last resort: at most one, no nesting, using the configured economy
+ * model" — but only Claude was configured that way. Gemini and Codex banned
+ * subagents outright, which is stricter than the policy Prism publishes.
+ *
+ * The stated reason for Gemini was "native/remote subagents". That does not
+ * survive checking: Gemini CLI subagents execute locally, in-process, with
+ * optional local container sandboxes. The model is remote, which is equally
+ * true of Claude and Codex. There was no egress difference to justify the
+ * asymmetry.
+ *
+ * Cursor is deliberately absent. Its Background Agents really do run in remote
+ * cloud sandboxes with repository access — a different risk class — and no
+ * subagent-model setting was found for it.
+ */
 const CLAUDE_FALLBACK_SUBAGENT_MODEL = "sonnet";
+/** Fastest tier of the GPT-5.6 line (Sol > Terra > Luna) for simple work. */
+const CODEX_ECONOMY_SUBAGENT_MODEL = "gpt-5.6-luna";
+/**
+ * Gemini's speed tier for agentic work.
+ *
+ * Confirmed working in practice. An earlier revision changed this to
+ * `gemini-3-flash-preview` because `gemini-3.6-flash` appears in none of the
+ * 116 files of gemini-cli 0.49.0 — but the CLI does not validate Gemini model
+ * names at all. Its only ALLOWED_MODELS list gates Whisper speech binaries.
+ * Model names are passed through to the API, so absence from the bundle says
+ * nothing about resolvability. That reversion was a regression to an older ID.
+ */
+const GEMINI_ECONOMY_SUBAGENT_MODEL = "gemini-3.6-flash";
+
 const CODEX_LOCAL_FIRST_POLICY = {
   features: {
-    multi_agent: false,
+    // Subagents permitted, but bounded: the ceiling below is what keeps this
+    // from becoming fan-out. Previously false, which contradicted the policy.
+    multi_agent: true,
   },
   agents: {
-    max_threads: 2,
-    max_depth: 1,
-    default_subagent_model: "gpt-5.6-terra",
+    max_threads: 1,          // "at most one" — was 2
+    max_depth: 1,            // "no nesting"
+    default_subagent_model: CODEX_ECONOMY_SUBAGENT_MODEL,
     default_subagent_reasoning_effort: "low",
     job_max_runtime_seconds: 900,
   },
@@ -705,7 +743,10 @@ function serializeClaudeStartupBlock(newline: string): string {
     CLAUDE_STARTUP_MANAGED_START,
     "## Prism session startup",
     "On the first user turn of every conversation, including a greeting, your first action must be to call",
-    "`mcp__prism-mcp__session_bootstrap` exactly once with an empty object (`{}`). Emit no preamble. Print the",
+    "`mcp__prism-mcp__session_bootstrap` exactly once, passing the user's verbatim first message as",
+    "`{prompt: \"<first user message>\"}` so prompt-keyword skill routing fires on turn one. The prompt is",
+    "matched on-device and is never transmitted. Pass `{}` only when",
+    "there is no user message. Emit no preamble. Print the",
     "complete tool result verbatim as the entire first-turn startup display, before any optional answer. Do not",
     "summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and line",
     "content. For a greeting-only prompt, stop after the verbatim startup display. If `session_bootstrap` is",
@@ -791,7 +832,10 @@ function serializeGeminiStartupBlock(newline: string): string {
     GEMINI_STARTUP_MANAGED_START,
     "## Prism session startup",
     "On the first user turn of every conversation, including a greeting, your first action must be",
-    "`session_bootstrap({})`, exactly once. Emit no preamble. Print the complete tool result verbatim as the",
+    "`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once — the prompt is what makes",
+  "prompt-keyword skill routing fire on turn one (matched on-device; the prompt is never transmitted).",
+  "Pass `{}` only when there is no user message. Emit no",
+  "preamble. Print the complete tool result verbatim as the",
     "entire first-turn startup display, before any optional answer. Do not summarize, paraphrase, rename headings,",
     "reformat, or omit any returned section. Preserve its order and line content. For a greeting-only prompt, stop",
     "after the verbatim startup display. If `session_bootstrap` is deferred, use native tool discovery/ToolSearch",
@@ -1033,7 +1077,21 @@ export function configureClaudeAgentPolicy(
   }, dryRun, beforeCommit);
 }
 
-/** Disable Gemini's native/remote subagents; Prism local workers remain available over MCP. */
+/**
+ * Pin Gemini's subagents to the economy model rather than banning them.
+ *
+ * Previously this wrote `enableAgents = false`, which is stricter than the
+ * local-first policy Prism publishes — that policy allows "at most one, no
+ * nesting, using the configured economy model", and Claude was configured
+ * exactly that way. The stated reason was "native/remote subagents", which does
+ * not hold: Gemini CLI subagents execute locally, in-process, with optional
+ * local container sandboxes. Only the model is remote, as it is for every host.
+ *
+ * `agents.overrides.<name>.modelConfig.model` is the documented shape. Only
+ * `codebase_investigator` is pinned: it is the built-in whose name is published,
+ * and inventing names for the others would write dead config. Unpinned
+ * subagents inherit the session model, which is the pre-existing behaviour.
+ */
 export function configureGeminiAgentPolicy(
   homeDir = homedir(),
   dryRun = false,
@@ -1045,10 +1103,42 @@ export function configureGeminiAgentPolicy(
     if (currentExperimental !== undefined && !isJsonObject(currentExperimental)) {
       throw new Error('"experimental" must be a JSON object');
     }
+    const currentAgents = config.agents;
+    if (currentAgents !== undefined && !isJsonObject(currentAgents)) {
+      throw new Error('"agents" must be a JSON object');
+    }
     const experimental = (currentExperimental ?? {}) as JsonObject;
-    if (experimental.enableAgents === false) return false;
-    experimental.enableAgents = false;
+    const agents = (currentAgents ?? {}) as JsonObject;
+    const currentOverrides = agents.overrides;
+    if (currentOverrides !== undefined && !isJsonObject(currentOverrides)) {
+      throw new Error('"agents.overrides" must be a JSON object');
+    }
+    const overrides = (currentOverrides ?? {}) as JsonObject;
+    const investigator = (isJsonObject(overrides.codebase_investigator)
+      ? overrides.codebase_investigator
+      : {}) as JsonObject;
+    const modelConfig = (isJsonObject(investigator.modelConfig)
+      ? investigator.modelConfig
+      : {}) as JsonObject;
+
+    // Respect a deliberate opt-out. Prism previously forced enableAgents=false
+    // on every run; flipping that to an unconditional `true` would repeat the
+    // same mistake pointing the other way, and switching something ON that a
+    // user turned OFF is the more intrusive direction. Only enable when the
+    // key is absent — pin the model either way, so a user who keeps subagents
+    // off still gets the economy default if they later turn them on.
+    const userDisabledDeliberately = experimental.enableAgents === false;
+    const alreadyApplied = (userDisabledDeliberately || experimental.enableAgents === true)
+      && modelConfig.model === GEMINI_ECONOMY_SUBAGENT_MODEL;
+    if (alreadyApplied) return false;
+
+    if (!userDisabledDeliberately) experimental.enableAgents = true;
+    modelConfig.model = GEMINI_ECONOMY_SUBAGENT_MODEL;
+    investigator.modelConfig = modelConfig;
+    overrides.codebase_investigator = investigator;
+    agents.overrides = overrides;
     config.experimental = experimental;
+    config.agents = agents;
     return true;
   }, dryRun, beforeCommit);
 }
@@ -1163,7 +1253,12 @@ export function configureCodexAgentPolicy(
     : undefined;
   if (!parsedFeatures
     || !parsedAgents
-    || !isDeepStrictEqual(parsedFeatures.multi_agent, false)
+    // Validate against the declared policy, not a literal. Hardcoding `false`
+    // here meant the guard rejected any change to CODEX_LOCAL_FIRST_POLICY
+    // rather than verifying the write matched it — a guard pinned to a value
+    // instead of to the invariant it exists to protect.
+    || !Object.entries(CODEX_LOCAL_FIRST_POLICY.features)
+      .every(([key, value]) => isDeepStrictEqual(parsedFeatures[key], value))
     || !Object.entries(CODEX_LOCAL_FIRST_POLICY.agents)
       .every(([key, value]) => isDeepStrictEqual(parsedAgents[key], value))) {
     throw new Error("Generated Codex local-first policy failed validation");
@@ -1503,6 +1598,33 @@ function registerCodexTomlHost(
     }
   }
 
+  // A Codex plugin may already register prism-mcp. Writing our own entry would
+  // configure the same server twice under one key, so every Prism tool appears
+  // in duplicate and load order decides which wins. Skip instead, and say why —
+  // an unexplained no-op is worse than the duplicate it prevents.
+  // Build the set of plugins Codex will actually load: present in [plugins]
+  // and not explicitly disabled. Detection must not fire on a stale cache
+  // entry for a plugin that is disabled or gone.
+  const enabledPluginKeys = new Set<string>();
+  const pluginsTable = isJsonObject(config) ? config.plugins : undefined;
+  if (isJsonObject(pluginsTable)) {
+    for (const [key, entry] of Object.entries(pluginsTable)) {
+      if (isJsonObject(entry) && entry.enabled !== false) enabledPluginKeys.add(key);
+    }
+  }
+  const providingPlugin = codexPluginProvidesPrismMcp(dirname(configPath), enabledPluginKeys);
+  if (providingPlugin && !locateCodexManagedBlock(originalText ?? "")) {
+    // "existing" rather than a new status: the server IS already registered,
+    // just by the plugin rather than by us. Nothing to do is the truth.
+    return result(
+      definition,
+      "existing",
+      `the Codex plugin ${providingPlugin} already registers prism-mcp; ` +
+      "not adding a second registration under the same key. Remove the plugin " +
+      "if you would rather prism connect manage this server.",
+    );
+  }
+
   let managedBlock: { start: number; end: number } | undefined;
   try {
     managedBlock = locateCodexManagedBlock(originalText ?? "");
@@ -1601,6 +1723,68 @@ function serializeCodexManagedBlock(entry: JsonObject, existingText: string): st
   const newline = existingText.includes("\r\n") ? "\r\n" : "\n";
   const serialized = stringifyToml({ mcp_servers: { "prism-mcp": entry } }).trimEnd();
   return `${CODEX_MANAGED_START}\n${serialized}\n${CODEX_MANAGED_END}\n`.replaceAll("\n", newline);
+}
+
+
+/**
+ * Is a Codex plugin already providing the prism-mcp server?
+ *
+ * Installing the plugin and running `prism connect` both register a server
+ * under the key `prism-mcp`, so doing both leaves the same server configured
+ * twice — every Prism tool appears in duplicate, and which one wins depends on
+ * load order. Previously this was only documented ("install the plugin OR run
+ * prism connect, not both"), which puts the burden on the user to remember.
+ *
+ * Detection reads the installed plugin's own manifest rather than matching a
+ * plugin NAME, so it keeps working if the plugin is renamed or vendored:
+ *   <codexHome>/plugins/cache/<marketplace>/<plugin>/<version>/.mcp.json
+ *
+ * A cache manifest is necessary but NOT sufficient: a disabled or half-removed
+ * plugin leaves its .mcp.json on disk (verified 2026-08-06 — flipping
+ * `enabled = false` in config.toml does not clear the cache). Counting file
+ * presence alone would make `prism connect` skip its own registration for a
+ * plugin that is not actually providing the server, leaving the user with no
+ * prism-mcp at all. So the plugin@marketplace key must ALSO be enabled in the
+ * caller's parsed config for it to count.
+ */
+export function codexPluginProvidesPrismMcp(
+  codexHome: string,
+  enabledPluginKeys: ReadonlySet<string>,
+): string | null {
+  const cacheRoot = join(codexHome, "plugins", "cache");
+  let marketplaces: string[];
+  try {
+    marketplaces = readdirSync(cacheRoot);
+  } catch {
+    return null; // no plugins installed
+  }
+  for (const marketplace of marketplaces) {
+    let plugins: string[];
+    try { plugins = readdirSync(join(cacheRoot, marketplace)); } catch { continue; }
+    for (const plugin of plugins) {
+      let versions: string[];
+      try { versions = readdirSync(join(cacheRoot, marketplace, plugin)); } catch { continue; }
+      for (const version of versions) {
+        const manifest = join(cacheRoot, marketplace, plugin, version, ".mcp.json");
+        try {
+          const parsed = JSON.parse(readFileSync(manifest, "utf8")) as {
+            mcpServers?: Record<string, unknown>;
+          };
+          const key = `${plugin}@${marketplace}`;
+          if (
+            enabledPluginKeys.has(key) &&
+            parsed?.mcpServers &&
+            Object.prototype.hasOwnProperty.call(parsed.mcpServers, "prism-mcp")
+          ) {
+            return key;
+          }
+        } catch {
+          // absent or unreadable manifest — not a provider
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function validateCodexCandidate(text: string): void {

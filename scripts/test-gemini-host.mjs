@@ -25,6 +25,10 @@
 
 import { spawn } from "child_process";
 import { createInterface } from "readline";
+import { fileURLToPath as _f } from "node:url";
+import { dirname as _d, resolve as _r } from "node:path";
+// Resolved from this file, not a maintainer-local absolute path.
+const SERVER_ENTRY = _r(_d(_f(import.meta.url)), "..", "dist", "server.js");
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
@@ -116,7 +120,7 @@ class PrismMcpClient {
   constructor() {
     this._pending = new Map();
     this._id = 1;
-    this._proc = spawn("node", ["/Users/admin/prism/dist/server.js"], {
+    this._proc = spawn("node", [SERVER_ENTRY], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, NODE_ENV: "test" },
     });

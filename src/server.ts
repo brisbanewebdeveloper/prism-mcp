@@ -771,7 +771,14 @@ export function getAvailableTools(): Tool[] {
 
 export const PRISM_SERVER_INSTRUCTIONS =
   `Prism MCP — The Mind Palace for AI Agents. On the first user turn of every conversation, ` +
-  `including greetings, call session_bootstrap exactly once with {} before any user-facing response. ` +
+  `including greetings, call session_bootstrap exactly once BEFORE any user-facing response, passing the ` +
+  `user's verbatim first message as {prompt: "<first user message>"}. The prompt is matched against ` +
+  `prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used for routing ` +
+  `only and never leaves the machine. Pass {} only when there is no user message. ` +
+  `When the startup display lists "Symptom-triggered skills", those skills matched the first message's ` +
+  `trigger rules — read each before proposing any change. Surfacing a name is not loading it: hosts that ` +
+  `do not auto-load skill files must fetch each body with knowledge_search, passing the skill name ` +
+  `exactly as listed. ` +
   `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
   `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
   `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +

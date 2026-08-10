@@ -21,7 +21,7 @@
  * ======================================================================
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import * as os from "node:os";
@@ -1083,6 +1083,117 @@ describe("ledgerHandlers", () => {
   });
 
   describe("sessionBootstrapHandler", () => {
+    // Pin every bootstrap test to a dead port by default. Without this the
+    // dashboard probe reaches whatever the developer happens to be running
+    // locally, so results differ between a laptop and CI — the exact
+    // environment coupling that made an earlier assertion pass here and fail
+    // in CI. Tests that care about the probe set this explicitly.
+    const savedDashboardPort = process.env.PRISM_DASHBOARD_PORT;
+    beforeEach(() => { process.env.PRISM_DASHBOARD_PORT = "1"; });
+    afterAll(() => {
+      if (savedDashboardPort === undefined) delete process.env.PRISM_DASHBOARD_PORT;
+      else process.env.PRISM_DASHBOARD_PORT = savedDashboardPort;
+    });
+
+    it("greets a first run with actions and the paid CTA, never with absence", async () => {
+      // First run = dashboard never touched: no agent identity, no projects,
+      // no prior bootstrap marker.
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        "skill_manifest:tier": "free",
+        "skill_manifest:names": JSON.stringify(["prism-startup"]),
+      }[key] ?? fallback));
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text).toContain("Welcome to Prism");
+      expect(text).toContain("onboarding_wizard");
+      expect(text).toContain("Dashboard:");
+      // The paid funnel's one guaranteed impression (2026-08-05 first-run
+      // audit: the startup path referenced upgrade_url zero times).
+      expect(text).toContain("https://synalux.ai/pricing");
+      expect(result.structuredContent).toMatchObject({ first_run: true, projects: [] });
+      // The measured 2026-08-05 failure mode: "Welcome back" to a stranger
+      // followed by three "Not loaded" rows — an all-absence payload.
+      expect(text).not.toContain("Welcome back");
+      expect(text).not.toContain("Not loaded");
+    });
+
+    it("advertises the dashboard URL only when something is actually listening", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        "skill_manifest:tier": "free",
+        "skill_manifest:names": JSON.stringify(["prism-startup"]),
+      }[key] ?? fallback));
+      const originalPort = process.env.PRISM_DASHBOARD_PORT;
+
+      // Closed port: the port file persists across boots, so a URL must never
+      // be promised on that evidence alone.
+      process.env.PRISM_DASHBOARD_PORT = "1"; // reserved, never listening
+      try {
+        const dead = (await sessionBootstrapHandler({})).content[0].text as string;
+        expect(dead).toContain("Dashboard:** not running");
+        expect(dead).not.toContain("http://localhost");
+
+        const http = await import("node:http");
+        const serve = async (handler: http.RequestListener) => {
+          const server = http.createServer(handler);
+          const port: number = await new Promise((done) => {
+            server.listen(0, "127.0.0.1", () => done((server.address() as any).port));
+          });
+          return { server, port };
+        };
+
+        // A FOREIGN listener must be rejected. The default port is 3000 — the
+        // most commonly occupied port on a developer machine — so a bare
+        // liveness check would point a first-run user at their own dev server.
+        const foreign = await serve((_req, res) => { res.statusCode = 404; res.end("not prism"); });
+        process.env.PRISM_DASHBOARD_PORT = String(foreign.port);
+        try {
+          const wrong = (await sessionBootstrapHandler({})).content[0].text as string;
+          expect(wrong).toContain("Dashboard:** not running");
+          expect(wrong).not.toContain(`http://localhost:${foreign.port}`);
+        } finally {
+          await new Promise((done) => foreign.server.close(() => done(null)));
+        }
+
+        // A real dashboard answers /api/health with 200 and IS advertised.
+        const real = await serve((req, res) => {
+          if (req.url === "/api/health") { res.statusCode = 200; res.end("{}"); return; }
+          res.statusCode = 404; res.end();
+        });
+        process.env.PRISM_DASHBOARD_PORT = String(real.port);
+        try {
+          const live = (await sessionBootstrapHandler({})).content[0].text as string;
+          expect(live).toContain(`http://localhost:${real.port}`);
+        } finally {
+          await new Promise((done) => real.server.close(() => done(null)));
+        }
+      } finally {
+        if (originalPort === undefined) delete process.env.PRISM_DASHBOARD_PORT;
+        else process.env.PRISM_DASHBOARD_PORT = originalPort;
+      }
+    });
+
+    it("keeps the returning-user shape when an identity exists without projects, adding the dashboard URL", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        agent_name: "Dmitri",
+        "skill_manifest:tier": "enterprise",
+        "skill_manifest:names": JSON.stringify(["prism-startup"]),
+      }[key] ?? fallback));
+
+      const result = await sessionBootstrapHandler({});
+      const text = result.content[0].text as string;
+
+      expect(text).toContain("Welcome back, Dmitri");
+      expect(text).toContain("Not loaded");
+      // Dashboard is surfaced either as a live URL or an honest "not running";
+      // the point is that it reaches stdout at all (it was stderr-only).
+      expect(text).toContain("Dashboard:");
+      expect(result.structuredContent).not.toMatchObject({ first_run: true });
+      // Paid tiers never see the upgrade line.
+      expect(text).not.toContain("https://synalux.ai/pricing");
+    });
+
     it.each([
       ["quick", false, false],
       ["standard", true, true],
@@ -1384,9 +1495,13 @@ describe("ledgerHandlers", () => {
       const result = await sessionBootstrapHandler({});
       const text = result.content[0].text as string;
 
-      expect(text).toContain("Welcome back, developer");
-      expect(text).toContain("Agent Identity:** global — developer");
+      // Truthful now means honest about being NEW: no identity + no projects
+      // is a first run, and "Welcome back, developer" to a stranger was the
+      // 2026-08-05 first-run audit's headline defect.
+      expect(text).toContain("Welcome to Prism");
+      expect(text).not.toContain("Welcome back");
       expect(text).not.toContain("None — None");
+      expect(result.structuredContent).toMatchObject({ first_run: true });
     });
 
     it.each(BOOTSTRAP_TIER_DEPTH_CASES)(
@@ -1602,7 +1717,13 @@ describe("ledgerHandlers", () => {
 
       const text = (await sessionBootstrapHandler({})).content[0].text as string;
       expect(text).toContain("Entitled skills (materialization incomplete)");
-      expect(text).toContain("1 local conflict preserved");
+      // 2026-08-03: conflicts must be named and actionable, not a benign
+      // count. "1 local conflict preserved" let ask-first sit 4 months stale
+      // while every sync silently skipped it.
+      expect(text).toContain("1 conflict — see warning");
+      expect(text).toContain("SKILLS NOT UPDATING");
+      expect(text).toContain("dev-engineering-super-skill");
+      expect(text).toContain("rerun `prism connect`");
       expect(text).not.toContain("Super-skills provisioned");
       expect(text).not.toContain("available");
     });

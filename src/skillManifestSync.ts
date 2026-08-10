@@ -8,6 +8,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   applyManagedSkillManifest, getSetting, refreshConfigStorageCache,
 } from "./storage/configStorage.js";
+import {
+  materializeAgentDefinitions, renderClaudeAgent, renderCodexAgent, renderGeminiAgent,
+  resolveClaudeAgentsDir, resolveCodexAgentsDir, resolveGeminiAgentsDir, validateAgentSection,
+  type AgentSection,
+} from "./agentManifestSync.js";
 import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "./tools/skillRouting.js";
 import { getSynaluxJwt, invalidateSynaluxJwt } from "./utils/synaluxJwt.js";
 
@@ -57,6 +62,12 @@ export interface SkillManifest {
   tier: "free" | "standard" | "advanced" | "enterprise";
   routing_version: number;
   skills: ManifestSkill[];
+  /**
+   * Optional agent-definition section (portal `agents` + `agents_generation`
+   * fields). Absent on servers that predate agents. Deliberately OUTSIDE the
+   * skills `generation` hash — see agentManifestSync.ts for the contract.
+   */
+  agentSection?: AgentSection | null;
 }
 
 export interface SkillSyncResult {
@@ -108,6 +119,16 @@ export interface SkillSyncOptions {
    * ~/.agents/skills root, so tests and callers with custom roots stay isolated.
    */
   cursorSkillsDir?: string | false;
+  /**
+   * Claude Code's agent-definition root (~/.claude/agents). `false` disables
+   * agent materialization. When omitted, auto-detected under the same
+   * production-default guard as the skill mirrors.
+   */
+  claudeCodeAgentsDir?: string | false;
+  /** Codex agent root (~/.codex/agents, TOML renders). Same semantics. */
+  codexAgentsDir?: string | false;
+  /** Gemini CLI agent root (~/.gemini/agents, reduced markdown). Same semantics. */
+  geminiAgentsDir?: string | false;
   fetchImpl?: typeof fetch;
   getJwt?: () => Promise<string | null>;
   invalidateJwt?: () => void;
@@ -461,9 +482,36 @@ async function enforceNativeEntitlements(incomingNames: Iterable<string>, agents
   }
 }
 
+/**
+ * The cross-host canonical skills root — single source of truth.
+ *
+ * Do NOT re-derive this path anywhere else. It is overridable per caller
+ * (`agentsSkillsDir`) and per home (`homeDir`), so a literal copied into
+ * another module is wrong on any machine that overrides either.
+ */
+export function resolveCanonicalSkillsDir(options: SkillSyncOptions = {}): string {
+  return options.agentsSkillsDir ?? join(options.homeDir ?? homedir(), ".agents", "skills");
+}
+
+/**
+ * Read a skill's body from the canonical root. Returns null when absent or
+ * unreadable — callers must degrade, never fail startup over it.
+ */
+export async function readNativeSkillBody(
+  name: string,
+  options: SkillSyncOptions = {},
+): Promise<string | null> {
+  if (!SAFE_NAME.test(name)) return null; // no traversal via name
+  try {
+    return await readFile(join(resolveCanonicalSkillsDir(options), name, "SKILL.md"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 async function resolveNativeSkillsDirs(options: SkillSyncOptions): Promise<string[]> {
   const userHome = options.homeDir ?? homedir();
-  const canonical = options.agentsSkillsDir ?? join(userHome, ".agents", "skills");
+  const canonical = resolveCanonicalSkillsDir(options);
   let claudeCode: string | null = null;
   let cursor: string | null = null;
 
@@ -789,6 +837,10 @@ async function fetchManifest(options: SkillSyncOptions): Promise<SkillManifest> 
   if (!headers.Authorization && manifest.tier !== "free") {
     throw new Error("unauthenticated skill manifest must be free tier");
   }
+  // Agents ride the same response under separate fields. A malformed section
+  // is contract drift and must fail the fetch loudly — treating it as "no
+  // agents" would convert server corruption into a silent prune signal.
+  manifest.agentSection = validateAgentSection(payload);
   return manifest;
 }
 
@@ -859,6 +911,37 @@ async function acquireSyncLock(agentsSkillsDir: string, waitMs = LOCK_WAIT_MS): 
   };
 }
 
+/**
+ * Converge every detected host's agent root onto the portal-validated agent
+ * section. Prefixed outcomes per host; a failure on one host degrades to a
+ * conflict rather than aborting the others or the skill result.
+ */
+async function materializeAgentsAcrossHosts(
+  section: AgentSection,
+  options: SkillSyncOptions,
+): Promise<Pick<SkillSyncResult, "installed" | "updated" | "pruned" | "conflicts">> {
+  const result = { installed: [] as string[], updated: [] as string[], pruned: [] as string[], conflicts: [] as string[] };
+  const hostTargets = [
+    { prefix: "agent", dir: await resolveClaudeAgentsDir(options), render: renderClaudeAgent },
+    { prefix: "agent-codex", dir: await resolveCodexAgentsDir(options), render: renderCodexAgent },
+    { prefix: "agent-gemini", dir: await resolveGeminiAgentsDir(options), render: renderGeminiAgent },
+  ];
+  for (const host of hostTargets) {
+    if (!host.dir) continue;
+    try {
+      const outcome = await materializeAgentDefinitions(section, host.dir, host.render);
+      result.installed.push(...outcome.installed.map((name) => `${host.prefix}:${name}`));
+      result.updated.push(...outcome.updated.map((name) => `${host.prefix}:${name}`));
+      result.pruned.push(...outcome.pruned.map((name) => `${host.prefix}:${name}`));
+      result.conflicts.push(...outcome.conflicts.map((name) => `${host.prefix}:${name}`));
+    } catch (error) {
+      console.error(`[Prism Skill Sync] ${host.prefix} materialization failed: ${error instanceof Error ? error.message : String(error)}`);
+      result.conflicts.push(`${host.prefix}:sync-failed`);
+    }
+  }
+  return result;
+}
+
 export async function synchronizeSkillManifest(options: SkillSyncOptions = {}): Promise<SkillSyncResult> {
   const empty = { installed: [], updated: [], pruned: [], conflicts: [] };
   let nativeSkillsDirs: string[] = [];
@@ -898,6 +981,17 @@ export async function synchronizeSkillManifest(options: SkillSyncOptions = {}): 
       nativeResults.push(await materializeNative(manifest, nativeSkillsDir, options));
     }
     const native = mergeNativeResults(nativeResults);
+    // Agent definitions are additive: they piggyback on the manifest with
+    // their own generation, and each host's outcome reports under its own
+    // prefix. A failure on one host never rolls back skill state or the
+    // other hosts — it surfaces as a conflict instead.
+    if (manifest.agentSection) {
+      const outcome = await materializeAgentsAcrossHosts(manifest.agentSection, options);
+      native.installed.push(...outcome.installed);
+      native.updated.push(...outcome.updated);
+      native.pruned.push(...outcome.pruned);
+      native.conflicts.push(...outcome.conflicts);
+    }
     const status = native.installed.length || native.updated.length || native.pruned.length ? "applied" : "unchanged";
     return {
       status,
@@ -919,6 +1013,18 @@ export async function synchronizeSkillManifest(options: SkillSyncOptions = {}): 
         await enforceNativeEntitlements(entitledNames, nativeSkillsDir);
       } catch (enforcement) {
         enforcementErrors.push(`${nativeSkillsDir}: ${enforcement instanceof Error ? enforcement.message : String(enforcement)}`);
+      }
+      // Agent definitions need the SAME downgrade guarantee as skills. Without
+      // this, a tier downgrade whose DB apply throws prunes paid skills but
+      // leaves paid agent definitions in every host root until some later
+      // successful sync — exactly the local-fault-becomes-entitlement-bypass
+      // the skill path above exists to prevent.
+      if (manifest.agentSection) {
+        try {
+          await materializeAgentsAcrossHosts(manifest.agentSection, options);
+        } catch (enforcement) {
+          enforcementErrors.push(`agents: ${enforcement instanceof Error ? enforcement.message : String(enforcement)}`);
+        }
       }
       enforcementError = enforcementErrors.length > 0
         ? `; entitlement cleanup failed: ${enforcementErrors.join(", ")}`
