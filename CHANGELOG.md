@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.9.1] - 2026-08-11 — Queueing, Not Failing
+
+### Fixed
+- **Config DB writes no longer lose races on multi-window machines.** libsql
+  defaults to `busy_timeout=0` (a writer meeting any lock fails instantly) and
+  rollback-journal mode (every reader blocks the writer). With several host
+  windows sharing the file, a skill-manifest apply could starve indefinitely —
+  measured at 10 consecutive losses. Connections now set `busy_timeout=5000`
+  and `journal_mode=WAL` at creation; WAL is persistent and upgrades existing
+  databases the first time a post-fix server starts with the file unlocked.
+  If a stale pre-fix process still holds a long-lived lock, restart your host
+  windows once.
+
 ## [20.9.0] - 2026-08-11 — Your Skills, Everywhere You Sign In
 
 ### Added
