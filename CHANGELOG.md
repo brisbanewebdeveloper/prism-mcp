@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.9.0] - 2026-08-11 — Your Skills, Everywhere You Sign In
+
+### Added
+- **`skill_save` — save a skill at the scope you mean.** `local` keeps it a
+  plain file on this machine (works signed out; the local-first path makes
+  zero network calls). `user` attaches it to your signed-in account so every
+  machine you sign into receives it via the managed sync. `team` shares it
+  with a workspace — admin-writable, optionally targeted to specific members.
+  An explicit scope always wins; signed-in saves default to `user` and the
+  result says so; `team` is never a default.
+- **`skill_manage` — list, delete, release, restore.** `release` deactivates a
+  platform skill you never use, per user or per team, freeing host
+  skill-catalog budget; `restore` brings it back losslessly. `delete` removes
+  a scoped skill everywhere — after archiving its final content to
+  `~/.prism-mcp/skill-archive/`, because the stored copy IS the content.
+  The protected behavioral floor is not releasable: deployed clients validate
+  it fail-closed, so honoring such a request would stop skill sync entirely.
+
+### Fixed
+- A sync already in flight when a save lands cannot contain it; the save now
+  verifies its skill actually arrived and re-runs the sync once if not.
+
+### Compatibility
+- Existing clients receive account/team skills with no upgrade. The
+  compatibility contract was proven against the released validator: scoped
+  skills are paid-tier entries carrying `minimum_plan`, and free-tier
+  manifests remain exactly the public startup package — the validator's own
+  rules, pinned by tests on both sides.
+
 ## [20.8.2] - 2026-08-11 — The Sync That Reported Healthy
 
 ### Fixed

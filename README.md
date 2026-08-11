@@ -116,6 +116,18 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.9.0
+
+- **Your skills follow your account.** `skill_save` stores a skill at the
+  scope you choose: this machine only (`local`, works offline and signed out),
+  your account (`user` — every machine you sign into receives it), or a
+  workspace (`team` — shared with members, admin-managed, optionally targeted
+  to specific people).
+- **Trim the catalog you don't use.** `skill_manage` can release platform
+  skills you never touch — freeing host skill-catalog budget — and restore
+  them any time, losslessly. Deleting a scoped skill archives its final
+  content locally first, so nothing is ever silently unrecoverable.
+
 ## What's New in v20.8.2
 
 - **Skill delivery now admits failure instead of hiding it.** A filesystem
