@@ -116,7 +116,7 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
-## What's New in v20.9.0
+## What's New in v20.9.0 – v20.9.3
 
 - **Your skills follow your account.** `skill_save` stores a skill at the
   scope you choose: this machine only (`local`, works offline and signed out),
@@ -127,6 +127,19 @@ or by re-enabling after each run.
   skills you never touch — freeing host skill-catalog budget — and restore
   them any time, losslessly. Deleting a scoped skill archives its final
   content locally first, so nothing is ever silently unrecoverable.
+
+- **Delivery that queues instead of failing.** Concurrent sessions no longer
+  starve skill sync on the local config store (WAL + busy-timeout) — a failure
+  that previously reported only "partial" where nobody could see it.
+- **Withheld rules still bind.** When the context budget can't inline a
+  skill's text, the manifest of withheld names now states that those skills
+  still govern the work and names every way to load them before completion
+  claims.
+- **The budget the floor never spent.** A long-standing accounting bug meant
+  no unprotected skill ever inlined at any normal context level — the
+  always-inlined protected floor was debiting the budget meant for everything
+  else. Task-matched skills (like the completion-evidence checklist) now
+  actually arrive.
 
 ## What's New in v20.8.2
 
