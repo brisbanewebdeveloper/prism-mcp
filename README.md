@@ -116,6 +116,19 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.8.2
+
+- **Skill delivery now admits failure instead of hiding it.** A filesystem
+  permission edge case (a umask stripping the owner-execute bit) could leave
+  skill sync writing nothing while reporting itself current — measured at nine
+  days on a real machine. Broken managed directories are repaired in place,
+  every directory is created umask-proof, and the repair path refuses symlinks
+  via an `O_NOFOLLOW` descriptor.
+- **A stale install tells you at startup.** Prism now tracks the generation
+  that actually reached disk separately from the one the database accepted; if
+  they diverge, the startup banner says so in a warning placed where display
+  truncation cannot cut it. A successful sync clears it automatically.
+
 ## What's New in v20.7 – v20.8.0
 
 - **First run proves the memory instead of describing it** — `session_bootstrap`

@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.8.2] - 2026-08-11 — The Sync That Reported Healthy
+
+### Fixed
+- **Skill delivery could die silently and report itself current.** A umask
+  carrying the owner-execute bit turned the transaction directory's
+  `mkdir(..., 0o700)` into `drw-------` — readable, writable, impossible to
+  enter. Every staging `mkdtemp` then failed, and because the config DB commits
+  before files are written, the client recorded each new generation while no
+  file ever reached disk. Measured on a real machine: **nine days** of stale
+  skill roots behind a green status. Managed directories that exist but cannot
+  be entered are now repaired to exactly `0o700` — never widened — and every
+  creation site builds level-by-level so a persistently hostile umask cannot
+  reproduce the state one directory deeper.
+- **The repair cannot be redirected.** Permission restoration goes through an
+  `O_NOFOLLOW` descriptor, and the unreadable-directory fallback refuses
+  symlinks — proven against a live symlink-to-unreadable-file exploit during
+  review, then pinned as tests.
+- **Divergence is now visible.** The client records which generation actually
+  materialized to disk, separately from what the DB accepted. When they differ,
+  the next startup says so — a ⚠️ line rendered directly under the *Prism
+  System Ready* header, where display truncation cannot cut it (the first
+  placement put it last, exactly where capped depths truncate first). A
+  successful sync heals the divergence and silences the line; installs
+  predating the marker never see a false alarm.
+- **nanoid advisory cleared** and local CI now runs the two steps whose absence
+  let earlier failures through (Linux `npm ci` parity via Docker, raw-inference
+  chokepoint guard).
+
+### Changed
+- README documents `session_export_memory` and scopes the model-accuracy table
+  to the internal routing suite it actually measures.
+
 ## [20.8.1] - 2026-08-07 — The Dashboard Was Never Loading
 
 ### Fixed
