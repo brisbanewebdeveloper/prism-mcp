@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.9.2] - 2026-08-11 — Withheld Rules Still Bind
+
+### Fixed
+- **The skills-not-inlined manifest now binds instead of informing.** When the
+  context budget withholds a skill's text, the list of withheld names read as
+  optional extra material — and an agent claimed UI fixes it never rendered
+  while the completion-evidence skill sat name-only in that very list. The
+  manifest now states that the listed skills are rules the agent is bound by,
+  spells out the consequence (load the governing skill before any completion
+  claim, push, or PR), and names every mechanism for doing so. Paired with a
+  server-side routing change that inlines the verification skills outright for
+  UI-defect and completion-claim prompts.
+
 ## [20.9.1] - 2026-08-11 — Queueing, Not Failing
 
 ### Fixed
