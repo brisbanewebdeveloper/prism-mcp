@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [20.9.3] - 2026-08-11 — The Budget the Floor Never Spent
+
+### Fixed
+- **Unprotected skills can actually inline now.** The skill-injection budget
+  compared against the whole assembled block — which the always-inlined
+  protected floor had already filled — so with a floor larger than every
+  tranche, no unprotected skill ever inlined at any normal context level, for
+  anyone, since budgeting shipped. Prompt-matched skills now spend a budget
+  the floor never touches, matching the documented ADDITIVE contract. Found
+  tracing why a task-matched verification skill stayed name-only while an
+  agent shipped unverified UI claims; an incident-shaped regression test now
+  pins the fix, and reverting the accounting fails exactly that test.
+
 ## [20.9.2] - 2026-08-11 — Withheld Rules Still Bind
 
 ### Fixed
