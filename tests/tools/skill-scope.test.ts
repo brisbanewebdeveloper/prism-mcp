@@ -122,11 +122,52 @@ describe("skill_save — signed in", () => {
     expect(result.content[0].text).toContain("delivered to this machine now");
   });
 
+  it("refuses a prompt_trigger that would never compile, naming the consequence", async () => {
+    // Save time is the only moment the author is present to fix it. The
+    // collector would otherwise skip the pattern on device and the skill would
+    // sit installed and silent — the very defect prompt_triggers fixes.
+    const withEvilTrigger = `---\nname: my-notes\ndescription: d\nprompt_triggers:\n  - "(a+)+$"\n---\n# my-notes`;
+    const result = await skillSaveHandler({ name: "my-notes", content: withEvilTrigger });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/prompt_triggers rejected/);
+    expect(result.content[0].text).toMatch(/never activated/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts a well-formed prompt_trigger", async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ status: "ok", version: 1 }), { status: 200 }));
+    const good = `---\nname: my-notes\ndescription: d\nprompt_triggers:\n  - "\\bquarterly close\\b"\n---\n# my-notes`;
+    const result = await skillSaveHandler({ name: "my-notes", content: good, scope: "local" });
+    expect(result.isError).toBeFalsy();
+  });
+
   it("client-side validation refuses before any network: oversize, bad name, missing frontmatter", async () => {
     expect((await skillSaveHandler({ name: "my-notes", content: body("my-notes") + "x".repeat(26_000) })).isError).toBe(true);
     expect((await skillSaveHandler({ name: "Bad Name", content: body("Bad Name") })).isError).toBe(true);
     expect((await skillSaveHandler({ name: "my-notes", content: "# no frontmatter" })).isError).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("host delivery — structuredContent must never be used", () => {
+  // Same 2026-08-11 defect as session_bootstrap: a result carrying both text
+  // and structuredContent lets a host surface only the JSON, which silently
+  // discarded every explanation these tools produce — the scope classification,
+  // the floor-guard refusal, the how-to-share hint. Data now rides in the text.
+  it("skill_manage list returns no structuredContent and serializes the data into the text", async () => {
+    mocks.getSynaluxJwt.mockResolvedValue("jwt");
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ status: "ok", user_skills: [{ name: "my-notes", version: 1 }], team_skills: [], memberships: [] }), { status: 200 }));
+    const result = await skillManageHandler({ action: "list" });
+    expect(result).not.toHaveProperty("structuredContent");
+    expect(result.content[0].text).toContain("my-notes");
+  });
+
+  it("skill_save returns no structuredContent, so its guidance survives", async () => {
+    mocks.getSynaluxJwt.mockResolvedValue("jwt");
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ status: "ok", version: 1 }), { status: 200 }));
+    const result = await skillSaveHandler({ name: "my-notes", content: body("my-notes") });
+    expect(result).not.toHaveProperty("structuredContent");
+    expect(result.content[0].text).toContain("YOUR account skill");
   });
 });
 
