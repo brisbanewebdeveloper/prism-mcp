@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.10.0 — 2026-08-12
+
+- **Fixed: hosts that prefer `structuredContent` received no startup context.**
+  `session_bootstrap` returned both a text block and `structuredContent`; a host
+  may surface only the latter, and one popular host does — since 2026-07-22 its
+  sessions got 129 bytes of JSON instead of the startup display, memory context,
+  and skill routing. Bootstrap (and `skill_save`/`skill_manage`) now carry all
+  data in the text; session facts ride a trailing `<prism_session />` line.
+- **New: scoped skills route themselves.** Account/team/local skills may declare
+  `prompt_triggers` (up to 5 regexes) in their own frontmatter. Matching runs
+  on-device against the delivered copy, so private trigger words never enter the
+  public routing table and the prompt never leaves the machine. Patterns that
+  could backtrack catastrophically are refused at save time, server-side and in
+  the client.
+- Local-scope skills (written to the host skill roots) are scanned for triggers
+  too — previously only delivered skills routed.
+
 ## [20.9.3] - 2026-08-11 — The Budget the Floor Never Spent
 
 ### Fixed
