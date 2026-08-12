@@ -245,7 +245,15 @@ export async function skillSaveHandler(args: Record<string, unknown>): Promise<T
   const where = effectiveScope === "user"
     ? `saved as YOUR account skill (version ${String(body.version)}) — say "make it a team skill" to share it with a workspace`
     : `saved as a TEAM skill for workspace ${String(workspaceId)} (version ${String(body.version)})${Array.isArray(assignTo) && assignTo.length > 0 ? `, targeted to ${assignTo.length} member(s)` : ", delivered to all members"}`;
-  return text(`${where}. Delivery: ${delivery}.`, { scope: effectiveScope, name: skillName, version: body.version });
+  // A skill without triggers is discoverable but never auto-loads — on every
+  // machine it reaches, it behaves exactly like the delivered-but-inert defect
+  // prompt_triggers was built to end. Every pre-trigger scoped skill shipped
+  // this way and each needed a manual backfill; say it at save time, the one
+  // moment the author is present.
+  const routingNote = Object.keys(extractSkillTriggers(skillName, skillContent).triggers).length === 0
+    ? " NOTE: no prompt_triggers declared — this skill appears in host catalogs but will NOT auto-load on matching prompts. Add a prompt_triggers list to its frontmatter to route it."
+    : "";
+  return text(`${where}. Delivery: ${delivery}.${routingNote}`, { scope: effectiveScope, name: skillName, version: body.version });
 }
 
 export const SKILL_MANAGE_TOOL = {

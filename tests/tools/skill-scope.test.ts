@@ -122,6 +122,22 @@ describe("skill_save — signed in", () => {
     expect(result.content[0].text).toContain("delivered to this machine now");
   });
 
+  it("warns at save time when a scoped skill declares NO triggers", async () => {
+    // Every pre-trigger scoped skill shipped delivered-but-inert and needed a
+    // manual backfill. The save result is the one moment the author is present.
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ status: "ok", version: 1 }), { status: 200 }));
+    const result = await skillSaveHandler({ name: "my-notes", content: body("my-notes") });
+    expect(result.content[0].text).toMatch(/no prompt_triggers declared/);
+    expect(result.content[0].text).toMatch(/NOT auto-load/);
+  });
+
+  it("does NOT warn when triggers are declared", async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ status: "ok", version: 1 }), { status: 200 }));
+    const withTrig = `---\nname: my-notes\ndescription: d\nprompt_triggers:\n  - "\\bledger\\b"\n---\n# my-notes`;
+    const result = await skillSaveHandler({ name: "my-notes", content: withTrig });
+    expect(result.content[0].text).not.toMatch(/no prompt_triggers/);
+  });
+
   it("refuses a prompt_trigger that would never compile, naming the consequence", async () => {
     // Save time is the only moment the author is present to fix it. The
     // collector would otherwise skip the pattern on device and the skill would
