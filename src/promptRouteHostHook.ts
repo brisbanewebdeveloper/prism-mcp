@@ -29,13 +29,27 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /** Bump to force the on-disk script to be rewritten on the next ensure. */
-export const PROMPT_ROUTE_HOOK_VERSION = "2";
+export const PROMPT_ROUTE_HOOK_VERSION = "3";
 
 const MARKER_FILE = ".prism-managed.json";
 const SCRIPT_FILE = "on_prompt.py";
 const HOOK_DIR = "prism-route";
 /** Substring that identifies our entry inside a host hooks config. */
 const COMMAND_SIGNATURE = `${HOOK_DIR}/${SCRIPT_FILE}`;
+/**
+ * The command registered in the host config carries the version as an
+ * argument (the script ignores argv — it reads stdin). This is a SECURITY
+ * property, found by an external probe of Codex 0.146: Codex's hook-trust
+ * hash covers the CONFIGURED DEFINITION, not the file the command points at.
+ * With a stable command and a version-refreshed script, every prism upgrade
+ * would silently swap the executable content behind an already-trusted hash —
+ * exactly what the trust gate exists to prevent. Versioning the command
+ * changes the definition on every script change, forcing Codex to re-prompt.
+ * Cost: one approval per release, which is Codex's consent model working.
+ */
+function hookCommand(scriptPath: string): string {
+  return `python3 ${scriptPath} --v${PROMPT_ROUTE_HOOK_VERSION}`;
+}
 
 /**
  * The hook script. Python because both hosts' existing hook fleets are
@@ -112,6 +126,9 @@ def main():
     if len(prompt) < 6 or prompt.startswith("/"):
         emit()
         return
+    # A pasted log can be megabytes; triggers live in the first human-sized
+    # stretch, and the CLI caps identically on its side.
+    prompt = prompt[:100_000]
 
     session = str(
         payload.get("session_id")
@@ -152,9 +169,19 @@ def main():
         emit()
         return
 
-    try:
-        data = json.loads(result.stdout.strip() or "{}")
-    except Exception:
+    # Parse the LAST line that is JSON: wrappers hooked into node via
+    # NODE_OPTIONS (dotenv banners and the like) print to stdout BEFORE the
+    # CLI's own output, and one polluted line must not kill routing.
+    data = None
+    for line in reversed(result.stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+                break
+            except Exception:
+                continue
+    if not isinstance(data, dict):
         emit()
         return
     names = [n for n in (data.get("names") or []) if isinstance(n, str)]
@@ -184,8 +211,12 @@ if __name__ == "__main__":
 
 export interface EnsureHookHostResult {
   host: "claude" | "codex";
-  script: "installed" | "refreshed" | "unchanged";
-  config: "registered" | "unchanged";
+  script: "installed" | "refreshed" | "unchanged" | "disabled";
+  config: "registered" | "updated" | "unchanged";
+  /** Codex only: its trust gate silently skips unapproved hooks. We can
+   *  DETECT approval only coarsely (a [hooks.state] section naming our hook);
+   *  "pending-or-unknown" means the operator must run /hooks and trust it. */
+  codexApproval?: "detected" | "pending-or-unknown" | "state-present-unverifiable";
   scriptPath: string;
   configPath: string;
 }
@@ -240,6 +271,27 @@ function hostSpecs(homeDir: string, env: NodeJS.ProcessEnv): HostSpec[] {
   ];
 }
 
+/**
+ * Coarse Codex approval detection. Codex persists hook approvals as a
+ * [hooks.state] table in config.toml keyed by definition hash; the hashing
+ * algorithm is not public, so the only honest signals are "a state section
+ * exists and mentions our hook path" (detected) or anything else
+ * (pending-or-unknown). Never treat unknown as approved.
+ */
+function detectCodexApproval(codexRoot: string): "detected" | "pending-or-unknown" | "state-present-unverifiable" {
+  try {
+    const toml = readFileSync(join(codexRoot, "config.toml"), "utf8");
+    const hasState = /\[hooks\.state/.test(toml);
+    if (hasState && toml.includes(COMMAND_SIGNATURE)) return "detected";
+    // Approvals are keyed by definition hash (algorithm not public). Once ANY
+    // trust state exists we cannot distinguish ours from here — and claiming
+    // AWAITING TRUST after the operator pressed t would be a false alarm
+    // against their own action. Distinct state, distinct wording.
+    if (hasState) return "state-present-unverifiable";
+  } catch { /* unreadable = no evidence */ }
+  return "pending-or-unknown";
+}
+
 function writeAtomically(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.prism-tmp-${process.pid}`;
@@ -247,12 +299,17 @@ function writeAtomically(path: string, content: string): void {
   renameSync(tmp, path);
 }
 
-function ensureScript(hookDir: string): "installed" | "refreshed" | "unchanged" {
+function ensureScript(hookDir: string): "installed" | "refreshed" | "unchanged" | "disabled" {
   const markerPath = join(hookDir, MARKER_FILE);
   const scriptPath = join(hookDir, SCRIPT_FILE);
   let existingVersion: string | undefined;
   try {
-    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { version?: string };
+    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { version?: string; disabled?: boolean };
+    // The durable off switch. Without it, an operator who deletes the entry
+    // or edits the script gets silently re-enabled by the next upgrade —
+    // self-healing becomes self-reinfecting. {"disabled": true} in the
+    // marker survives every ensure path, including version bumps.
+    if (marker.disabled === true) return "disabled";
     existingVersion = marker.version;
   } catch {
     /* no marker — install */
@@ -270,7 +327,20 @@ function ensureScript(hookDir: string): "installed" | "refreshed" | "unchanged" 
   return scriptExists ? "refreshed" : "installed";
 }
 
-function ensureRegistered(configPath: string, scriptPath: string): "registered" | "unchanged" {
+function ensureRegistered(configPath: string, scriptPath: string, host: "claude" | "codex"): "registered" | "updated" | "unchanged" {
+  // Codex truncates hook additionalContext at ~2,500 tokens by default —
+  // a head-and-tail preview of our payload, which defeats the injection.
+  // additionalContextLimit: 0 passes the full context through — per the Codex
+  // hooks reference (learn.chatgpt.com/docs/hooks, verified 2026-08-13):
+  // "Setting to 0 passes full context directly to the model". NOT an in-repo
+  // guarantee: if Codex ever re-reads 0 as a literal zero cap, injection dies
+  // silently there — re-verify with a live codex probe after any Codex
+  // upgrade. The payload is already bounded by HOOK_INLINE_SAFE_CHARS on the
+  // emitting side, so the pass-through is not unbounded. Claude Code has no
+  // such field (its 10k-char cap is not configurable) — never write unknown
+  // keys into settings.json (a manually-added stray field there is left
+  // alone, not stripped).
+  const wantsLimit = host === "codex";
   let config: Record<string, unknown> = {};
   let originalText: string | undefined;
   try {
@@ -288,29 +358,39 @@ function ensureRegistered(configPath: string, scriptPath: string): "registered" 
     : {}) as Record<string, unknown>;
   const entries = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : [];
 
-  const present = entries.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
+  const wanted = hookCommand(scriptPath);
+  let stale = false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
     const inner = (entry as { hooks?: unknown }).hooks;
-    if (!Array.isArray(inner)) return false;
-    return inner.some((h) => {
-      if (!h || typeof h !== "object") return false;
+    if (!Array.isArray(inner)) continue;
+    for (const h of inner) {
+      if (!h || typeof h !== "object") continue;
       // Normalize separators: on Windows join() registers a backslash path,
       // and a forward-slash signature would never match — so every ensure
       // would re-register a duplicate entry.
-      const command = String((h as { command?: unknown }).command ?? "").replace(/\\/g, "/");
-      return command.includes(COMMAND_SIGNATURE);
+      const command = String((h as { command?: unknown }).command ?? "");
+      if (!command.replace(/\\/g, "/").includes(COMMAND_SIGNATURE)) continue;
+      const limitCurrent = !wantsLimit || (h as { additionalContextLimit?: unknown }).additionalContextLimit === 0;
+      if (command === wanted && limitCurrent) return "unchanged";
+      // Same hook, older definition: UPDATE it in place. This is what makes a
+      // refresh visible to Codex's definition-hash — and on Claude it is a
+      // harmless argv change.
+      (h as { command: string }).command = wanted;
+      if (wantsLimit) (h as { additionalContextLimit?: number }).additionalContextLimit = 0;
+      stale = true;
+    }
+  }
+  if (!stale) {
+    entries.push({
+      matcher: "*",
+      hooks: [{ type: "command", command: wanted, timeout: 15, ...(wantsLimit ? { additionalContextLimit: 0 } : {}) }],
     });
-  });
-  if (present) return "unchanged";
-
-  entries.push({
-    matcher: "*",
-    hooks: [{ type: "command", command: `python3 ${scriptPath}`, timeout: 15 }],
-  });
+  }
   hooks.UserPromptSubmit = entries;
   config.hooks = hooks;
   writeAtomically(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  return "registered";
+  return stale ? "updated" : "registered";
 }
 
 /**
@@ -331,8 +411,16 @@ export function ensurePromptRouteHook(options: EnsureHookOptions = {}): EnsureHo
     try {
       const hookDir = join(spec.root, "hooks", HOOK_DIR);
       const script = ensureScript(hookDir);
-      const config = ensureRegistered(spec.configPath, join(hookDir, SCRIPT_FILE));
-      results.push({ host: spec.host, script, config, scriptPath: join(hookDir, SCRIPT_FILE), configPath: spec.configPath });
+      if (script === "disabled") continue; // operator opt-out — do not re-register either
+      const config = ensureRegistered(spec.configPath, join(hookDir, SCRIPT_FILE), spec.host);
+      const result: EnsureHookHostResult = { host: spec.host, script, config, scriptPath: join(hookDir, SCRIPT_FILE), configPath: spec.configPath };
+      if (spec.host === "codex") {
+        // Never report a green "registered" as if it were active: Codex
+        // SILENTLY SKIPS untrusted hooks, and "installed but inert" is the
+        // exact failure class this feature exists to end.
+        result.codexApproval = detectCodexApproval(spec.root);
+      }
+      results.push(result);
     } catch {
       // One host failing (permissions, odd config) must not block the other.
     }

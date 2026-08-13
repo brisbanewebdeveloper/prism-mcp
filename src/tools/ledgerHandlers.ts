@@ -2044,14 +2044,22 @@ export async function seedAndRecallDemoMemory(conversationId: string): Promise<s
       limit: "1",
     })) as Array<{ summary?: string; todos?: string[] }>;
     const recalled = rows[0];
-    if (!recalled?.summary) return null;
+    if (!recalled?.summary) {
+      console.error(`[first-run-demo] read-back returned ${Array.isArray(rows) ? rows.length : "non-array"} rows — seed row not visible`);
+      return null;
+    }
     const todo = Array.isArray(recalled.todos) && recalled.todos[0] ? `\n  - TODO it carried: ${recalled.todos[0]}` : "";
     return (
       `- 🧠 **Watch this — Prism just saved a memory and recalled it from disk:**\n` +
       `  - "${recalled.summary}"${todo}\n` +
       `  - This round-trip is what every future session gets: your decisions, TODOs, and changed files, back the moment you return. (Demo lives in the \`${DEMO_PROJECT}\` project — delete it anytime.)`
     );
-  } catch {
+  } catch (error) {
+    // Still swallow — a first run must never break on a demo — but say WHY on
+    // stderr. This block went missing intermittently on one CI leg
+    // (ubuntu/node 20) and the silent catch made every investigation start
+    // from nothing: the failure was only ever visible as an ABSENT paragraph.
+    console.error(`[first-run-demo] seed/recall failed: ${error instanceof Error ? `${error.name}: ${error.message}\n${error.stack}` : String(error)}`);
     return null;
   }
 }
@@ -2186,7 +2194,15 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
  */
 export async function runPromptRouteFromCache(prompt: string, loaded: string[]) {
   const { routePrompt } = await import("./promptRouteHandler.js");
-  const { resolvePromptSkillNames } = await import("./skillRouting.js");
+  const { resolvePromptSkillNames, _setStorage } = await import("./skillRouting.js");
+  // The CLI is a fresh process per prompt: without storage wiring the keyword
+  // table can neither be read from disk (offline = dead routing) nor
+  // persisted after a fetch (every prompt = a network GET). The server paths
+  // wire this at bootstrap; the CLI must do it itself.
+  _setStorage(
+    async (key, value) => { await setSetting(key, value); },
+    async (key) => getSetting(key, ""),
+  );
   return routePrompt(prompt, loaded, {
     resolvePromptSkillNames,
     collectTriggers: collectSkillTriggersOnThisMachine,

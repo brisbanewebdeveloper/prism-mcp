@@ -38,7 +38,10 @@ describe("install", () => {
     for (const cfg of [claudeConfig(), codexConfig()]) {
       // JSON.stringify doubles backslashes on Windows; normalize before matching.
       const cmds = JSON.stringify(cfg.hooks.UserPromptSubmit).replace(/\\+/g, "/");
-      expect(cmds).toContain("prism-route/on_prompt.py");
+      // The version rides in the CONFIGURED COMMAND: Codex's trust hash covers
+      // the definition, not the script file, so a version-refreshed script
+      // behind a stable command would silently change trusted content.
+      expect(cmds).toContain(`prism-route/on_prompt.py --v${PROMPT_ROUTE_HOOK_VERSION}`);
     }
     expect(existsSync(join(home, ".claude", "hooks", "prism-route", "on_prompt.py"))).toBe(true);
     expect(existsSync(join(home, ".codex", "hooks", "prism-route", "state"))).toBe(true);
@@ -73,6 +76,61 @@ describe("install", () => {
     expect(JSON.stringify(cfg.hooks.UserPromptSubmit[0])).toContain("screenshot-first");
   });
 
+  it("a version bump UPDATES the registered command in place — no duplicate, new trust hash", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    // Simulate a previous release: old marker AND an old-style command.
+    const cfgPath = join(home, ".codex", "hooks.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const hook = cfg.hooks.UserPromptSubmit[0].hooks[0];
+    hook.command = hook.command.replace(/ --v\d+$/, " --v0");
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    writeFileSync(join(home, ".codex", "hooks", "prism-route", ".prism-managed.json"),
+      JSON.stringify({ managedBy: "prism", version: "0" }));
+
+    const results = ensurePromptRouteHook({ homeDir: home, env: {} });
+    const codex = results.find((r) => r.host === "codex");
+    expect(codex?.config).toBe("updated");
+    const after = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const cmds = after.hooks.UserPromptSubmit.flatMap((e: { hooks: Array<{ command: string }> }) => e.hooks.map((h) => h.command));
+    expect(cmds.filter((c: string) => c.includes("prism-route"))).toHaveLength(1); // replaced, not appended
+    expect(cmds[0]).toContain(`--v${PROMPT_ROUTE_HOOK_VERSION}`);
+  });
+
+  it("codex registration carries additionalContextLimit: 0 — the default (~2,500 tokens) truncates our payload to a preview", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const entry = codexConfig().hooks.UserPromptSubmit.find((e: unknown) => JSON.stringify(e).includes("prism-route"));
+    expect(entry.hooks[0].additionalContextLimit).toBe(0);
+  });
+
+  it("claude registration does NOT carry the codex-only field — no unknown keys in settings.json", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const entry = claudeConfig().hooks.UserPromptSubmit.find((e: unknown) => JSON.stringify(e).includes("prism-route"));
+    expect("additionalContextLimit" in entry.hooks[0]).toBe(false);
+  });
+
+  it("a codex entry missing the field is CONVERGED in place — no duplicate entry", () => {
+    // The state every machine registered before this fix is in right now.
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const cfgPath = join(home, ".codex", "hooks.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    delete cfg.hooks.UserPromptSubmit[0].hooks[0].additionalContextLimit;
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+    const results = ensurePromptRouteHook({ homeDir: home, env: {} });
+    expect(results.find((r) => r.host === "codex")?.config).toBe("updated");
+    const after = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const ours = after.hooks.UserPromptSubmit.flatMap((e: { hooks: Array<{ command: string }> }) => e.hooks)
+      .filter((h: { command: string }) => h.command.includes("prism-route"));
+    expect(ours).toHaveLength(1); // converged, not appended
+    expect((ours[0] as { additionalContextLimit?: number }).additionalContextLimit).toBe(0);
+  });
+
+  it("codex results carry the approval hint — registered is NOT active", () => {
+    const results = ensurePromptRouteHook({ homeDir: home, env: {} });
+    expect(results.find((r) => r.host === "codex")?.codexApproval).toBe("pending-or-unknown");
+    expect(results.find((r) => r.host === "claude")?.codexApproval).toBeUndefined();
+  });
+
   it("refreshes the script when the version marker is older", () => {
     ensurePromptRouteHook({ homeDir: home, env: {} });
     const marker = join(home, ".claude", "hooks", "prism-route", ".prism-managed.json");
@@ -97,6 +155,27 @@ describe("install", () => {
     const codex = results.find((r) => r.host === "codex");
     expect(codex?.configPath).toBe(join(alt, "hooks.json"));
     expect(existsSync(join(alt, "hooks", "prism-route", "on_prompt.py"))).toBe(true);
+  });
+});
+
+describe("opt-out — disabled marker survives upgrades", () => {
+  it("a marker with disabled:true blocks reinstall AND re-registration on every path", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const hookDir = join(home, ".claude", "hooks", "prism-route");
+    // Operator turns it off: marks disabled, removes the registration.
+    writeFileSync(join(hookDir, ".prism-managed.json"), JSON.stringify({ managedBy: "prism", disabled: true }));
+    const cfg = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+    cfg.hooks.UserPromptSubmit = [];
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify(cfg, null, 2));
+
+    // Upgrade paths must NOT resurrect it — self-healing must not be
+    // self-reinfecting.
+    for (const mode of ["explicit", "auto"] as const) {
+      const results = ensurePromptRouteHook({ homeDir: home, env: {}, mode });
+      expect(results.find((r) => r.host === "claude")).toBeUndefined();
+    }
+    const after = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+    expect(after.hooks.UserPromptSubmit).toEqual([]);
   });
 });
 
@@ -202,6 +281,16 @@ if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":
       }).trim(),
     );
     expect(out).toEqual({ continue: true, suppressOutput: true });
+  });
+
+  it("survives stdout pollution from node wrappers (dotenv banners etc.)", () => {
+    writeFileSync(stub, `#!/bin/bash
+echo "[dotenv] injected env (10) from .env"
+echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
+`);
+    chmodSync(stub, 0o755);
+    const out = run({ prompt: "the totals are not sticky", session_id: "s9" });
+    expect(out.hookSpecificOutput?.additionalContext).toBe("BODY");
   });
 
   it("passes through on garbage stdin", () => {

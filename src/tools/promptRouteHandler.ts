@@ -29,8 +29,22 @@ import { debugLog } from "../utils/logger.js";
 
 /** Never return more than this many bodies in one call. */
 export const MAX_ROUTED_SKILLS = 3;
-/** Hard ceiling on returned characters, so one call cannot flood the window. */
-export const MAX_ROUTED_CHARS = 24_000;
+/** Hard ceiling on returned characters, so one call cannot flood the window.
+ *  Sized from measurement, not taste: the UI-review bundle
+ *  (visual-screenshot-verification + playwright-screenshot-discipline +
+ *  verified-shipping) is ~24.5k, and at 24k the third — the EVIDENCE-CLAIM
+ *  rules, arguably the one that matters most at the merge moment — was
+ *  reported "matched, not injected" on the first UI turn of a live session.
+ *  A cap that trims the bundle it was built for is mis-sized. */
+export const MAX_ROUTED_CHARS = 30_000;
+/** What a HOST will actually hand the model inline from a hook. Claude Code
+ *  hard-caps hook additionalContext at 10,000 chars — over that, the full text
+ *  goes to a file and the model gets a 2KB preview (three live instances
+ *  observed 2026-08-13: 13.2/18/18.9KB injections, all offloaded). Codex
+ *  truncates at ~2,500 tokens by default. MAX_ROUTED_CHARS bounds the PAYLOAD;
+ *  this bounds what may ride INLINE through a hook — anything larger must be
+ *  our own offload file with an imperative pointer, not the host's silent one. */
+export const HOOK_INLINE_SAFE_CHARS = 9_800;
 
 export interface PromptRouteDeps {
   /** On-device matcher — same one session_bootstrap uses. */
@@ -60,6 +74,10 @@ export interface PromptRouteResult {
   alreadyLoaded: string[];
   /** Matched but dropped by the per-call cap. */
   overflow: string[];
+  /** Imperative header, kept separate so hook callers can re-budget inline text. */
+  header?: string;
+  /** One `### name\nbody` block per delivered skill, in priority order. */
+  blocks?: string[];
 }
 
 /**
@@ -138,10 +156,121 @@ export async function routePrompt(
 
   // Imperative, not a label. A bare list is decorative; nothing else in this
   // path tells the agent these rules bind the work it is about to do.
+  //
+  // The overflow list is CAPPED: the header feeds reshapeForInlineBudget's
+  // base text, whose budget guarantee (and the pointer's first-2KB placement)
+  // holds only if the header is bounded. An unbounded list of matched names
+  // was measured at 12,950 chars for a 400-skill match — over the host cap
+  // before a single body was added.
+  const overflowShown = overflow.slice(0, 8);
+  const overflowNote =
+    overflow.length > 0
+      ? `\n\nAlso matched, not injected: ${overflowShown.join(", ")}${overflow.length > overflowShown.length ? ` (+${overflow.length - overflowShown.length} more)` : ""}.`
+      : "";
   const header =
     `**Skills now active for this task:** ${delivered.join(", ")}\n\n` +
     `These apply to the work you are about to do. Read and follow them before proceeding.` +
-    (overflow.length > 0 ? `\n\nAlso matched, not injected: ${overflow.join(", ")}.` : "");
+    overflowNote;
 
-  return { names: delivered, alreadyLoaded, overflow, text: `${header}\n\n${blocks.join("\n\n")}` };
+  return { names: delivered, alreadyLoaded, overflow, header, blocks, text: `${header}\n\n${blocks.join("\n\n")}` };
+}
+
+export interface InlineShaped {
+  /** What the hook should emit as additionalContext. */
+  text: string;
+  /** True when the full payload did not fit inline. */
+  offloaded: boolean;
+  /** Where the full payload was written, when the writer succeeded. */
+  offloadPath?: string;
+}
+
+/**
+ * Fit a routed payload under a host's inline hook cap.
+ *
+ * The host's own overflow handling is the failure mode, not the fallback:
+ * Claude Code silently swaps anything over 10k chars for a 2KB preview, and
+ * nothing tells the model to go read the rest. So when the payload is over
+ * budget WE offload it — to a file we name, behind an imperative that sits in
+ * the first 2KB where every host preview window can still deliver it — and
+ * inline as many whole priority bodies as fit.
+ *
+ * Pure over its writer so tests exercise the real budgeting.
+ */
+export function reshapeForInlineBudget(
+  result: PromptRouteResult,
+  budgetChars: number,
+  writeOffload: (fullText: string) => string | undefined,
+): InlineShaped {
+  const full = result.text;
+  if (full.length <= budgetChars || !result.header || !result.blocks || result.blocks.length === 0) {
+    return { text: full, offloaded: false };
+  }
+
+  let offloadPath: string | undefined;
+  try {
+    offloadPath = writeOffload(full);
+  } catch {
+    offloadPath = undefined;
+  }
+
+  // POINTER FIRST. Recoverability outranks prose order: skill names are
+  // unbounded (portal manifest, unvalidated), so any text placed before the
+  // pointer can push it past the ~2KB preview a host shows for offloaded
+  // context — or under the final clamp, slice it off entirely. Round-2 review
+  // measured both: 200-char names put the pointer at offset ~2,374 with the
+  // clamp never firing. With the pointer leading, its path sits within the
+  // first ~120 chars no matter what the header does.
+  const pieces: string[] = [];
+  if (offloadPath) {
+    pieces.push(
+      `**Host hook context is size-capped — the full text of all ${result.names.length} skill(s) is saved at: ${offloadPath}**\n` +
+        `**Read that file now and follow those skills before proceeding. If the host shows "Full output saved to" with another path above, Read that file instead.**`,
+    );
+  }
+  pieces.push(result.header);
+
+  // Loud-failure footer when there is no offload file to point at — a
+  // silently dropped skill is the defect this feature exists for. The reserve
+  // is an EXACT FIXPOINT over the skipped set, not a bound: reserving for all
+  // delivered names was measured skipping a body that previously fit (188
+  // wasted chars), and a guessed constant was measured overrunning by 99.
+  // The skipped set only grows as the reserve grows, so this converges in at
+  // most blocks+1 rounds.
+  const footerFor = (names: string[]) =>
+    `\n\n**Not inlined (host size cap, offload unavailable): ${names.join(", ")} — fetch each with knowledge_search and follow it before proceeding.**`;
+  const base = pieces.join("\n\n");
+  const blocks = result.blocks; // narrowed once — the closure below defeats TS narrowing on result
+  const fill = (reserve: number) => {
+    let filled = base;
+    const skipped: string[] = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const candidate = `${filled}\n\n${blocks[i]}`;
+      if (candidate.length <= budgetChars - reserve) {
+        filled = candidate;
+      } else {
+        skipped.push(result.names[i] ?? `skill ${i + 1}`);
+      }
+    }
+    return { filled, skipped };
+  };
+  let attempt = fill(0);
+  if (!offloadPath) {
+    for (let round = 0; round <= blocks.length && attempt.skipped.length > 0; round++) {
+      const next = fill(footerFor(attempt.skipped).length);
+      const converged = next.skipped.length === attempt.skipped.length;
+      attempt = next;
+      if (converged) break;
+    }
+  }
+  let inline = attempt.filled;
+  if (!offloadPath && attempt.skipped.length > 0) {
+    inline += footerFor(attempt.skipped);
+  }
+  // Belt over the construction: the budget is a HOST hard cap, and "the data
+  // stayed small" is not an invariant. The pointer leads, so a slice keeps
+  // the recoverable part.
+  if (inline.length > budgetChars) {
+    inline = inline.slice(0, budgetChars);
+  }
+  return { text: inline, offloaded: true, offloadPath };
 }

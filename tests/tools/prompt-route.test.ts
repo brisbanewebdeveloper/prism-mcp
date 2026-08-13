@@ -7,7 +7,13 @@
  * as the injection path itself.
  */
 import { describe, it, expect } from "vitest";
-import { routePrompt, MAX_ROUTED_SKILLS, MAX_ROUTED_CHARS } from "../../src/tools/promptRouteHandler.js";
+import {
+  routePrompt,
+  reshapeForInlineBudget,
+  MAX_ROUTED_SKILLS,
+  MAX_ROUTED_CHARS,
+  HOOK_INLINE_SAFE_CHARS,
+} from "../../src/tools/promptRouteHandler.js";
 
 const BODIES: Record<string, string> = {
   "visual-screenshot-verification": "# visual\nRender it and look at it.",
@@ -102,6 +108,162 @@ describe("injection", () => {
     }));
     expect(r.names).toEqual(["ghost"]);
     expect(r.text).toMatch(/no content on this machine/i);
+  });
+});
+
+describe("host inline budget — hosts hard-cap hook context (Claude Code 10k chars, Codex ~2.5k tokens)", () => {
+  // Three live instances on 2026-08-13: 13.2KB/18KB/18.9KB injections were
+  // offloaded by Claude Code to a file the model never read past a 2KB
+  // preview. The full payload must therefore be OUR offload, with an
+  // imperative pointer that survives any preview window.
+  const SIX_K = "R".repeat(6_000);
+  const threeBigSkills = () => deps({
+    resolvePromptSkillNames: async () => ["alpha", "beta", "gamma"],
+    entitledNames: async () => new Set(["alpha", "beta", "gamma"]),
+    getBody: async (n: string) => `# ${n}\n${SIX_K}`,
+  });
+
+  it("pins the budget under Claude Code's documented 10,000-char hook cap", () => {
+    expect(HOOK_INLINE_SAFE_CHARS).toBeLessThan(10_000);
+    expect(HOOK_INLINE_SAFE_CHARS).toBeGreaterThan(8_000);
+  });
+
+  it("over budget: inline fits the cap, the file gets the FULL text, and the Read pointer sits in the first 2KB", async () => {
+    const r = await routePrompt("ui/ux", [], threeBigSkills());
+    expect(r.text.length).toBeGreaterThan(HOOK_INLINE_SAFE_CHARS); // precondition: this IS the failing payload
+    let written: string | undefined;
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, (full) => {
+      written = full;
+      return "/tmp/prism-test/route-1.md";
+    });
+    expect(shaped.offloaded).toBe(true);
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS);
+    expect(written).toBe(r.text); // byte-complete: the file is the payload, not a summary
+    const preview = shaped.text.slice(0, 2_048); // what Claude Code's preview would show
+    expect(preview).toContain("/tmp/prism-test/route-1.md");
+    expect(preview).toMatch(/Read that file now/i);
+    expect(preview).toContain("**Skills now active for this task:** alpha, beta, gamma");
+  });
+
+  it("inlines whole priority bodies that still fit under the budget", async () => {
+    const r = await routePrompt("ui/ux", [], threeBigSkills());
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => "/tmp/p.md");
+    // 6k bodies: the first fits under 9.8k alongside header+pointer, the rest must not.
+    expect(shaped.text).toContain("### alpha");
+    expect(shaped.text).not.toContain("### gamma");
+  });
+
+  it("under budget: text passes through untouched and nothing is written", async () => {
+    const r = await routePrompt("make a UI/UX review", [], deps());
+    let calls = 0;
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => {
+      calls += 1;
+      return "/tmp/never.md";
+    });
+    expect(shaped.offloaded).toBe(false);
+    expect(shaped.text).toBe(r.text);
+    expect(calls).toBe(0);
+  });
+
+  it("offload write failure degrades LOUDLY: skipped skills are named with a fetch instruction", async () => {
+    const r = await routePrompt("ui/ux", [], threeBigSkills());
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => undefined);
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS);
+    expect(shaped.text).toMatch(/knowledge_search/);
+    expect(shaped.text).toContain("gamma"); // the dropped skill is named, not silently gone
+  });
+
+  it("a 400-skill match cannot blow the budget through the overflow header, and the pointer stays in the first 2KB", async () => {
+    // Adversarial review measured the unbounded overflow list at 12,950 header
+    // chars for 400 matched skills — over the host cap before any body, with
+    // the pointer pushed past every preview window. The cap must hold by
+    // construction, not because the catalog happens to be small.
+    const many = Array.from({ length: 400 }, (_, i) => `team-scoped-skill-with-a-long-name-${String(i).padStart(3, "0")}`);
+    const r = await routePrompt("ui/ux", [], deps({
+      resolvePromptSkillNames: async () => many,
+      entitledNames: async () => new Set(many),
+      getBody: async () => `# body\n${"x".repeat(6_000)}`,
+    }));
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => "/tmp/prism-test/route-400.md");
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS);
+    expect(shaped.text.slice(0, 2_048)).toContain("/tmp/prism-test/route-400.md");
+    expect(shaped.text).toContain("+"); // capped overflow list says "+N more" instead of listing 397 names
+  });
+
+  it("writer failure with long skill names cannot overrun the budget — the footer reserve is computed, not guessed", async () => {
+    // Measured pre-fix: fixed reserve of 300 emitted 9,899 > 9,800 with two
+    // ~148-char skipped names.
+    const longNames = ["a".repeat(148), "b".repeat(148), "c".repeat(148)];
+    const r = await routePrompt("ui/ux", [], deps({
+      resolvePromptSkillNames: async () => longNames,
+      entitledNames: async () => new Set(longNames),
+      // Sized so the first body lands just under the old fixed reserve's fill
+      // line (budget−300) while the real footer for the two skipped 148-char
+      // names is ~417 chars — the geometry the review measured overrunning.
+      getBody: async () => `# body\n${"x".repeat(8_700)}`,
+    }));
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => undefined);
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS);
+    // The footer must arrive INTACT — a guessed reserve plus the final clamp
+    // would slice its tail off, which the length assertion alone cannot see.
+    // (This is the mutation-killing check for the computed reserve.)
+    expect(shaped.text.endsWith("before proceeding.**")).toBe(true);
+  });
+
+  it("giant delivered names cannot destroy the pointer — it leads the text, so even the clamp preserves it", async () => {
+    // Round-2 review: with the pointer AFTER the header, 4,000-char names put
+    // the header at 12,127 chars and the clamp sliced the pointer off
+    // entirely — an offload file on disk that nothing tells the model to
+    // read. Skill names have no enforced bound anywhere (portal manifest).
+    const giants = ["G".repeat(4_000), "H".repeat(4_000), "I".repeat(4_000)];
+    const r = await routePrompt("ui/ux", [], deps({
+      resolvePromptSkillNames: async () => giants,
+      entitledNames: async () => new Set(giants),
+      getBody: async () => `# body\n${"x".repeat(6_000)}`,
+    }));
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => "/tmp/prism-test/route-giant.md");
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS); // kills clamp deletion
+    expect(shaped.text.slice(0, 2_048)).toContain("/tmp/prism-test/route-giant.md"); // kills pointer-after-header
+    expect(shaped.text.slice(0, 2_048)).toMatch(/Read that file now/i);
+  });
+
+  it("moderately long names cannot push the pointer past the 2KB preview window", async () => {
+    // The more reachable round-2 regime: 200-char names (within NAME_MAX),
+    // header 2,372 chars, clamp never fires — yet the trailing pointer sat at
+    // offset ~2,374, past every preview window.
+    const mediums = Array.from({ length: 11 }, (_, i) => `${"m".repeat(196)}${String(i).padStart(3, "0")}`);
+    const r = await routePrompt("ui/ux", [], deps({
+      resolvePromptSkillNames: async () => mediums,
+      entitledNames: async () => new Set(mediums),
+      getBody: async () => `# body\n${"x".repeat(6_000)}`,
+    }));
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => "/tmp/prism-test/route-med.md");
+    expect(shaped.text.slice(0, 2_048)).toContain("/tmp/prism-test/route-med.md");
+  });
+
+  it("the exact-fixpoint reserve does not skip a body that fits — no over-reservation regression", async () => {
+    // Round-2 finding 3: reserving for ALL delivered names (instead of the
+    // actually-skipped set) skipped a body that previously inlined. Geometry:
+    // three long-named skills, third body huge (skipped either way). The
+    // fixpoint reserves only for the ONE skipped name (~263 chars), so the
+    // second body fits; an all-names reserve (~563) would skip it too.
+    const names = [`A${"a".repeat(147)}`, `B${"b".repeat(147)}`, `C${"c".repeat(147)}`];
+    const bodies: Record<string, string> = {
+      [names[0]]: `#1\n${"x".repeat(4_000)}`,
+      [names[1]]: `#2\n${"y".repeat(4_512)}`,
+      [names[2]]: `#3\n${"z".repeat(6_000)}`,
+    };
+    const r = await routePrompt("ui/ux", [], deps({
+      resolvePromptSkillNames: async () => names,
+      entitledNames: async () => new Set(names),
+      getBody: async (n: string) => bodies[n] ?? "",
+    }));
+    const shaped = reshapeForInlineBudget(r, HOOK_INLINE_SAFE_CHARS, () => undefined);
+    expect(shaped.text.length).toBeLessThanOrEqual(HOOK_INLINE_SAFE_CHARS);
+    expect(shaped.text).toContain("y".repeat(100)); // second body INLINED — kills the all-names reserve
+    expect(shaped.text).toContain(`### ${names[1]}`);
+    expect(shaped.text).toMatch(/Not inlined .*C/s); // the huge third is named, not silently gone
+    expect(shaped.text.endsWith("before proceeding.**")).toBe(true); // footer intact under the clamp
   });
 });
 
