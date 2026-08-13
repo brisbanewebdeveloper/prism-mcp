@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.11.0 — 2026-08-13
+
+- **Fixed: mid-session skill injection silently degraded on both hosts.** The
+  routing hook emitted up to 30k chars inline, but Claude Code hard-caps hook
+  context at 10,000 chars (anything larger becomes a file plus a 2KB preview
+  the model is never told to read — three live instances measured), and Codex
+  truncates at ~2,500 tokens by default. Injections now fit a 9,800-char
+  inline budget; anything larger is written to `~/.prism-mcp/route-context/`
+  with an imperative Read pointer that LEADS the text, so it survives every
+  preview window and even the final clamp. Codex registrations converge
+  `additionalContextLimit: 0` (verified live: the full payload reaches the
+  model). Budget enforcement is by construction, not by data staying small —
+  each guard has a mutation-killing test.
+- **New: `prism connect` is now a converge command.** It self-updates from the
+  registry first, re-execs the new binary, and only then reconciles MCP
+  registration, skills, and hooks — ending the "fresh config, stale code"
+  machine state. Dev builds and source checkouts are never touched; an offline
+  or failed update reports and continues rather than bricking connect.
+- **Fixed: Codex hook trust is now honest.** The hook version rides in the
+  registered command, so Codex's definition-hash actually changes when the
+  script does; trust state is surfaced three ways (approved / awaiting your
+  one-time `t` in `/hooks` / present-but-unverifiable) instead of a false
+  green "registered".
+- **Fixed: offline routing was dead.** The keyword table now loads
+  persisted-first when current (0.5s offline instead of a 5.5s stall into
+  nothing), and the hook's JSON parsing survives stdout pollution from
+  NODE_OPTIONS wrappers.
+- **Fixed: captures no longer poison the session that must look at them.**
+  Every browser screenshot is normalized to a 1900px long edge at the source —
+  past ~20 images, the Claude API enforces a 2000px cap against the whole
+  conversation, and one oversized Retina capture blinded image attach for the
+  rest of a session.
+- The routed-payload cap rose 24k → 30k so the UI-review bundle it was sized
+  for no longer trims its own third skill at the moment it matters most.
+
 ## 20.10.0 — 2026-08-12
 
 - **Fixed: hosts that prefer `structuredContent` received no startup context.**
