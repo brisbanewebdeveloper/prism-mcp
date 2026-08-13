@@ -2104,7 +2104,7 @@ export function buildSessionFactsLine(facts: Record<string, string | number | bo
  * Failures are swallowed — a broken trigger degrades to "the public table
  * only", never takes down startup.
  */
-async function collectSkillTriggersOnThisMachine(): Promise<
+export async function collectSkillTriggersOnThisMachine(): Promise<
   { triggers: Record<string, string[]>; localNames: Set<string> } | undefined
 > {
   try {
@@ -2163,6 +2163,66 @@ async function collectSkillTriggersOnThisMachine(): Promise<
     debugLog(`[skill-triggers] collection failed: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   }
+}
+
+/**
+ * session_route_prompt — the mid-session half of skill routing.
+ *
+ * Everything here is deliberately borrowed from the first-turn path rather
+ * than reimplemented: the same on-device matcher, the same scoped-frontmatter
+ * triggers, the same entitlement set and the same local-skill bypass. A second
+ * implementation would drift, and a routing table that behaves differently at
+ * turn 500 than at turn 1 is worse than no routing at all.
+ */
+/**
+ * Prompt routing from CACHED state only — no network, no manifest sync.
+ *
+ * Shared by the MCP tool and the `prism route-prompt` CLI (which the
+ * prism-route host hook shells out to on every prompt). Entitlement comes
+ * from the last-synced manifest in the settings DB; the server refreshes it
+ * at startup, and a per-prompt path must never trigger a portal round-trip.
+ * One implementation on purpose: a table that matches differently in the
+ * hook than in the server is worse than no hook.
+ */
+export async function runPromptRouteFromCache(prompt: string, loaded: string[]) {
+  const { routePrompt } = await import("./promptRouteHandler.js");
+  const { resolvePromptSkillNames } = await import("./skillRouting.js");
+  return routePrompt(prompt, loaded, {
+    resolvePromptSkillNames,
+    collectTriggers: collectSkillTriggersOnThisMachine,
+    entitledNames: async () => {
+      try {
+        const parsed: unknown = JSON.parse(await getSetting("skill_manifest:names", "[]"));
+        return new Set(Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string") : []);
+      } catch {
+        return new Set<string>();
+      }
+    },
+    getBody: (name: string) => getSetting(`skill:${name}`, ""),
+    manifestVersion: async () => {
+      const v = Number(await getSetting("skill_manifest:routing_version", ""));
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    },
+  });
+}
+
+export async function sessionRoutePromptHandler(
+  args: unknown,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const input = (typeof args === "object" && args !== null && !Array.isArray(args) ? args : {}) as {
+    prompt?: unknown; loaded?: unknown; project?: unknown;
+  };
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  const loaded = Array.isArray(input.loaded)
+    ? input.loaded.filter((n): n is string => typeof n === "string")
+    : [];
+
+  const result = await runPromptRouteFromCache(prompt, loaded);
+
+  // Text only, never structuredContent. A result carrying both lets a host
+  // surface just the structured half — which is exactly how Claude Code
+  // silently dropped the bootstrap payload for three weeks.
+  return { content: [{ type: "text", text: result.text }] };
 }
 
 export async function sessionBootstrapHandler(

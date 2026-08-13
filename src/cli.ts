@@ -321,6 +321,25 @@ program
         if (skillSync.status !== 'disabled') {
           const changed = skillSync.installed.length + skillSync.updated.length + skillSync.pruned.length;
           console.log(`✓ Synalux skills: ${skillSync.tier || 'free'} tier (${changed} changed)`);
+          // prism-route hook: AFTER sync success on purpose — a connect that
+          // fails must leave the machine untouched (pinned by the
+          // "keeps legacy Claude hooks when the snapshot fails" test).
+          {
+            const hookHosts: Array<'claude' | 'codex'> = [];
+            if (summary.results.some((r) => (r.host === 'claude-code' || r.host === 'claude-desktop') && r.status !== 'error')) hookHosts.push('claude');
+            if (summary.results.some((r) => r.host === 'codex' && r.status !== 'error')) hookHosts.push('codex');
+            if (hookHosts.length > 0) {
+              try {
+                const { ensurePromptRouteHook } = await import('./promptRouteHostHook.js');
+                for (const r of ensurePromptRouteHook({ hosts: hookHosts, mode: 'explicit' })) {
+                  const state = r.script === 'unchanged' && r.config === 'unchanged' ? 'up to date' : 'installed';
+                  console.log(`✓ ${r.host}: prism-route prompt hook ${state} (${r.scriptPath})`);
+                }
+              } catch {
+                console.error('⚠ prism-route hook installation failed — skills still route at session start');
+              }
+            }
+          }
           if (skillSync.conflicts.length > 0) {
             console.error(`⚠ Preserved locally modified skill conflicts: ${skillSync.conflicts.join(', ')}`);
           }
@@ -425,6 +444,37 @@ program
 //
 // JSON MODE: Structured envelope for programmatic consumption
 // (session loader scripts, CI/CD pipelines, etc.).
+
+// ── route-prompt ──────────────────────────────────────────────
+// Called by the prism-route UserPromptSubmit hook on EVERY prompt in both
+// Claude Code and Codex, so the contract is: always exit 0, always print one
+// JSON object, and stay off the network (cached settings DB only). A hook
+// that can fail a turn gets uninstalled; a hook that is slow gets noticed.
+program
+  .command('route-prompt')
+  .description('Match a prompt (stdin) against skill triggers; prints {names, text} JSON. Used by the prism-route host hook.')
+  .option('--loaded <names>', 'Comma-separated skill names already active in the session')
+  .action(async (options: { loaded?: string }) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+      const prompt = Buffer.concat(chunks).toString('utf8');
+      const loaded = (options.loaded ?? '')
+        .split(',')
+        .map((n) => n.trim())
+        .filter(Boolean);
+      const { runPromptRouteFromCache } = await import('./tools/ledgerHandlers.js');
+      const result = await runPromptRouteFromCache(prompt, loaded);
+      const payload = JSON.stringify({ names: result.names, text: result.names.length > 0 ? result.text : '' });
+      await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
+    } catch {
+      // Never break the hook: an empty result is a routing miss, not an error.
+      await new Promise<void>((resolveWrite) => process.stdout.write('{"names":[],"text":""}\n', () => resolveWrite()));
+    } finally {
+      try { await closeStorage(); } catch { /* exit anyway */ }
+      process.exit(0);
+    }
+  });
 
 program
   .command('load <project>')
