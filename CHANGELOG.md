@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.12.0 — 2026-08-14
+
+- **New: Prism tells you when a newer release exists.** Session startup now
+  carries a one-line notice ("Update available: Prism X.Y.Z — run
+  `prism connect`") whenever the installed version is behind npm. The check
+  is cache-only on the prompt-critical path — a background refresh pings the
+  registry at most once a day, 30 seconds after startup, and offline machines
+  stay silent. Checkout registrations are told `prism connect --refresh`.
+  Opt out with `PRISM_NO_UPDATE_CHECK=1`.
+- **New: opt-in scheduled updates that are safe unattended.** `prism update
+  [--if-idle]` updates ONLY the global npm package — host configuration,
+  hooks, and hook trust are untouchable from it — and with `--if-idle` it
+  defers while any Prism MCP server process is running (an unverifiable
+  process list counts as busy). A single-instance lock prevents overlapping
+  runs. `prism autoupdate enable|disable|status` manages a daily 03:30
+  LaunchAgent (macOS) running exactly that. Configuration migrations stay
+  behind a visible `prism connect`, which expects hosts to be closed — that
+  is why the scheduler never runs connect.
+
 ## 20.11.1 — 2026-08-13
 
 - **Fixed: `session_save_ledger`/`save_handoff` could refuse to save — and did.**

@@ -116,6 +116,17 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.12.0
+
+- **Prism now tells you when it's out of date.** Session startup shows a
+  one-line update notice when a newer release exists — cache-backed, at most
+  one registry check per day, silent offline. `PRISM_NO_UPDATE_CHECK=1`
+  opts out.
+- **Hands-free updates, if you want them.** `prism autoupdate enable` sets up
+  a daily `prism update --if-idle`: it updates only the global npm package,
+  defers while any Prism server is running, and never touches host
+  configuration — that stays behind a visible `prism connect`.
+
 ## What's New in v20.11.1
 
 - **Saving memory never gets refused.** The save path used to reject
