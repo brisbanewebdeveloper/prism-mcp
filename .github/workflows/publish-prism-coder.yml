@@ -24,6 +24,9 @@ jobs:
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles 10.9.8.
+      # Without this the publish goes out unauthenticated and npm answers E404.
+      - run: npm install -g npm@latest
       - name: Check if version already published
         id: check
         working-directory: packages/prism-coder
