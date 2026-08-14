@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.12.1 — 2026-08-14
+
+- **Fixed: `prism connect --refresh` converged only one registration per host.**
+  Claude Code keeps additional directory-scoped entries under
+  `projects["<dir>"].mcpServers`, and the scoped one wins for sessions started
+  in that directory. A machine could therefore keep launching an old build in
+  some directories forever, with `connect` reporting success. Refresh now
+  converges every Prism-managed entry in the files it owns, in one atomic
+  write, preserving per-entry settings and credentials, and never touching a
+  hand-rolled entry. A plugin-owned `.mcp.json` remains outside its reach.
+- **Fixed: `prism update` compared the wrong version.** It checked the version
+  of the CLI making the call rather than the globally installed package it
+  updates, so it could report "current" while the installed package was a
+  release behind. It now reads the installed version from the npm global
+  prefix.
+- **Fixed: the opt-in scheduled updater could not start.** launchd gives an
+  agent a minimal PATH that omits `/usr/local/bin` and `/opt/homebrew/bin`,
+  where node and npm live on a standard install, so the agent died before
+  running anything. The generated LaunchAgent now carries a working PATH;
+  `prism autoupdate status` flags an older PATH-less agent as needing repair
+  instead of reporting a clean "enabled".
+
 ## 20.12.0 — 2026-08-14
 
 - **New: Prism tells you when a newer release exists.** Session startup now

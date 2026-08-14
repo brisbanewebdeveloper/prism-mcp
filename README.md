@@ -116,6 +116,16 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.12.1
+
+- **`prism connect --refresh` now converges every registration it owns**, not
+  just the top-level one — directory-scoped entries could otherwise keep
+  launching an old build indefinitely.
+- **`prism update` checks the installed package**, not the CLI that happens to
+  be running, so it can no longer report "current" while the install is stale.
+- **The opt-in scheduled updater can actually start** — the LaunchAgent now
+  carries a PATH that includes node and npm.
+
 ## What's New in v20.12.0
 
 - **Prism now tells you when it's out of date.** Session startup shows a
