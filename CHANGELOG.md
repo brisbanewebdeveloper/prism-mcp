@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.11.1 — 2026-08-13
+
+- **Fixed: `session_save_ledger`/`save_handoff` could refuse to save — and did.**
+  The project resolver hard-rejected on declared-vs-derived mismatch while the
+  registry it trusted contained auto-created junk (including a row whose
+  repo_path was the user's home directory, which matches every absolute path).
+  Agents received contradictory rejections and sessions ended unsaved. The
+  resolver never refuses a write now: a mismatch saves under the DECLARED
+  project and surfaces the derivation as an advisory warning in the save
+  confirmation. Auto-create gained hygiene — only absolute, ≥3-segment
+  prefixes that are not an ancestor of an existing entry can be registered —
+  so the junk that caused this cannot be written again.
+- **Fixed: `prism browser` screenshots were upscaled to the cap on macOS.**
+  `sips -Z` resamples in BOTH directions, so every capture smaller than the
+  limit came out at exactly 1900px on its long edge (a 1440×900 viewport was
+  written as 1900×1187) — not evidence of what rendered, and a silent breaker
+  of any gate that asserts captures are viewport-bound. Dimensions are probed
+  first and only genuinely oversized captures are shrunk; the cap is 2000px
+  (the per-dimension attach limit), so a standard 1920-wide viewport is never
+  resampled.
+
 ## 20.11.0 — 2026-08-13
 
 - **Fixed: mid-session skill injection silently degraded on both hosts.** The
