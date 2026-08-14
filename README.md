@@ -116,6 +116,33 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.11.1
+
+- **Saving memory never gets refused.** The save path used to reject
+  `session_save_ledger`/`save_handoff` calls when its path-to-project
+  heuristic disagreed with the project you declared — and the registry the
+  heuristic trusted could contain junk from earlier auto-registration, so
+  legitimate sessions ended unsaved. Your declaration now always wins; the
+  disagreement is returned as an advisory warning, and auto-registration
+  only accepts real repository roots.
+- **Screenshots are evidence again.** `prism browser` captures on macOS were
+  silently *upscaled* to the size cap, so a screenshot no longer showed what
+  actually rendered. Only genuinely oversized captures are resized now, and
+  the cap no longer clips a standard 1920-wide viewport.
+
+## What's New in v20.10.0 – v20.11.0
+
+- **Skill routing now works mid-session.** New prompts are matched on-device
+  as the conversation moves — not just on turn one — and injected within each
+  host's real context limits (Claude Code caps hook output at 10k chars;
+  Codex truncates by default), with pointer-first delivery when a payload
+  can't fit inline.
+- **`prism connect` is a converge command.** It self-updates first, re-execs,
+  then reconciles MCP registration, skills, and hooks — no more
+  "fresh config, stale code" machines.
+- **Scoped skills route on prompts too**, and startup output survives hosts
+  that discard structured tool content.
+
 ## What's New in v20.9.0 – v20.9.3
 
 - **Your skills follow your account.** `skill_save` stores a skill at the
