@@ -156,19 +156,20 @@ describe.skip("ingestKnowledge — chunking", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe.skip("ingestKnowledge — Q&A generation", () => {
-  it("calls Claude API with correct format", async () => {
+  // This block is skipped, but it encoded a contract that has since been
+  // REMOVED: ingest no longer POSTs to api.anthropic.com with an ambient key.
+  // Left as-is, un-skipping it would report today's correct behaviour as a
+  // regression. The live version of this assertion is in
+  // tests/tools/ingestHandler.test.ts ("never contacts a provider API
+  // directly").
+  it("never contacts a provider API directly", async () => {
     const content = "export function authenticate(token: string) { /* JWT verification */ }".repeat(10);
     await ingestKnowledge({ project: "test", content, source_label: "auth" });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.anthropic.com/v1/messages",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "anthropic-version": "2023-06-01",
-        }),
-      })
-    );
+    const providerCalls = mockFetch.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((u: string) => /api\.anthropic\.com|api\.openai\.com|generativelanguage/.test(u));
+    expect(providerCalls).toEqual([]);
   });
 
   it("handles Claude API errors gracefully", async () => {
