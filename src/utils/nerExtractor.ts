@@ -184,7 +184,11 @@ async function extractByLLM(
     if (!options.enabled) return [];
 
     try {
-        const { callLocalLlm } = await import("./localLlm.js");
+        // Dynamic import keeps the handler out of the module graph for callers
+        // that never extract entities. It goes through the ladder, not a raw
+        // /api/chat call — this reads arbitrary session text and must be
+        // subject to the same gates as any other inference.
+        const { inferText } = await import("../tools/prismInferHandler.js");
 
         const prompt = `Extract named entities from this text. Return JSON array of objects with {type, value, confidence}.
 Entity types: PERSON, PROJECT, TECH, FILE, DECISION, TODO, CONFIG.
@@ -195,7 +199,7 @@ ${text.slice(0, 2000)}
 
 Return ONLY valid JSON array:`;
 
-        const response = await callLocalLlm(prompt);
+        const response = await inferText(prompt, { mode: "chat" });
 
         if (!response) return [];
 

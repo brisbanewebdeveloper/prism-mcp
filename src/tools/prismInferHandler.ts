@@ -1785,6 +1785,60 @@ async function applyVerification(
 /**
  * MCP-shaped handler. Wraps runInfer with real deps + MCP envelope.
  */
+/**
+ * The real dependency set: live Ollama, the entitlement-aware cloud fallback,
+ * and the Synalux verifier/route-guard when configured.
+ *
+ * Exported so that anything inside prism needing a model goes through the SAME
+ * ladder a caller of `prism_infer` gets. The alternative — a thin
+ * `POST /api/chat` helper — skips the entitlement ceiling, the RAM gate, the
+ * tier walk and fallback, the quality gate, the hard-truncation retry, the
+ * per-tier thinking policy and token floor, the route contract, and Layer 1.
+ * Two handlers did exactly that, hardcoding `prism-coder:9b`, which is the tier
+ * with the most special handling of the four.
+ */
+export function productionInferDeps(): InferDeps {
+    return {
+        freemem: () => getAvailableMemoryBytes(),
+        listTags: () => listOllamaTags(PRISM_LOCAL_LLM_URL),
+        listLoaded: () => listOllamaLoaded(PRISM_LOCAL_LLM_URL),
+        callLocal: callOllamaGenerate,
+        callCloud: callSynaluxInference,
+        ollamaUrl: PRISM_LOCAL_LLM_URL,
+        callVerifier: SYNALUX_CONFIGURED ? callSynaluxVerifier : undefined,
+        callRouteGuard: SYNALUX_CONFIGURED ? callSynaluxRouteGuard : undefined,
+    };
+}
+
+/**
+ * Run a prompt through the full prism ladder and return plain text, or null.
+ *
+ * Drop-in replacement for the `callLocalLlm` bypass: same shape, but every gate
+ * applies and the model is CHOSEN rather than hardcoded.
+ */
+export async function inferText(
+    prompt: string,
+    opts: { system?: string; mode?: "route" | "chat" | "code"; maxTokens?: number } = {},
+): Promise<string | null> {
+    try {
+        const result = await runInfer(
+            {
+                prompt,
+                system: opts.system,
+                mode: opts.mode ?? "chat",
+                ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+            },
+            productionInferDeps(),
+        );
+        const text = (result.output ?? "").trim();
+        return text.length > 0 ? text : null;
+    } catch (err) {
+        // Callers of the old helper treated any failure as "no local answer".
+        debugLog(`[inferText] no backend produced output: ${(err as Error).message.slice(0, 160)}`);
+        return null;
+    }
+}
+
 export async function prismInferHandler(args: unknown): Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
@@ -1794,16 +1848,7 @@ export async function prismInferHandler(args: unknown): Promise<{
     }
     try {
         const prepared = await prepareMemoryAwareInferArgs(args);
-        const result = await runInfer(prepared.args, {
-            freemem: () => getAvailableMemoryBytes(),
-            listTags: () => listOllamaTags(PRISM_LOCAL_LLM_URL),
-            listLoaded: () => listOllamaLoaded(PRISM_LOCAL_LLM_URL),
-            callLocal: callOllamaGenerate,
-            callCloud: callSynaluxInference,
-            ollamaUrl: PRISM_LOCAL_LLM_URL,
-            callVerifier: SYNALUX_CONFIGURED ? callSynaluxVerifier : undefined,
-            callRouteGuard: SYNALUX_CONFIGURED ? callSynaluxRouteGuard : undefined,
-        });
+        const result = await runInfer(prepared.args, productionInferDeps());
 
         debugLog(`[prism_infer] backend=${result.backend} model=${result.model_picked} latency=${result.latency_ms}ms free=${result.ram_free_mb}MB`);
 
