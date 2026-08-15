@@ -84,55 +84,69 @@ function chunkSource(content: string, chunkSize: number, source: string): ChunkR
   };
 }
 
-// ─── Q&A Generator (Claude Haiku) ───────────────────────────────
+// ─── Q&A Generator (via prism_infer) ────────────────────────────
 
+/**
+ * Generate training Q&A pairs for a chunk.
+ *
+ * This used to POST straight to api.anthropic.com with a key read from
+ * ANTHROPIC_API_KEY **or ~/.anthropic_key**. That is an ambient-credential
+ * path: any process with the variable set bills the owner, which is how a
+ * local test run once burned ~$500 against a key exported in a shell profile.
+ * It also sat outside every gate prism applies to model calls.
+ *
+ * Ingest is training-data generation rather than user-facing inference, which
+ * is why it was left alone at first — but "not inference" does not make a raw
+ * billing surface a good idea, and prism_infer already offers the same
+ * capability local-first with an entitlement-gated cloud fallback. So it goes
+ * through the ladder like everything else, and prism no longer reads a
+ * provider key from the environment at all.
+ *
+ * PHI redaction still runs BEFORE the model sees anything: a chunk may carry
+ * client names in file paths, inline identifiers, or clinical notes, and the
+ * local tier is not a licence to skip that.
+ */
 async function generateQAPairs(chunk: string, source: string): Promise<Array<{ prompt: string; response: string }>> {
-  const apiKey = process.env.ANTHROPIC_API_KEY ||
-    (existsSync(`${process.env.HOME}/.anthropic_key`)
-      ? readFileSync(`${process.env.HOME}/.anthropic_key`, "utf-8").trim()
-      : null);
+  const fallback = [{ prompt: `What does this ${source} code do?`, response: chunk.slice(0, 500) }];
 
-  if (!apiKey) {
-    debugLog("[ingest] No ANTHROPIC_API_KEY — skipping Q&A generation, storing raw chunks");
-    return [{ prompt: `What does this ${source} code do?`, response: chunk.slice(0, 500) }];
-  }
-
-  // PHI redaction BEFORE sending to cloud LLM — the chunk may contain
-  // client names in file paths, inline identifiers, or clinical notes.
   const { scanAndRedactPHI } = await import("../utils/phiGuard.js");
   const redactedChunk = scanAndRedactPHI(chunk).redacted;
 
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 2048,
-        system: 'Generate 3 Q&A training pairs as JSON array: [{"prompt":"...","response":"..."}]. Focus on what the code does, how it works, and key patterns.',
-        messages: [{ role: "user", content: `Source: ${source}\n\`\`\`\n${redactedChunk.slice(0, 5000)}\n\`\`\`` }],
-      }),
-    });
+  const { inferText } = await import("./prismInferHandler.js");
+  const text = await inferText(
+    `Source: ${source}\n\`\`\`\n${redactedChunk.slice(0, 5000)}\n\`\`\``,
+    {
+      system: 'Generate 3 Q&A training pairs as JSON array: [{"prompt":"...","response":"..."}]. Focus on what the code does, how it works, and key patterns.',
+      mode: "chat",
+      maxTokens: 2048,
+    },
+  );
 
-    if (!res.ok) {
-      debugLog(`[ingest] Claude API error: ${res.status}`);
-      return [];
-    }
-
-    const data = await res.json() as { content: Array<{ text: string }> };
-    const text = data.content?.[0]?.text || "";
-    const match = text.match(/\[.*\]/s);
-    if (match) {
-      return JSON.parse(match[0]);
-    }
-  } catch (err) {
-    debugLog(`[ingest] Q&A generation error: ${err}`);
+  if (!text) {
+    debugLog("[ingest] no model output — storing raw chunk");
+    return fallback;
   }
-  return [];
+
+  try {
+    const match = text.match(/\[.*\]/s);
+    if (!match) {
+      debugLog("[ingest] model output had no JSON array — storing raw chunk");
+      return fallback;
+    }
+    const parsed = JSON.parse(match[0]) as unknown;
+    if (!Array.isArray(parsed)) return fallback;
+    // Only keep well-formed pairs; a malformed element must not reach storage
+    // as an undefined prompt/response.
+    const pairs = parsed.filter(
+      (p): p is { prompt: string; response: string } =>
+        !!p && typeof (p as { prompt?: unknown }).prompt === "string"
+        && typeof (p as { response?: unknown }).response === "string",
+    );
+    return pairs.length > 0 ? pairs : fallback;
+  } catch (err) {
+    debugLog(`[ingest] Q&A parse error: ${err}`);
+    return fallback;
+  }
 }
 
 // ─── Main Ingest Pipeline ───────────────────────────────────────
