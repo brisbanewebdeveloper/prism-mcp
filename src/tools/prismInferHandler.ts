@@ -1833,8 +1833,20 @@ export async function inferText(
         const text = (result.output ?? "").trim();
         return text.length > 0 ? text : null;
     } catch (err) {
-        // Callers of the old helper treated any failure as "no local answer".
-        debugLog(`[inferText] no backend produced output: ${(err as Error).message.slice(0, 160)}`);
+        // A Layer 1 refusal must NOT look like an outage.
+        //
+        // runInfer throws makeReservedRefusal(...) when the classifier declines
+        // reserved content. Collapsing that to null told callers "no local
+        // answer", and callers respond to that by trying the cloud — so the
+        // refusal became the trigger for the exact disclosure the classifier
+        // exists to prevent. Fail closed: rethrow so a refusal propagates, and
+        // return null only for genuine unavailability.
+        const message = (err as Error).message ?? "";
+        if (err instanceof ReservedRefusalError) {
+            debugLog("[inferText] reserved-content refusal — propagating, not falling back");
+            throw err;
+        }
+        debugLog(`[inferText] no backend produced output: ${message.slice(0, 160)}`);
         return null;
     }
 }

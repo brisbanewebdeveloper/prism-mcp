@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { deflateSync } from "node:zlib";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MODEL_TIERS } from "../../src/utils/modelPicker.js";
@@ -77,6 +77,10 @@ const RED = fixture("red.png", makePng(320, 320, () => [220, 20, 20]));
 const BLUE = fixture("blue.png", makePng(320, 320, () => [20, 40, 210]));
 // Left half green, right half black — tests spatial reading, not just an average.
 const SPLIT = fixture("split.png", makePng(320, 320, x => (x < 160 ? [20, 200, 60] : [0, 0, 0])));
+
+// Generated fixtures are temp files; remove them so repeated runs do not
+// accumulate PNGs in the system temp directory.
+afterAll(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 let installed = new Set<string>();
 let ollamaUp = false;
