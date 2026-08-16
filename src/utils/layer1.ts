@@ -418,12 +418,20 @@ export async function callLayer1(
     // closed here would refuse every image request whenever Ollama hiccups, and
     // an unusable gate gets disabled — but it does mean this adds protection
     // only when the screen answers.
-    // Started BEFORE the classification and awaited after it, so the two vision
-    // passes overlap. Run sequentially this doubled the gate's cost on every
-    // image request — measured 15-19s against 8-9s — which would have handed
-    // back most of the latency the downscale had just recovered. They are
-    // independent questions, so the added cost is max() rather than sum().
-    const screenPromise = hasImages ? screenImageContent() : null;
+    // Sequential, deliberately. An earlier version started this concurrently
+    // with the classification on the theory that two independent questions cost
+    // max() rather than sum(). That was wrong: ollama serves vision with
+    // `-np 1`, so the two requests serialise inside the server, while each
+    // AbortSignal.timeout starts at ISSUE time. The loser spends its whole
+    // budget queuing, aborts, and retries — measured 2.17x slower with THREE
+    // vision passes rather than two, and it was the mechanism that turned
+    // benign screenshots into UNCERTAIN under load (9/9 vs 3/9 on the parent
+    // commit), which for a paid caller means a refusal.
+    //
+    // Running it first also lets a YES skip the classification entirely, so
+    // the reserved case now costs one pass instead of two.
+    const screened = hasImages ? await screenImageContent() : "no";
+    if (screened === "yes") return "OBVIOUS_RESERVED";
 
     /**
      * "no" is the ONLY answer that permits falling through to the classifier.
@@ -478,15 +486,11 @@ export async function callLayer1(
     // The picture overrules the words. A mundane request about a clinical
     // screenshot is exactly the shape that classified as NOT_RESERVED.
     // Only a clean "no" permits the classifier's verdict to stand.
-    if (screenPromise) {
-        const screened = await screenPromise;
-        if (screened === "yes") return "OBVIOUS_RESERVED";
-        // An unreadable screen escalates, but must never DOWNGRADE a classifier
-        // that already said reserved — caught by tests/tools/layer1-images.test.ts,
-        // which existed before this feature and encoded the right contract.
-        if (screened === "unknown") {
-            return settled === "OBVIOUS_RESERVED" ? "OBVIOUS_RESERVED" : "UNCERTAIN";
-        }
+    // An unreadable screen escalates, but must never DOWNGRADE a classifier that
+    // already said reserved — caught by tests/tools/layer1-images.test.ts, which
+    // existed before this feature and encoded the right contract.
+    if (screened === "unknown") {
+        return settled === "OBVIOUS_RESERVED" ? "OBVIOUS_RESERVED" : "UNCERTAIN";
     }
 
     const verdict: Layer1Verdict = (hasImages && settled === "ERROR") ? "UNCERTAIN" : settled;

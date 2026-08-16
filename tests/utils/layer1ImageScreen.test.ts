@@ -72,13 +72,16 @@ describe("the picture overrules the words", () => {
         expect(calls.some(c => c.screen), "paid for a vision screen on a text-only request").toBe(false);
     });
 
-    it("starts the screen BEFORE the classification, so the two overlap", async () => {
-        // The whole latency rationale rests on the screen being in flight while
-        // the classifier runs. A sequential `await` would keep every assertion
-        // in this file green while doubling the gate's cost.
-        const { fn, calls } = mockFetch({ screenAnswer: "NO" });
-        await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, [PNG]);
-        expect(calls[0].screen).toBe(true);
+    it("screens FIRST and skips the classification entirely on a YES", async () => {
+        // Sequential by design: ollama serves vision with -np 1, so running the
+        // two concurrently serialises them in the server while both timeout
+        // clocks run, costing a wasted third pass. Ordering it first means the
+        // reserved case pays for one pass, not two.
+        const { fn, calls } = mockFetch({ screenAnswer: "YES", verdict: "OBVIOUS_NOT_RESERVED" });
+        const v = await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, [PNG]);
+        expect(v).toBe("OBVIOUS_RESERVED");
+        expect(calls[0].screen, "the screen did not run first").toBe(true);
+        expect(calls.filter(c => !c.screen), "classified anyway after the screen already said yes").toHaveLength(0);
     });
 
     it("hands the screen EVERY attached image", async () => {
