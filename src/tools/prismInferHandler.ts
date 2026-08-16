@@ -24,6 +24,7 @@ import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { pickLocalModel, fmtGb, MODEL_TIERS, resolveOllamaName } from "../utils/modelPicker.js";
 import { getSynaluxJwt, invalidateSynaluxJwt } from "../utils/synaluxJwt.js";
 import { getAvailableMemoryBytes } from "../utils/availableMemory.js";
+import { downscaleImages, productionDownscaleDeps, resolveMaxImageEdge } from "../utils/imageDownscale.js";
 import {
     PRISM_SYNALUX_BASE_URL,
     PRISM_LOCAL_LLM_URL,
@@ -92,6 +93,32 @@ const MAX_CODING_REPAIR_ATTEMPTS = 2;
 const MAX_ROUTE_TOOLS = 64;
 
 // ─── Tool Definition ────────────────────────────────────────────
+
+/**
+ * Default system prompt for image requests, applied only when the caller
+ * supplies none of their own.
+ *
+ * Without it the small tiers answer with the FIRST thing they see. On a Python
+ * traceback that is the caller frame, so "what file and line raised the error?"
+ * returns checkout.py:47 instead of pricing.py:12 — a wrong file and line that
+ * looks exactly like a right one.
+ *
+ * Measured 2026-08-15 over six natural prompts across two screenshots
+ * ("where did this crash?", "which line is actually broken?", "how many times
+ * does the loop run?"):
+ *
+ *   prism-coder:2b   without 4/6   with 6/6
+ *   prism-coder:4b   without 4/6   with 6/6
+ *
+ * Deliberately generic. An earlier version named tracebacks and their frame
+ * order, which fixed this one case and would have taught the model nothing
+ * about the next. The failure is "answers with the first match", so the
+ * instruction addresses that directly.
+ */
+export const VISION_SYSTEM_PROMPT =
+    "You read developer screenshots precisely. Answer only from what is visible. "
+    + "Identify the most specific, innermost location the evidence points to rather "
+    + "than the first thing you see.";
 
 export const MAX_INFER_IMAGES = 8;
 /** Bytes per supplied image. Beyond this the base64 blows request memory and
@@ -975,6 +1002,21 @@ function resolveThinkingMode(
     if (args.task_complexity !== undefined && args.task_complexity <= FAST_TASK_COMPLEXITY_MAX) {
         return false;
     }
+    // IMAGE requests take thinking from the TIER, never from the mode.
+    //
+    // `mode !== "route"` below turns thinking on for every chat/code call, and
+    // for reading a screenshot that is pure cost. Measured 2026-08-15 on a
+    // rendered traceback, prism-coder:2b, num_predict 1024:
+    //
+    //   think=false   185 tokens   2.3s   3/3 correct
+    //   think=true    867 tokens   8.5s   3/3 correct
+    //
+    // Four times the tokens for the same answer. The 9b is the opposite — 0/3
+    // without thinking, 3/3 with — which is exactly what prefersThinking already
+    // records, so deferring to the tier serves both cases without a new concept.
+    if ((args.images?.length ?? 0) > 0) {
+        return tier?.prefersThinking ?? false;
+    }
     // A tier that measurably routes better with reasoning gets it even in route
     // mode. Explicit caller intent and the fast-task shortcut still win — this
     // only replaces the blanket "route means never think" default, which cost
@@ -1155,8 +1197,22 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     // Resolved BEFORE Layer 1: the classifier must see the same images the
     // model will. Classifying only the text prompt let a screenshot of
     // clinical material through a gate that never looked at it.
-    const resolvedImages: string[] | undefined =
+    // Downscaled HERE, before Layer 1, for the same reason the resolve happens
+    // here: the classifier and the serving tier must see identical bytes.
+    // Oversized captures cost 16-28s of the 9b's time and buy no accuracy
+    // (see imageDownscale.ts for the measurements); anything already under the
+    // cap passes through untouched.
+    let resolvedImages: string[] | undefined =
         args.images?.length ? await prepareImages(args.images) : undefined;
+    if (resolvedImages?.length) {
+        try {
+            const r = await downscaleImages(resolvedImages, resolveMaxImageEdge(), await productionDownscaleDeps());
+            resolvedImages = r.images;
+            if (r.notes.length) debugLog(`[prism_infer] downscaled ${r.notes.join(", ")}`);
+        } catch {
+            // fail open: the original images are still in resolvedImages
+        }
+    }
     if (installed && !layer1RecursionGuard) {
         const l1fn = deps.callLayer1 ?? defaultCallLayer1;
         const l1Model = resolveOllamaName("prism-coder:4b", installed);
@@ -1299,7 +1355,25 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             const ceilName = ceilTier ? resolveOllamaName(ceilTier.tag, installed) : null;
             const ceilInstalled = ceilName ? installed.has(ceilName) : false;
             const ceilWarm = ceilName ? loaded.has(ceilName) : false;
-            if (ceilInstalled && !ceilWarm) {
+            // Do not clear the decks for a tier the walk is going to skip.
+            //
+            // Eviction runs BEFORE the tier walk and assumes the ceiling tier is
+            // the one that will serve. With images that is false: the 27b has no
+            // projector, so the walk passes over it. Measured 2026-08-15 on a
+            // screenshot request — eviction unloaded the warm 4b and 2b to make
+            // room for a 27b that was then skipped for no_vision, and the 2b it
+            // finally chose had to be re-read from disk. 11.5s for work the
+            // models do in ~2s.
+            //
+            // Only the ceiling's OWN viability matters here; if it cannot serve
+            // this request, throwing away warm models buys nothing.
+            const ceilCanServe = (resolvedImages?.length ?? 0) === 0
+                ? true
+                : await (deps.probeVision ?? probeVision)(deps.ollamaUrl, ceilName ?? "");
+            if (!ceilCanServe) {
+                debugLog(`[prism_infer] skipping eviction — ceiling ${ceilTier?.tag} cannot serve this request`);
+            }
+            if (ceilInstalled && !ceilWarm && ceilCanServe) {
                 // F1 fix: only count and evict prism tier models — not arbitrary warm models.
                 const tierModelsToEvict = MODEL_TIERS
                     .map(t => resolveOllamaName(t.tag, installed))
@@ -1361,6 +1435,52 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
 
         let anyViable = false;
 
+        // Image requests get the vision system prompt unless the caller wrote
+        // their own — never override an explicit instruction.
+        const effectiveSystem = (resolvedImages?.length ?? 0) > 0 && !args.system
+            ? VISION_SYSTEM_PROMPT
+            : args.system;
+
+        // Walk order for images.
+        //
+        // Smallest-first was tried and REVERTED on 2026-08-15. It is correct
+        // only for a prompt shape the user does not type. Measured live on a
+        // traceback screenshot:
+        //
+        //   prompt                          2b     4b     9b(think)
+        //   structured "FILE: <file:line>"   ok     ok     ok
+        //   natural "what file and line?"    WRONG  WRONG  ok
+        //
+        // Both small tiers answer with the CALLER frame (checkout.py:47) rather
+        // than where the exception was raised (pricing.py:12). Thinking does not
+        // rescue them — the 2b is still wrong after 11.6s of it — so this is
+        // model capacity, not configuration. A wrong file and line looks exactly
+        // like a right one, and the user has no way to tell.
+        //
+        // The saving was real (2.0s vs 5.8s) and not worth a wrong answer, so
+        // the ladder keeps its largest-first order and the 27b is skipped for
+        // no_vision as before. What DID survive is the eviction fix below and
+        // the tier-driven thinking policy, which together took this path from
+        // 15.4s to ~6s with correctness intact.
+        //
+        // FINAL 2026-08-15: largest-first stands. Smallest-first was tried
+        // twice — the system prompt did fix natural-prompt selection (4/6 ->
+        // 6/6) — and two later measurements settled it against:
+        //
+        //   real screen capture (2992x1800)  2b 3/3 but ~10.5s, not the ~2s a
+        //                                    rendered image suggested, so most
+        //                                    of the latency win is not there
+        //   handwritten note                 2b/4b transcribe the phone number
+        //                                    as 655-0182; the 9b reads 555-0182
+        //                                    (2/2). Both small tiers answer
+        //                                    correctly when ASKED for the
+        //                                    number — the error appears only in
+        //                                    full transcription.
+        //
+        // Nothing in the request distinguishes extraction from transcription,
+        // so the tier cannot be chosen on it, and a digit that is silently
+        // wrong reads exactly like a digit that is right. The saving was worth
+        // less than measured; the failure is worth more.
         for (let i = ceilStart; i < MODEL_TIERS.length; i++) {
             const tier = MODEL_TIERS[i];
             // Accept the tier whether Ollama reports it as bare (`prism-coder:27b`)
@@ -1410,7 +1530,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 ? Math.min(Math.max(localMaxTokens, tier.minLocalTokens), 8192)
                 : localMaxTokens;
             let result = await deps.callLocal(
-                deps.ollamaUrl, ollamaName, args.prompt, args.system, tierTokens, temperature, timeout, enableThink, resolvedImages,
+                deps.ollamaUrl, ollamaName, args.prompt, effectiveSystem, tierTokens, temperature, timeout, enableThink, resolvedImages,
             );
             // Think-only retry: model burned all tokens on <think>, empty content.
             // Retry same model with think=false rather than falling to a smaller tier.
@@ -1419,7 +1539,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 debugLog(`[prism_infer] ${tier.tag} returned think-only — retrying with think=false`);
                 recordThinkOnlyRetry();
                 result = await deps.callLocal(
-                    deps.ollamaUrl, ollamaName, args.prompt, args.system, tierTokens, temperature, timeout, false, resolvedImages,
+                    deps.ollamaUrl, ollamaName, args.prompt, effectiveSystem, tierTokens, temperature, timeout, false, resolvedImages,
                 );
             }
             if (result.ok) {
@@ -1450,7 +1570,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                     debugLog(`[prism_infer] ${tier.tag} truncated mid-answer — retrying with think=false`);
                     attempts.push({ tier: tier.tag, reason: "hard_truncation_retry" });
                     const retried = await deps.callLocal(
-                        deps.ollamaUrl, ollamaName, args.prompt, args.system, tierTokens, temperature, timeout, false, resolvedImages,
+                        deps.ollamaUrl, ollamaName, args.prompt, effectiveSystem, tierTokens, temperature, timeout, false, resolvedImages,
                     );
                     if (retried.ok) {
                         const retriedStrip = stripThink(retried.text);

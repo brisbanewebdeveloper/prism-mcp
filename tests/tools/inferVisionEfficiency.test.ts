@@ -1,0 +1,190 @@
+import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { runInfer, type InferDeps, type PrismInferArgs } from "../../src/tools/prismInferHandler.js";
+import { _setCacheForTest, _resetEntitlementsForTest, type PrismEntitlements } from "../../src/utils/entitlements.js";
+
+/**
+ * Screenshot requests must not pay for capability they do not need.
+ *
+ * Measured 2026-08-15 against the live models on a rendered traceback
+ * screenshot, three runs each:
+ *
+ *   prism-coder:2b  think=false   185 tok   2.3s   3/3 correct
+ *   prism-coder:2b  think=true    867 tok   8.5s   3/3 correct
+ *   prism-coder:4b  think=false             1.2s   3/3 correct
+ *   prism-coder:9b  think=false             1.3s   0/3   (wrong traceback frame)
+ *   prism-coder:9b  think=true              5.2s   3/3 correct
+ *
+ * Three separate costs were found on this path, and the tier choice — the one
+ * a capability-scoring design would have optimised — was the smallest of them:
+ *
+ *   thinking on a tier that does not need it   8.5s -> 2.3s
+ *   evicting a tier the walk then skips        ~2-3s
+ *   tier choice (9b vs 2b)                     ~0s, both correct
+ */
+
+const GB = 1024 ** 3;
+
+const ENT: PrismEntitlements = {
+    plan: "enterprise", model_ceiling: "27b", daily_infer_limit: 99999,
+    max_tokens: 2048, max_seats: 25,
+    features: { cloud_fallback: false, grounding_verifier: false,
+                knowledge_search_unlimited: true, session_memory_unlimited: true,
+                analytics_dashboard: true },
+    upgrade_url: "https://synalux.ai/pricing",
+};
+
+const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+const INSTALLED = new Set(["prism-coder:27b", "prism-coder:9b", "prism-coder:4b", "prism-coder:2b"]);
+
+beforeEach(() => _setCacheForTest(ENT, 60_000));
+afterAll(() => _resetEntitlementsForTest());
+
+interface Seen { model: string; think?: boolean }
+
+function makeDeps(seen: Seen[], overrides: Partial<InferDeps> = {}): InferDeps {
+    return {
+        freemem: () => 40 * GB,
+        listTags: async () => INSTALLED,
+        listLoaded: async () => new Set<string>(),
+        // Production shape: only the 27b lacks a projector.
+        probeVision: async (_u, m) => !m.includes("27b"),
+        callLocal: async (_u, model, _p, _s, _mt, _t, _to, think) => {
+            seen.push({ model, think });
+            return { ok: true as const, text: "FILE: billing/pricing.py line 12", doneReason: "stop" };
+        },
+        callCloud: async () => ({ ok: false as const, reason: "no_cloud" }),
+        ollamaUrl: "http://localhost:11434",
+        callLayer1: async () => "OBVIOUS_NOT_RESERVED",
+        ...overrides,
+    };
+}
+
+const imageArgs = (extra: Partial<PrismInferArgs> = {}): PrismInferArgs =>
+    ({ prompt: "read this screenshot", images: [PNG_B64], mode: "code", ...extra });
+
+describe("vision requests take the cheapest tier that can see", () => {
+    it("ships the default vision system prompt when the caller gives none", async () => {
+        // This prompt is what makes smallest-first sound. Without it the small
+        // tiers answer with the first thing they see: 4/6 on natural prompts,
+        // 6/6 with it. The ordering below depends on this being present.
+        const seenSystem: Array<string | undefined> = [];
+        await runInfer(imageArgs(), makeDeps([], {
+            callLocal: async (_u, _m, _p, system) => {
+                seenSystem.push(system);
+                return { ok: true as const, text: "FILE: billing/pricing.py line 12", doneReason: "stop" };
+            },
+        }));
+        expect(seenSystem[0], "image request went out with no vision guidance").toBeTruthy();
+        expect(seenSystem[0]).toContain("innermost");
+    });
+
+    it("never overrides a system prompt the caller wrote", async () => {
+        const seenSystem: Array<string | undefined> = [];
+        await runInfer(imageArgs({ system: "MINE" }), makeDeps([], {
+            callLocal: async (_u, _m, _p, system) => {
+                seenSystem.push(system);
+                return { ok: true as const, text: "FILE: billing/pricing.py line 12", doneReason: "stop" };
+            },
+        }));
+        expect(seenSystem[0]).toBe("MINE");
+    });
+
+    it("does not add vision guidance to a TEXT request", async () => {
+        const seenSystem: Array<string | undefined> = [];
+        await runInfer({ prompt: "write a clamp fn", mode: "code" }, makeDeps([], {
+            callLocal: async (_u, _m, _p, system) => {
+                seenSystem.push(system);
+                return { ok: true as const, text: "function clamp(){}", doneReason: "stop" };
+            },
+        }));
+        expect(seenSystem[0]).toBeUndefined();
+    });
+
+    it("uses the 9b — the tier that transcribes handwriting without silent errors", async () => {
+        // Smallest-first was implemented and reverted the same day. Measured
+        // live on a traceback screenshot:
+        //
+        //   prompt                          2b     4b     9b(think)
+        //   structured "FILE: <file:line>"   ok     ok     ok
+        //   natural "what file and line?"    WRONG  WRONG  ok
+        //
+        // Both small tiers answer with the CALLER frame instead of where the
+        // exception was raised, and thinking does not rescue them — the 2b is
+        // still wrong after 11.6s of it. 2.0s vs 5.8s is not worth an answer
+        // the user cannot tell is wrong.
+        const seen: Seen[] = [];
+        const r = await runInfer(imageArgs(), makeDeps(seen));
+        // 2b/4b write the phone number as 655-0182; the 9b reads 555-0182.
+        expect(r.model_picked, "a small tier transcribes digits wrongly").toContain("9b");
+    });
+
+    it("still honours an explicit ceiling — this changes defaults, not instructions", async () => {
+        const seen: Seen[] = [];
+        const r = await runInfer(imageArgs({ model_ceiling: "9b" }), makeDeps(seen));
+        expect(r.model_picked).toContain("9b");
+    });
+
+    it("never hands an image to a tier with no projector", async () => {
+        const seen: Seen[] = [];
+        await runInfer(imageArgs(), makeDeps(seen));
+        expect(seen.some(s => s.model.includes("27b"))).toBe(false);
+    });
+});
+
+describe("thinking on image requests follows the tier, not the mode", () => {
+    it("does NOT think on a small tier when one is explicitly chosen", async () => {
+        // Thinking costs 867 tokens for the same answer the 2b gives in 185.
+        const seen: Seen[] = [];
+        await runInfer(imageArgs({ model_ceiling: "2b" }), makeDeps(seen));
+        const first = seen.find(s => s.model.includes("2b"));
+        expect(first?.think, "paid for reasoning this tier does not need").toBe(false);
+    });
+
+    it("DOES think on the 9b, which is 0/3 without it", async () => {
+        const seen: Seen[] = [];
+        await runInfer(imageArgs({ model_ceiling: "9b" }), makeDeps(seen));
+        const nine = seen.find(s => s.model.includes("9b"));
+        expect(nine?.think, "the 9b reads the wrong traceback frame without thinking").toBe(true);
+    });
+
+    it("an explicit think flag still wins", async () => {
+        const seen: Seen[] = [];
+        await runInfer(imageArgs({ think: true }), makeDeps(seen));
+        expect(seen[0]?.think).toBe(true);
+    });
+
+    it("leaves NON-image code requests thinking, as before", async () => {
+        const seen: Seen[] = [];
+        await runInfer({ prompt: "write a clamp fn", mode: "code" }, makeDeps(seen));
+        expect(seen[0]?.think, "regressed thinking for ordinary code generation").toBe(true);
+    });
+});
+
+describe("eviction does not clear the decks for a tier that cannot serve", () => {
+    it("skips eviction when the ceiling has no vision", async () => {
+        const unloaded: string[] = [];
+        const seen: Seen[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+            const body = init?.body ? JSON.parse(String(init.body)) : {};
+            if (body.keep_alive === 0) unloaded.push(body.model);
+            return new Response("{}", { status: 200 });
+        }) as typeof fetch;
+        try {
+            await runInfer(imageArgs(), makeDeps(seen, {
+                // warm smaller tiers, cold ceiling — the shape that triggered it
+                listLoaded: async () => new Set(["prism-coder:4b", "prism-coder:2b"]),
+                // 16 free + 6.2 warm = 22.2 GiB, which CLEARS the 27b's 21 GiB
+                // gate — so without the fix eviction fires. The first version
+                // used 12 GiB, where the credit never reached the gate and the
+                // branch was never entered: the test passed under mutation.
+                freemem: () => 16 * GB,
+            }));
+        } finally {
+            globalThis.fetch = realFetch;
+        }
+        expect(unloaded, "unloaded warm models to make room for a tier it then skips").toEqual([]);
+    });
+});
