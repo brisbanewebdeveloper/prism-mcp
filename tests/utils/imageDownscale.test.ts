@@ -112,6 +112,34 @@ describe("dimension reading", () => {
         expect(readImageDimensions(dht)).toEqual({ width: 1280, height: 720 });
     });
 
+    it("finds IHDR behind Apple's CgBI chunk instead of reading its payload", () => {
+        // Xcode's pngcrush emits `CgBI` BEFORE IHDR, violating the spec; 105
+        // such files exist under /Applications and /System on a stock Mac and
+        // macOS decodes them fine. Reading fixed offset 16/20 returns
+        // 1342185478x750286694 for a real 1920x1080 asset, which clears the cap
+        // check and gets the image UPSCALED to 2000px — the 20.11.0 bug.
+        const png = makePng(1920, 1080);
+        const cgbi = Buffer.concat([
+            png.subarray(0, 8),
+            Buffer.from([0x00, 0x00, 0x00, 0x04]),          // length 4
+            Buffer.from("CgBI", "ascii"),
+            Buffer.from([0x50, 0x00, 0x20, 0x06]),          // the payload that misparses
+            Buffer.alloc(4),                                 // crc
+            png.subarray(8),
+        ]);
+        expect(readImageDimensions(cgbi)).toEqual({ width: 1920, height: 1080 });
+    });
+
+    it("rejects an absurd dimension rather than trusting it", () => {
+        // Belt to the IHDR braces: any misparse that yields a huge number must
+        // read as UNKNOWN (pass through untouched), never as "far above the cap,
+        // go resize it".
+        const png = makePng(100, 100);
+        const forged = Buffer.from(png);
+        forged.writeUInt32BE(1_342_185_478, 16);
+        expect(readImageDimensions(forged)).toBeNull();
+    });
+
     it("returns null for a format it does not parse", () => {
         expect(readImageDimensions(Buffer.from("GIF89a....", "ascii"))).toBeNull();
         expect(readImageDimensions(Buffer.from("not an image at all"))).toBeNull();

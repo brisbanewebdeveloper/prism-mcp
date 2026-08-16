@@ -162,6 +162,64 @@ describe("thinking on image requests follows the tier, not the mode", () => {
     });
 });
 
+describe("the eviction probe must not be able to fail the request", () => {
+    // These two tests deliberately do NOT inject probeVision. Every other test
+    // in this file does, and that is precisely why the first version of the
+    // eviction fix shipped a hard regression: the real probeVision throws on
+    // any non-2xx, and no stubbed probe ever throws.
+
+    /** /api/show as production behaves it: the ceiling 404s (or errors) because
+     *  it is not pulled, every other tier answers normally with vision. A blanket
+     *  failure would take out the Layer 1 classifier probe first and never reach
+     *  the code under test. */
+    async function withCeilingShowStatus<T>(
+        status: number, fn: () => Promise<T>, onEvict?: (m: string) => void,
+    ): Promise<T> {
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+            const body = init?.body ? JSON.parse(String(init.body)) : {};
+            if (String(url).includes("/api/show")) {
+                if (String(body.model).includes("27b")) return new Response("nope", { status });
+                return new Response(JSON.stringify({ capabilities: ["vision"] }), { status: 200 });
+            }
+            if (body.keep_alive === 0) onEvict?.(String(body.model));
+            return new Response("{}", { status: 200 });
+        }) as typeof fetch;
+        try { return await fn(); } finally { globalThis.fetch = realFetch; }
+    }
+
+    it("serves an image request on a machine where the ceiling tier is NOT pulled", async () => {
+        // /api/show 404s for a model that was never pulled. Before the fix this
+        // probe ran before the installed check and its rejection propagated out
+        // of runInfer: "ceiling not pulled" became a hard failure instead of a
+        // tier the walk steps over.
+        const seen: Seen[] = [];
+        const withoutCeiling = new Set(["prism-coder:9b", "prism-coder:4b", "prism-coder:2b"]);
+        const r = await withCeilingShowStatus(404, () => runInfer(imageArgs(), makeDeps(seen, {
+            probeVision: undefined,
+            listTags: async () => withoutCeiling,
+            listLoaded: async () => new Set(["prism-coder:4b"]),
+            freemem: () => 16 * GB,
+        })));
+        expect(r.model_picked, "an uninstalled ceiling failed the whole request").toBeTruthy();
+        expect(seen.length).toBeGreaterThan(0);
+    });
+
+    it("treats an unprobeable ceiling as 'do not evict' rather than throwing", async () => {
+        // Ollama restarting (5xx) or /api/show timing out must not take the
+        // request down, and must not evict warm models on a guess.
+        const unloaded: string[] = [];
+        const seen: Seen[] = [];
+        const r = await withCeilingShowStatus(503, () => runInfer(imageArgs(), makeDeps(seen, {
+            probeVision: undefined,
+            listLoaded: async () => new Set(["prism-coder:4b", "prism-coder:2b"]),
+            freemem: () => 16 * GB,
+        })), m => unloaded.push(m));
+        expect(r.model_picked).toBeTruthy();
+        expect(unloaded, "evicted warm models on the strength of a failed probe").toEqual([]);
+    });
+});
+
 describe("eviction does not clear the decks for a tier that cannot serve", () => {
     it("skips eviction when the ceiling has no vision", async () => {
         const unloaded: string[] = [];

@@ -48,6 +48,14 @@
  * before accepting it. Every failure path returns the ORIGINAL bytes — a
  * slower correct answer beats a fast one about an image we mangled.
  *
+ * BYTES CAN GROW EVEN AS PIXELS SHRINK. sips re-encodes, and on PNG that often
+ * costs bytes: a real 2992x1934 capture went 877,949 -> 926,739 (+5.6%) at
+ * 2000px, a rendered one +59%; JPEG behaves as advertised (1.38MB -> 0.40MB).
+ * This is NOT a reason to keep the original — what the model charges for is
+ * pixels, and prompt_eval_count on the same image fell 5163 -> 3654. It does
+ * mean MAX_IMAGE_BYTES / MAX_IMAGE_BYTES_TOTAL, enforced in prepareImages
+ * BEFORE this runs, bound the input rather than the final payload.
+ *
  * EXIF ORIENTATION, checked by hand 2026-08-15 and not covered by a test:
  * an iPhone capture stores landscape pixels with orientation=6 and displays
  * portrait. `sips -Z` preserves that tag (5712x4284 orient=6 -> 1600x1200
@@ -95,7 +103,7 @@ const MIN_SENSIBLE_EDGE = 256;
 /**
  * Operator override: `PRISM_MAX_IMAGE_EDGE`.
  *
- * The measurements behind the 1600 default cover screenshots, one photograph,
+ * The measurements behind the 2000 default cover screenshots, one photograph,
  * a dense table and seven scripts — not every image anyone will ever send. An
  * off switch means a class this hurts can be fixed in an env var instead of a
  * release. `0`/`off`/`none` disables downscaling; garbage falls back to the
@@ -112,6 +120,19 @@ export function resolveMaxImageEdge(env: NodeJS.ProcessEnv = process.env): numbe
 
 export interface ImageDims { width: number; height: number }
 
+/** Beyond this a "dimension" is a misparse, not an image. JPEG cannot exceed
+ *  it at all, and no real PNG approaches it — treating an absurd value as
+ *  unknown means the image passes through untouched, which is the safe
+ *  direction. Without this bound a misread produces a gigantic number that
+ *  trivially clears the cap check and gets a small image resampled. */
+const MAX_PLAUSIBLE_DIMENSION = 65_535;
+
+function sane(width: number, height: number): ImageDims | null {
+    if (width <= 0 || height <= 0) return null;
+    if (width > MAX_PLAUSIBLE_DIMENSION || height > MAX_PLAUSIBLE_DIMENSION) return null;
+    return { width, height };
+}
+
 /**
  * Read pixel dimensions from an image header.
  *
@@ -121,14 +142,34 @@ export interface ImageDims { width: number; height: number }
  * how an image gets upscaled or skipped incorrectly.
  */
 export function readImageDimensions(buf: Buffer): ImageDims | null {
-    // PNG: 8-byte signature, then IHDR whose width/height are big-endian u32
-    // at fixed offsets 16 and 20.
+    // PNG: 8-byte signature, then a chunk list. IHDR is REQUIRED to be first by
+    // the spec — and Apple ships PNGs that break that rule. Xcode's pngcrush
+    // emits a 4-byte `CgBI` chunk ahead of IHDR; 105 such files exist under
+    // /Applications and /System on this machine, and macOS decodes them fine.
+    //
+    // Reading width/height from fixed offsets 16/20 lands on the CgBI payload
+    // for those files. Measured on a real 1920x1080 Apple asset: 1342185478 x
+    // 750286694, which sails past the "already under the cap" check and gets
+    // the image UPSCALED to 2000x1125 — the exact 20.11.0 regression this
+    // module exists to prevent, reintroduced through the back door because the
+    // shrink-verification compares against the MISPARSED dimensions, not real
+    // ones. So find IHDR by walking the chunk list rather than assuming it.
     if (buf.length >= 24
         && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47
         && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) {
-        const width = buf.readUInt32BE(16);
-        const height = buf.readUInt32BE(20);
-        if (width > 0 && height > 0) return { width, height };
+        let off = 8;
+        // Bounded: every iteration advances by at least 12 bytes.
+        while (off + 12 <= buf.length) {
+            const chunkLen = buf.readUInt32BE(off);
+            const type = buf.toString("ascii", off + 4, off + 8);
+            if (type === "IHDR") {
+                if (chunkLen < 13 || off + 8 + 13 > buf.length) return null;
+                return sane(buf.readUInt32BE(off + 8), buf.readUInt32BE(off + 12));
+            }
+            // A length that overflows the buffer means we cannot trust the walk.
+            if (chunkLen > buf.length) return null;
+            off += 12 + chunkLen;
+        }
         return null;
     }
 
@@ -137,16 +178,17 @@ export function readImageDimensions(buf: Buffer): ImageDims | null {
     if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
         let off = 2;
         while (off + 9 < buf.length) {
-            if (buf[off] !== 0xff) { off++; continue; }   // resync on fill bytes
+            // Advance to the next marker byte. Note this does NOT correctly skip
+            // a legal run of 0xFF fill bytes before a marker — such a run is read
+            // as a segment header and the parse gives up. That returns null, so
+            // the image passes through un-downscaled: slower, never wrong.
+            if (buf[off] !== 0xff) { off++; continue; }
             const marker = buf[off + 1];
             // SOF0-3, SOF5-7, SOF9-11, SOF13-15 carry dimensions. C4/C8/CC are
             // DHT/JPG/DAC — same numeric range, NOT frame headers.
             if (marker >= 0xc0 && marker <= 0xcf
                 && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-                const height = buf.readUInt16BE(off + 5);
-                const width = buf.readUInt16BE(off + 7);
-                if (width > 0 && height > 0) return { width, height };
-                return null;
+                return sane(buf.readUInt16BE(off + 7), buf.readUInt16BE(off + 5));
             }
             if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) { off += 2; continue; }
             const segLen = buf.readUInt16BE(off + 2);

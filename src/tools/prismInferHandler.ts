@@ -1367,11 +1367,26 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             //
             // Only the ceiling's OWN viability matters here; if it cannot serve
             // this request, throwing away warm models buys nothing.
-            const ceilCanServe = (resolvedImages?.length ?? 0) === 0
-                ? true
-                : await (deps.probeVision ?? probeVision)(deps.ollamaUrl, ceilName ?? "");
-            if (!ceilCanServe) {
-                debugLog(`[prism_infer] skipping eviction — ceiling ${ceilTier?.tag} cannot serve this request`);
+            //
+            // Probed INSIDE the eviction precondition and wrapped, deliberately.
+            // `probeVision` throws on any non-2xx — and the first version of this
+            // asked /api/show about a ceiling that is not installed, so a machine
+            // without the 27b pulled got a 404 that propagated out of runInfer and
+            // failed the whole request. That turned "ceiling not pulled" from a
+            // tier the walk steps over into a hard error, and broke the contract
+            // that escalation:"report" returns a structured outcome rather than
+            // throwing. Unprobeable now means "do not evict", the same fail-safe
+            // the other two probe sites use.
+            let ceilCanServe = true;
+            if (ceilInstalled && !ceilWarm && (resolvedImages?.length ?? 0) > 0) {
+                try {
+                    ceilCanServe = await (deps.probeVision ?? probeVision)(deps.ollamaUrl, ceilName ?? "");
+                } catch {
+                    ceilCanServe = false;
+                }
+                if (!ceilCanServe) {
+                    debugLog(`[prism_infer] skipping eviction — ceiling ${ceilTier?.tag} cannot serve this request`);
+                }
             }
             if (ceilInstalled && !ceilWarm && ceilCanServe) {
                 // F1 fix: only count and evict prism tier models — not arbitrary warm models.
@@ -1437,7 +1452,9 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
 
         // Image requests get the vision system prompt unless the caller wrote
         // their own — never override an explicit instruction.
-        const effectiveSystem = (resolvedImages?.length ?? 0) > 0 && !args.system
+        // `=== undefined`, not falsy: `system: ""` is a caller explicitly asking
+        // for no system prompt, and overriding that is still an override.
+        const effectiveSystem = (resolvedImages?.length ?? 0) > 0 && args.system === undefined
             ? VISION_SYSTEM_PROMPT
             : args.system;
 
@@ -1509,8 +1526,11 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // unroutable to the 4096-ctx tiers even for tiny prompts.
             // ctxTokens mirrors the live Modelfile values (see MODEL_TIERS).
             const CTX_TEMPLATE_MARGIN = 64;
+            // effectiveSystem, not args.system: the default vision prompt is ~35
+            // tokens and the model is charged for it, so an estimate built from
+            // args.system spends over half the 64-token margin without knowing.
             const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
-                + (args.system ? estimateTokens(args.system) : 0)
+                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
                 + CTX_TEMPLATE_MARGIN;
             if (promptTokensEst > tier.ctxTokens) {
                 attempts.push({ tier: tier.tag, reason: "ctx_insufficient" });
