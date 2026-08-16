@@ -133,6 +133,57 @@ describe("vision requests take the cheapest tier that can see", () => {
     });
 });
 
+describe("a paid caller is never handed an answer about an image the cloud never saw", () => {
+    // callSynaluxInference's signature is (prompt, maxTokens, timeoutMs, opts) —
+    // there is no image channel, and the request body is {prompt, max_tokens,
+    // reserved}. Escalating an IMAGE request therefore sends the text alone.
+    //
+    // Measured before this guard, on a paid enterprise plan with cloud fallback
+    // enabled: "How many lines are in this image?" returned
+    // "The image contains 42 lines." with used_cloud=true — a fabrication the
+    // caller cannot distinguish from a real answer. The other cloud path already
+    // refused image requests for exactly this reason; the Layer 1 escalation
+    // never got the same guard.
+    const PAID: PrismEntitlements = {
+        ...ENT,
+        features: { ...ENT.features, cloud_fallback: true },
+    };
+
+    it("refuses rather than escalating an IMAGE request to a text-only cloud", async () => {
+        _setCacheForTest(PAID, 60_000);
+        let cloudCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "UNCERTAIN" as const,
+            callCloud: (async () => {
+                cloudCalls++;
+                return { ok: true as const, output: "The image contains 42 lines.", backend: "anthropic" };
+            }) as InferDeps["callCloud"],
+        });
+        await expect(
+            runInfer({ ...imageArgs(), cloud_fallback: true }, deps),
+        ).rejects.toThrow(/reserved content refused/);
+        expect(cloudCalls, "sent an image request to a cloud path with no image channel").toBe(0);
+    });
+
+    it("still escalates a TEXT request to cloud — the guard is about images only", async () => {
+        _setCacheForTest(PAID, 60_000);
+        let cloudCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "UNCERTAIN" as const,
+            callCloud: (async () => {
+                cloudCalls++;
+                return { ok: true as const, output: "cloud answer", backend: "anthropic" };
+            }) as InferDeps["callCloud"],
+        });
+        const r = await runInfer(
+            { prompt: "explain this clinical policy", mode: "chat", cloud_fallback: true },
+            deps,
+        );
+        expect(cloudCalls).toBe(1);
+        expect(r.used_cloud).toBe(true);
+    });
+});
+
 describe("the vision prompt is accounted for, not just applied", () => {
     it("charges the ctx gate for the prompt it actually sends", async () => {
         // The gate used to price args.system while the model received

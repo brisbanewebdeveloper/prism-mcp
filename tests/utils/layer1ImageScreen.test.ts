@@ -72,22 +72,50 @@ describe("the picture overrules the words", () => {
         expect(calls.some(c => c.screen), "paid for a vision screen on a text-only request").toBe(false);
     });
 
-    it("starts the screen BEFORE the classification, so the two overlap", async () => {
-        // The whole latency rationale rests on the screen being in flight while
-        // the classifier runs. A sequential `await` would keep every assertion
-        // in this file green while doubling the gate's cost.
-        const { fn, calls } = mockFetch({ screenAnswer: "NO" });
-        await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, [PNG]);
-        expect(calls[0].screen).toBe(true);
+    it("screens FIRST and skips the classification entirely on a YES", async () => {
+        // Sequential by design: ollama serves vision with -np 1, so running the
+        // two concurrently serialises them in the server while both timeout
+        // clocks run, costing a wasted third pass. Ordering it first means the
+        // reserved case pays for one pass, not two.
+        const { fn, calls } = mockFetch({ screenAnswer: "YES", verdict: "OBVIOUS_NOT_RESERVED" });
+        const v = await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, [PNG]);
+        expect(v).toBe("OBVIOUS_RESERVED");
+        expect(calls[0].screen, "the screen did not run first").toBe(true);
+        expect(calls.filter(c => !c.screen), "classified anyway after the screen already said yes").toHaveLength(0);
     });
 
-    it("hands the screen EVERY attached image", async () => {
-        // MAX_INFER_IMAGES is 8. Screening only the first would let a clinical
-        // page ride along behind a benign one.
+    it("screens each attached image SEPARATELY, one per call", async () => {
+        // Handing the model all 8 at once gets an answer about the batch. The
+        // same clinical report that returns YES alone returned a clean NO at
+        // index 3 of 8 benign screenshots, 3/3, and was served locally. The
+        // previous version of this test asserted the request body carried 8
+        // images, which passed the whole time the bypass was live.
         const many = Array.from({ length: 8 }, () => PNG);
         const { fn, calls } = mockFetch({ screenAnswer: "NO" });
         await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, many);
-        expect(JSON.parse(calls[0].body).messages[0].images).toHaveLength(8);
+        const screens = calls.filter(c => c.screen);
+        expect(screens, "did not screen every image").toHaveLength(8);
+        for (const s of screens) {
+            expect(JSON.parse(s.body).messages[0].images, "batched images into one screen call").toHaveLength(1);
+        }
+    });
+
+    it("stops at the first YES instead of screening the rest", async () => {
+        // An all-benign batch of 8 costs 8 calls; a batch containing reserved
+        // content costs only as many as it takes to find it.
+        const many = Array.from({ length: 8 }, () => PNG);
+        let n = 0;
+        const fn = (async (_u: unknown, init?: RequestInit) => {
+            const body = String(init?.body ?? "");
+            if (isScreenBody(body)) {
+                n++;
+                return new Response(JSON.stringify({ message: { content: n === 3 ? "YES" : "NO" } }), { status: 200 });
+            }
+            return new Response(JSON.stringify({ message: { content: "OBVIOUS_NOT_RESERVED" } }), { status: 200 });
+        }) as unknown as typeof fetch;
+        const v = await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, many);
+        expect(v).toBe("OBVIOUS_RESERVED");
+        expect(n, "kept screening after already finding reserved content").toBe(3);
     });
 });
 

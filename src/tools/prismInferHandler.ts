@@ -1292,6 +1292,22 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
             debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
+            // Images never leave the device, and callCloud has no image channel
+            // — the same reason the fallback path below refuses. Escalating an
+            // image request here sends the TEXT ONLY, so the cloud answers a
+            // question about a picture it never received and the caller gets a
+            // fabricated answer marked used_cloud=true, indistinguishable from a
+            // real one. Measured: a paid enterprise plan asking "how many lines
+            // are in this image?" came back "The image contains 42 lines."
+            //
+            // The guard existed at the other call site and was never applied
+            // here. A refusal that says so is worth more than a confident
+            // invention, on a path that only runs for reserved content.
+            if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
+                attempts.push({ tier: "synalux", reason: "reserved_escalation_refused_images_stay_local" });
+                if (wantReport) return refusedResult("layer1_reserved");
+                throw makeReservedRefusal(l1, attempts);
+            }
             if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
                 const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout, { reserved: true });
@@ -1337,7 +1353,14 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         if (l1 === "ERROR") {
             debugLog(`[prism_infer] Layer 1 verdict=ERROR — classifier failed, trying cloud then keyword backstop`);
             attempts.push({ tier: "layer1", reason: "layer1_error" });
-            if (allowCloud) {
+            // Same reason as the reserved escalation above: no image channel, so
+            // escalating an image request produces an answer about a picture the
+            // cloud never saw. callLayer1 maps ERROR to UNCERTAIN when images are
+            // present, so this should be unreachable in production — it is here
+            // so the invariant holds for every caller, including injected ones.
+            if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
+                attempts.push({ tier: "synalux", reason: "error_escalation_refused_images_stay_local" });
+            } else if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
                 const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
                 if (cloud.ok && cloud.output) {

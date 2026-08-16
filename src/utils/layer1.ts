@@ -418,12 +418,20 @@ export async function callLayer1(
     // closed here would refuse every image request whenever Ollama hiccups, and
     // an unusable gate gets disabled — but it does mean this adds protection
     // only when the screen answers.
-    // Started BEFORE the classification and awaited after it, so the two vision
-    // passes overlap. Run sequentially this doubled the gate's cost on every
-    // image request — measured 15-19s against 8-9s — which would have handed
-    // back most of the latency the downscale had just recovered. They are
-    // independent questions, so the added cost is max() rather than sum().
-    const screenPromise = hasImages ? screenImageContent() : null;
+    // Sequential, deliberately. An earlier version started this concurrently
+    // with the classification on the theory that two independent questions cost
+    // max() rather than sum(). That was wrong: ollama serves vision with
+    // `-np 1`, so the two requests serialise inside the server, while each
+    // AbortSignal.timeout starts at ISSUE time. The loser spends its whole
+    // budget queuing, aborts, and retries — measured 2.17x slower with THREE
+    // vision passes rather than two, and it was the mechanism that turned
+    // benign screenshots into UNCERTAIN under load (9/9 vs 3/9 on the parent
+    // commit), which for a paid caller means a refusal.
+    //
+    // Running it first also lets a YES skip the classification entirely, so
+    // the reserved case now costs one pass instead of two.
+    const screened = hasImages ? await screenImageContent() : "no";
+    if (screened === "yes") return "OBVIOUS_RESERVED";
 
     /**
      * "no" is the ONLY answer that permits falling through to the classifier.
@@ -436,23 +444,44 @@ export async function callLayer1(
      * cannot read is treated as unread, not as permission.
      */
     async function screenImageContent(): Promise<"yes" | "no" | "unknown"> {
+        // ONE IMAGE PER CALL. Handing the model the whole batch and asking one
+        // question gets an answer about the batch, not about each page: the same
+        // clinical report that returns YES on its own returned a clean,
+        // well-formed NO at index 3 of 8 benign screenshots, 3/3, and was served
+        // locally. Passing all 8 images is not the same as the model reading
+        // image 4 — the test that asserted the request body carried 8 images
+        // passed throughout.
+        //
+        // Costs a call per image on an all-benign batch, and returns on the
+        // first YES. Single-image requests, which are nearly all of them, are
+        // unchanged.
+        let sawUnknown = false;
+        for (const image of images ?? []) {
+            const answer = await screenWithRetry([image]);
+            if (answer === "yes") return "yes";
+            if (answer === "unknown") sawUnknown = true;
+        }
+        return sawUnknown ? "unknown" : "no";
+    }
+
+    async function screenWithRetry(batch: string[]): Promise<"yes" | "no" | "unknown"> {
         // Two attempts, matching the classifier's budget. Giving the screen one
         // attempt and the classifier two is what made "busy machine" a bypass.
         for (let attempt = 0; attempt < 2; attempt++) {
-            const answer = await screenOnce();
+            const answer = await screenOnce(batch);
             if (answer !== "unknown") return answer;
         }
         return "unknown";
     }
 
-    async function screenOnce(): Promise<"yes" | "no" | "unknown"> {
+    async function screenOnce(batch: string[]): Promise<"yes" | "no" | "unknown"> {
         try {
             const res = await fetchImpl(`${ollamaUrl}/api/chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     model,
-                    messages: [{ role: "user", content: IMAGE_CONTENT_SCREEN, images }],
+                    messages: [{ role: "user", content: IMAGE_CONTENT_SCREEN, images: batch }],
                     stream: false,
                     think: false,
                     options: { num_predict: 8, temperature: 0 },
@@ -478,15 +507,11 @@ export async function callLayer1(
     // The picture overrules the words. A mundane request about a clinical
     // screenshot is exactly the shape that classified as NOT_RESERVED.
     // Only a clean "no" permits the classifier's verdict to stand.
-    if (screenPromise) {
-        const screened = await screenPromise;
-        if (screened === "yes") return "OBVIOUS_RESERVED";
-        // An unreadable screen escalates, but must never DOWNGRADE a classifier
-        // that already said reserved — caught by tests/tools/layer1-images.test.ts,
-        // which existed before this feature and encoded the right contract.
-        if (screened === "unknown") {
-            return settled === "OBVIOUS_RESERVED" ? "OBVIOUS_RESERVED" : "UNCERTAIN";
-        }
+    // An unreadable screen escalates, but must never DOWNGRADE a classifier that
+    // already said reserved — caught by tests/tools/layer1-images.test.ts, which
+    // existed before this feature and encoded the right contract.
+    if (screened === "unknown") {
+        return settled === "OBVIOUS_RESERVED" ? "OBVIOUS_RESERVED" : "UNCERTAIN";
     }
 
     const verdict: Layer1Verdict = (hasImages && settled === "ERROR") ? "UNCERTAIN" : settled;
