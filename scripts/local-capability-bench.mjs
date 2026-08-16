@@ -43,13 +43,25 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "prism-bench-"));
 // the entire response (semver-compare -> 319 tokens of thinking, empty answer;
 // same prompt with thinking off passes 4/4). Thinking is a per-tier capability,
 // not a per-task preference.
+// ctxTokens and vision mirror what prism ALREADY gates on: the §5.4 ctx gate
+// skips a tier whose num_ctx cannot hold the prompt, and probeVision skips a
+// tier with no projector layer. A bench that ignores those gates sends an image
+// to a text-only tier and an 18k-token prompt to a 4k-ctx tier, gets HTTP 500
+// and HTTP 400, and reports them as model FAILURES — which is how the first run
+// of this file scored prism-coder:27b at 8/11. Those are capability boundaries
+// prism handles, not defects. They are SKIPPED here for the same reasons and
+// with the same names, so the bench and production disagree about nothing.
 const TIERS = [
-    { tag: "prism-coder:27b", minFreeGb: 21, prefersThinking: true },
-    { tag: "prism-coder:9b", minFreeGb: 9, prefersThinking: true },
-    { tag: "prism-coder:9b-fixed", minFreeGb: 9, prefersThinking: true },
-    { tag: "prism-coder:4b", minFreeGb: 5.2, prefersThinking: false },
-    { tag: "prism-coder:2b", minFreeGb: 4.5, prefersThinking: false },
+    { tag: "prism-coder:27b", minFreeGb: 21, prefersThinking: true, ctxTokens: 4_096, vision: false },
+    { tag: "prism-coder:9b", minFreeGb: 9, prefersThinking: true, ctxTokens: 32_768, vision: true },
+    { tag: "prism-coder:9b-fixed", minFreeGb: 9, prefersThinking: true, ctxTokens: 32_768, vision: true },
+    { tag: "prism-coder:4b", minFreeGb: 5.2, prefersThinking: false, ctxTokens: 32_768, vision: true },
+    { tag: "prism-coder:2b", minFreeGb: 4.5, prefersThinking: false, ctxTokens: 32_768, vision: true },
 ];
+
+/** Rough token estimate, matching the handler's chars/4 convention. */
+const estTokens = (s) => Math.ceil(String(s ?? "").length / 4);
+const IMAGE_TOKENS = 3_000; // flat per-image estimate, as in the ctx gate
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 /**
@@ -384,6 +396,19 @@ for (const tier of TIERS) {
     console.log(`── ${tier.tag} (resolved ${tag})`);
     const rows = [];
     for (const t of tasks) {
+        // Gate BEFORE calling, exactly as prism does — a tier that cannot serve
+        // the task is skipped, never scored against it.
+        if (t.images?.length && tier.vision === false) {
+            rows.push({ cls: t.cls, name: t.name, skipped: "no_vision" });
+            console.log(`   SKIP  ${t.cls.padEnd(9)}${t.name.padEnd(18)}${"".padStart(7)}   no_vision`);
+            continue;
+        }
+        const promptTok = estTokens(t.prompt) + (t.images?.length ?? 0) * IMAGE_TOKENS + 64;
+        if (tier.ctxTokens && promptTok > tier.ctxTokens) {
+            rows.push({ cls: t.cls, name: t.name, skipped: "ctx_insufficient" });
+            console.log(`   SKIP  ${t.cls.padEnd(9)}${t.name.padEnd(18)}${"".padStart(7)}   ctx_insufficient (${promptTok} tok > ${tier.ctxTokens})`);
+            continue;
+        }
         const think = t.think === true && tier.prefersThinking === true;
         const r = await generate({ model: tag, prompt: t.prompt, images: t.images, maxTokens: t.maxTokens, think });
         let v = { pass: false, detail: r.ok ? "" : r.err };
@@ -391,9 +416,11 @@ for (const tier of TIERS) {
         rows.push({ cls: t.cls, name: t.name, pass: v.pass, ms: r.ms, out: r.outTokens ?? 0, detail: v.detail ?? "" });
         console.log(`   ${v.pass ? "PASS" : "FAIL"}  ${t.cls.padEnd(9)}${t.name.padEnd(18)}${String(r.ms).padStart(7)}ms  ${v.pass ? "" : (v.detail ?? "").slice(0, 90)}`);
     }
-    const p = rows.filter((r) => r.pass).length;
-    console.log(`   → ${p}/${rows.length} passed, median ${median(rows.map((r) => r.ms))}ms\n`);
-    results.push({ model: tier.tag, passed: p, total: rows.length, rows });
+    const scored = rows.filter((r) => !r.skipped);
+    const p = scored.filter((r) => r.pass).length;
+    const nSkip = rows.length - scored.length;
+    console.log(`   → ${p}/${scored.length} passed${nSkip ? ` (${nSkip} skipped by tier gate)` : ""}, median ${median(scored.map((r) => r.ms))}ms\n`);
+    results.push({ model: tier.tag, passed: p, total: scored.length, rows });
     // Release the tier before loading the next one, so the RAM gate above is honest.
     await fetch(`${OLLAMA}/api/generate`, { method: "POST", body: JSON.stringify({ model: tag, keep_alive: 0 }) }).catch(() => {});
     await new Promise((r) => setTimeout(r, 1200));
@@ -409,7 +436,9 @@ console.log("-".repeat(20 + classes.length * 11 + 8));
 for (const r of results) {
     if (r.skipped) { console.log(`${r.model.padEnd(20)}SKIPPED — ${r.skipped}`); continue; }
     const cells = classes.map((c) => {
-        const sub = r.rows.filter((x) => x.cls === c);
+        const sub = r.rows.filter((x) => x.cls === c && !x.skipped);
+        const skipped = r.rows.filter((x) => x.cls === c && x.skipped).length;
+        if (!sub.length && skipped) return "gated".padEnd(11);
         return `${sub.filter((x) => x.pass).length}/${sub.length}`.padEnd(11);
     });
     console.log(`${r.model.padEnd(20)}${cells.join("")}${r.passed}/${r.total}`);
