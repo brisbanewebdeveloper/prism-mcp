@@ -444,23 +444,44 @@ export async function callLayer1(
      * cannot read is treated as unread, not as permission.
      */
     async function screenImageContent(): Promise<"yes" | "no" | "unknown"> {
+        // ONE IMAGE PER CALL. Handing the model the whole batch and asking one
+        // question gets an answer about the batch, not about each page: the same
+        // clinical report that returns YES on its own returned a clean,
+        // well-formed NO at index 3 of 8 benign screenshots, 3/3, and was served
+        // locally. Passing all 8 images is not the same as the model reading
+        // image 4 — the test that asserted the request body carried 8 images
+        // passed throughout.
+        //
+        // Costs a call per image on an all-benign batch, and returns on the
+        // first YES. Single-image requests, which are nearly all of them, are
+        // unchanged.
+        let sawUnknown = false;
+        for (const image of images ?? []) {
+            const answer = await screenWithRetry([image]);
+            if (answer === "yes") return "yes";
+            if (answer === "unknown") sawUnknown = true;
+        }
+        return sawUnknown ? "unknown" : "no";
+    }
+
+    async function screenWithRetry(batch: string[]): Promise<"yes" | "no" | "unknown"> {
         // Two attempts, matching the classifier's budget. Giving the screen one
         // attempt and the classifier two is what made "busy machine" a bypass.
         for (let attempt = 0; attempt < 2; attempt++) {
-            const answer = await screenOnce();
+            const answer = await screenOnce(batch);
             if (answer !== "unknown") return answer;
         }
         return "unknown";
     }
 
-    async function screenOnce(): Promise<"yes" | "no" | "unknown"> {
+    async function screenOnce(batch: string[]): Promise<"yes" | "no" | "unknown"> {
         try {
             const res = await fetchImpl(`${ollamaUrl}/api/chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     model,
-                    messages: [{ role: "user", content: IMAGE_CONTENT_SCREEN, images }],
+                    messages: [{ role: "user", content: IMAGE_CONTENT_SCREEN, images: batch }],
                     stream: false,
                     think: false,
                     options: { num_predict: 8, temperature: 0 },
