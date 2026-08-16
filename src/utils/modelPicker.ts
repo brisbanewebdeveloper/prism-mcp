@@ -78,10 +78,43 @@ export const MODEL_TIERS: ReadonlyArray<ModelChoice> = [
     // The only tier that reasons before answering. ~600 tokens go to <think> on
     // a routing turn, so the local floor must clear that plus the answer or the
     // hard_truncation retry drops it back to its 83.5% configuration.
+    // ctxTokens STAYS 4_096 — deliberately, and it is currently an
+    // under-declaration. Measured 2026-08-16: the 2026-08-14 vision push
+    // republished this tag with NO PARAMETER lines at all (`ollama show
+    // --modelfile prism-coder:9b` prints TEMPLATE only), so Ollama grants its
+    // own default instead. On this host that default is 32768 — `ollama ps`
+    // reports CONTEXT 32768 and a live 18,575-token prompt was answered
+    // correctly rather than truncated. So the §5.4 gate is skipping this tier,
+    // and 27b above it, for prompts they could serve, falling through to 4b/2b.
+    //
+    // Raising the number here anyway would be FAIL-OPEN: on a host that has not
+    // adopted scripts/prism-coder-9b.Modelfile, or whose Ollama defaults lower
+    // (OLLAMA_CONTEXT_LENGTH, older builds), a 32k declaration lets an oversize
+    // prompt through to be silently truncated — precisely what §5.4 exists to
+    // prevent. Under-declaring only costs a tier; over-declaring costs a wrong
+    // answer with no signal.
+    //
+    // Correct sequence: (1) adopt the Modelfile so num_ctx is pinned at 32768
+    // rather than inherited, (2) then raise this to 32_768 — KV cost measured at
+    // +0.6 GB resident (6.3 -> 6.9 GB), well inside minFreeGb 9. The durable fix
+    // is to stop mirroring the Modelfile here at all and read num_ctx live from
+    // /api/show, which retires this whole class of staleness.
     { tag: 'prism-coder:9b',   weightsGb:  6.2, minFreeGb:  9, ctxTokens: 4_096,
       prefersThinking: true, minLocalTokens: 2_048 },
-    { tag: 'prism-coder:4b',   weightsGb:  3.2, minFreeGb:  5.2, ctxTokens: 32_768 },
-    { tag: 'prism-coder:2b',   weightsGb:  3, minFreeGb:  4.5, ctxTokens: 32_768 },
+    // prefersThinking: false is EXPLICIT, not absent — resolveThinkingMode
+    // distinguishes "this tier says no" from "this tier says nothing" and only
+    // overrides the mode default for the former. Measured 2026-08-16 against
+    // live Ollama on both tiers: reasoning draws down the same num_predict
+    // budget the answer needs, and neither tier has a minLocalTokens floor to
+    // protect it. Code generation at num_predict 1600 returned 319 tokens of
+    // pure reasoning and an EMPTY response; the identical prompt with thinking
+    // off produced a function passing 4/4 executed assertions. Extraction and
+    // vision at num_predict 600 gave 2503/2641 chars of reasoning and an empty
+    // response, versus a correct answer in 23 tokens with thinking off.
+    { tag: 'prism-coder:4b',   weightsGb:  3.2, minFreeGb:  5.2, ctxTokens: 32_768,
+      prefersThinking: false },
+    { tag: 'prism-coder:2b',   weightsGb:  3, minFreeGb:  4.5, ctxTokens: 32_768,
+      prefersThinking: false },
 ];
 
 /**

@@ -1021,7 +1021,29 @@ function resolveThinkingMode(
     // mode. Explicit caller intent and the fast-task shortcut still win — this
     // only replaces the blanket "route means never think" default, which cost
     // the 9b 12 points (83.5% -> 95.7%) on the routing suite.
-    if (tier?.prefersThinking) return true;
+    //
+    // The converse holds and is the text-path twin of the IMAGE rule above: a
+    // tier WITHOUT prefersThinking also has no minLocalTokens floor (see
+    // MODEL_TIERS), so reasoning draws down the very num_predict budget the
+    // answer needs. `mode !== "route"` alone turned thinking on for every
+    // chat/code call on 4b/2b and produced empty answers. Measured 2026-08-16,
+    // prism-coder:4b and :2b, code-generation prompt at num_predict 1600:
+    //
+    //   think=true    319 tokens, ALL reasoning, response "" (done=stop)
+    //   think=false   correct function, 4/4 executed assertions pass
+    //
+    // and on the 6-task extractive suite at num_predict 600, think=true gave
+    // 2503/2641 chars of reasoning and an empty response, while think=false
+    // answered correctly in 23 tokens. This is the same class as the
+    // gate_failed_served rows in infer_metrics (completion_tokens 2-8 on 4b/9b
+    // code-mode calls): the budget went to reasoning the caller never sees.
+    //
+    // So a tier that states a preference decides — in BOTH directions. Only a
+    // tier that states nothing falls back to the mode default. 27b states
+    // nothing and is deliberately left alone: it is gated at 21 GB free and
+    // could not be loaded on this host, so there is no measurement to justify
+    // changing it. Do not widen this to `?? false` without one.
+    if (tier?.prefersThinking !== undefined) return tier.prefersThinking;
     return mode !== "route";
 }
 
