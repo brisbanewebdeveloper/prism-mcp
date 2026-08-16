@@ -33,31 +33,26 @@ import { execFileSync } from "node:child_process";
 const OLLAMA = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "prism-bench-"));
 
-// ── tier table ──────────────────────────────────────────────────────────────
-// minFreeGb mirrors src/utils/modelPicker.ts. A tier whose gate is not met is
-// reported as SKIPPED, never run at a degraded setting — that is what makes the
-// 27b row meaningful on hardware that can actually hold it.
-// prefersThinking mirrors modelPicker.ts — ONLY 9b (and 27b) carry it, and the
-// tier table gives 9b a minLocalTokens floor so reasoning cannot crowd out the
-// answer. 4b/2b have no such floor: measured, thinking on those tiers swallows
-// the entire response (semver-compare -> 319 tokens of thinking, empty answer;
-// same prompt with thinking off passes 4/4). Thinking is a per-tier capability,
-// not a per-task preference.
-// ctxTokens and vision mirror what prism ALREADY gates on: the §5.4 ctx gate
-// skips a tier whose num_ctx cannot hold the prompt, and probeVision skips a
-// tier with no projector layer. A bench that ignores those gates sends an image
-// to a text-only tier and an 18k-token prompt to a 4k-ctx tier, gets HTTP 500
-// and HTTP 400, and reports them as model FAILURES — which is how the first run
-// of this file scored prism-coder:27b at 8/11. Those are capability boundaries
-// prism handles, not defects. They are SKIPPED here for the same reasons and
-// with the same names, so the bench and production disagree about nothing.
-const TIERS = [
-    { tag: "prism-coder:27b", minFreeGb: 21, prefersThinking: true, ctxTokens: 4_096, vision: false },
-    { tag: "prism-coder:9b", minFreeGb: 9, prefersThinking: true, ctxTokens: 32_768, vision: true },
-    { tag: "prism-coder:9b-fixed", minFreeGb: 9, prefersThinking: true, ctxTokens: 32_768, vision: true },
-    { tag: "prism-coder:4b", minFreeGb: 5.2, prefersThinking: false, ctxTokens: 32_768, vision: true },
-    { tag: "prism-coder:2b", minFreeGb: 4.5, prefersThinking: false, ctxTokens: 32_768, vision: true },
-];
+// ── tier table: IMPORTED, never copied ──────────────────────────────────────
+// An earlier revision of this file kept its own copy of the tier table. It
+// drifted immediately: the copy said 9b ctxTokens 32_768 (what the tier really
+// serves) while MODEL_TIERS says 4_096 (deliberately fail-safe until the
+// Modelfile pins num_ctx). Two numbers describing one thing is how a bench ends
+// up measuring a machine production never runs on, so the copy is gone.
+//
+// Everything gate-related now comes from the built artefact prism itself uses:
+// MODEL_TIERS for minFreeGb / ctxTokens / prefersThinking, resolveOllamaName for
+// the dcostenco/ prefix, and probeVision for the projector layer — a LIVE
+// /api/show capability check rather than a hardcoded boolean, which is what
+// production does. If the tier table changes, this bench changes with it and
+// cannot silently disagree.
+//
+// Consequence worth seeing rather than hiding: with the real ctxTokens, the
+// long-context task is GATED on 9b and 27b at 4_096. That is not a bench
+// limitation, it is the §5.4 gate refusing prompts those tiers could in fact
+// serve — visible here instead of masked by a divergent copy.
+const { MODEL_TIERS, resolveOllamaName } = await import("../dist/utils/modelPicker.js");
+const { probeVision } = await import("../dist/tools/prismInferHandler.js");
 
 /** Rough token estimate, matching the handler's chars/4 convention. */
 const estTokens = (s) => Math.ceil(String(s ?? "").length / 4);
@@ -371,7 +366,7 @@ const jsonOut = argOf("--json");
 const installed = new Set(
     (await (await fetch(`${OLLAMA}/api/tags`)).json()).models.map((m) => m.name.replace(/:latest$/, ""))
 );
-const resolve = (tag) => (installed.has(tag) ? tag : installed.has(`dcostenco/${tag}`) ? `dcostenco/${tag}` : null);
+const resolve = (tag) => { const n = resolveOllamaName(tag, installed); return installed.has(n) ? n : null; };
 
 const visionPng = makeVisionFixture();
 const allTasks = buildTasks(visionPng);
@@ -383,7 +378,7 @@ console.log(`vision fixture: ${visionPng ?? "UNAVAILABLE (svg render failed — 
 console.log("");
 
 const results = [];
-for (const tier of TIERS) {
+for (const tier of MODEL_TIERS) {
     const tag = resolve(tier.tag);
     if (onlyModels && !onlyModels.includes(tier.tag)) continue;
     if (!tag) { console.log(`── ${tier.tag}: SKIPPED (not installed)`); continue; }
@@ -393,12 +388,15 @@ for (const tier of TIERS) {
         results.push({ model: tier.tag, skipped: `ram<${tier.minFreeGb}GB` });
         continue;
     }
-    console.log(`── ${tier.tag} (resolved ${tag})`);
+    // Live capability probe, exactly as the handler does — not a hardcoded flag.
+    let hasVision = false;
+    try { hasVision = await probeVision(OLLAMA, tag); } catch { hasVision = false; }
+    console.log(`── ${tier.tag} (resolved ${tag}${hasVision ? "" : ", text-only"})`);
     const rows = [];
     for (const t of tasks) {
         // Gate BEFORE calling, exactly as prism does — a tier that cannot serve
         // the task is skipped, never scored against it.
-        if (t.images?.length && tier.vision === false) {
+        if (t.images?.length && !hasVision) {
             rows.push({ cls: t.cls, name: t.name, skipped: "no_vision" });
             console.log(`   SKIP  ${t.cls.padEnd(9)}${t.name.padEnd(18)}${"".padStart(7)}   no_vision`);
             continue;

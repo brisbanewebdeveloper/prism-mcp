@@ -49,7 +49,17 @@ const jsonOut = argOf("--json");
  * 1-3; a rendered UI exceeds 200. Mirrors the threshold in
  * the companion repo's screenshot validator so the two agree by construction.
  */
+let sipsWarned = false;
 function distinctColours(png) {
+    // sips is macOS-only. On Linux the deterministic blank-detector is simply
+    // unavailable, and the honest behaviour is to say so ONCE and return -1 —
+    // which the caller already treats as "unscored" — rather than let a missing
+    // binary read as "no blanks detected". A silent -1 would quietly turn the
+    // cross-check off and leave the model's verdict unchallenged.
+    if (process.platform !== "darwin" && !sipsWarned) {
+        sipsWarned = true;
+        console.error("[triage] sips is macOS-only — the deterministic blank check is DISABLED on this platform; verdicts are unscored");
+    }
     const tmp = `/tmp/tri-${path.basename(png, ".png")}.rgb`;
     try {
         execFileSync("sips", ["-z", "48", "64", "-s", "format", "bmp", png, "--out", `${tmp}.bmp`], { stdio: "pipe" });

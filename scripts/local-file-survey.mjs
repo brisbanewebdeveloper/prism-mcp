@@ -101,48 +101,73 @@ function truthSet() {
 const truth = truthSet();
 const t0 = Date.now();
 let localIn = 0, localOut = 0, agree = 0;
-const rows = [], disagreements = [], clippedNegatives = [];
+const rows = [], disagreements = [];
+
+/**
+ * Window the file instead of truncating it.
+ *
+ * Truncation fails in the dangerous direction: a file whose evidence sits past
+ * the cut answers NO — "no authentication check in code" — which reads as a
+ * finding rather than as an unread remainder. Measured on
+ * a 49,500-byte Stripe webhook route in a private companion repo: the Stripe HMAC
+ * verification is at char 14,651, and a 12,000-char clip turned "I could not
+ * see it" into "there is none". That one clip was the whole difference between
+ * 39/40 and 40/40 on the 40-file corpus.
+ *
+ * Scanning every window, and answering YES if ANY window does, removes the
+ * failure mode instead of moving the cliff further out. A NO now means every
+ * window was read and none held the evidence — a real negative. The overlap
+ * stops a match that straddles a boundary from being split in half.
+ */
+function windowsOf(text, size, overlap) {
+    if (text.length <= size) return [text];
+    const out = [];
+    for (let i = 0; i < text.length; i += size - overlap) {
+        out.push(text.slice(i, i + size));
+        if (i + size >= text.length) break;
+    }
+    return out;
+}
 
 for (const f of files) {
     let body = "";
     try { body = fs.readFileSync(f, "utf8"); } catch { continue; }
-    const clipped = body.length > MAX_CHARS;
-    const slice = clipped ? body.slice(0, MAX_CHARS) : body;
 
-    const prompt = `${QUESTION}
+    const parts = windowsOf(body, MAX_CHARS, 2_000);
+    let ans = "NO", evidence = "", read = 0;
 
-Answer on ONE line in exactly this format, nothing else:
-ANSWER=<YES|NO> | <five words of evidence from the file>
+    for (let i = 0; i < parts.length; i++) {
+        const prompt = [
+            QUESTION,
+            "",
+            "Answer on ONE line in exactly this format, nothing else:",
+            "ANSWER=<YES|NO> | <five words of evidence from the file>",
+            "",
+            `FILE: ${f}${parts.length > 1 ? `  (part ${i + 1} of ${parts.length})` : ""}`,
+            "```",
+            parts[i],
+            "```",
+        ].join("\n");
 
-FILE: ${f}
-${clipped ? "(first part of the file only)\n" : ""}
-\`\`\`
-${slice}
-\`\`\``;
+        const r = await chat(prompt, 60);
+        localIn += r.inTok; localOut += r.outTok; read++;
 
-    const r = await chat(prompt, 60);
-    localIn += r.inTok; localOut += r.outTok;
-    // Accept a bare "YES | evidence" as well as "ANSWER=YES | evidence".
-    // Measured: 9b frequently drops the ANSWER= prefix while giving a correct,
-    // correctly-formatted verdict. Scoring that as UNPARSED measures the prompt's
-    // formatting grip, not the model's accuracy — and the first revision of this
-    // script did exactly that, reporting a dozen false failures.
-    const firstLine = r.text.split("\n").find((l) => l.trim()) ?? "";
-    const ans = firstLine.match(/(?:ANSWER\s*=\s*)?\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? "UNPARSED";
-
-    // R1/§B.3: a NO from a partial read is absence of evidence, not evidence of
-    // absence. Mark it so it can never be counted as a clean result.
-    if (clipped && ans === "NO") clippedNegatives.push(f);
+        const firstLine = r.text.split("\n").find((l) => l.trim()) ?? "";
+        const got = firstLine.match(/(?:ANSWER\s*=\s*)?\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? "UNPARSED";
+        if (got === "YES") { ans = "YES"; evidence = r.text.slice(0, 90); break; }  // first YES settles it
+        if (got === "UNPARSED" && i === parts.length - 1 && ans === "NO") ans = "UNPARSED";
+    }
 
     let ok = null;
     if (truth) {
         const expect = truth.has(f) ? "YES" : "NO";
         ok = ans === expect;
         if (ok) agree++;
-        else disagreements.push({ f, ans, expect, why: r.text.slice(0, 90) });
+        else disagreements.push({ f, ans, expect, why: evidence });
     }
-    rows.push({ f, ans, ok, clipped });
+    rows.push({ f, ans, ok, windows: parts.length, read });
 }
+
 const ms = Date.now() - t0;
 
 // ── accounting ──────────────────────────────────────────────────────────────
@@ -160,10 +185,6 @@ if (truth) {
         console.log(`\ndisagreements — inspect these, do NOT just count them:`);
         for (const d of disagreements) console.log(`  ${d.f}\n    model=${d.ans} oracle=${d.expect}  ${d.why}`);
     }
-}
-if (clippedNegatives.length) {
-    console.log(`\n!! ${clippedNegatives.length} file(s) answered NO from a CLIPPED read — that is missing evidence, not a finding:`);
-    for (const f of clippedNegatives) console.log(`   ${f}  (re-run with a larger --max-chars)`);
 }
 console.log(`\ncontext accounting`);
 console.log(`  reading all ${rows.length} files in-loop : ~${corpusTokens.toLocaleString()} tok deposited, ${rows.length}+ turns`);
