@@ -139,6 +139,31 @@ export function estimateImageTokens(count: number): number {
 
 export const PRISM_INFER_TOOL: Tool = {
     name: "prism_infer",
+    // MCP annotations — required for non-interactive hosts, not decoration.
+    //
+    // Codex running `codex exec` sits at approval:never with a read-only
+    // sandbox. Under MCP, an ABSENT readOnlyHint defaults to FALSE, so a tool
+    // that declares nothing is treated as potentially environment-modifying and
+    // is auto-denied — there is no user present to approve it. Observed
+    // 2026-08-16: `session_bootstrap` (which declares readOnlyHint) completed,
+    // while prism_infer came back `Err: "user cancelled MCP tool call"` with
+    // duration {secs:0, nanos:0} — rejected before any work, not timed out.
+    // The tool was effectively unreachable from Codex and CI for that reason
+    // alone.
+    //
+    // The hints are accurate, not convenient: inference touches no workspace
+    // file and no user data (it appends only its own telemetry row to
+    // infer_metrics), it destroys nothing, it is not idempotent because model
+    // output varies run to run, and it is open-world because `cloud_fallback`
+    // can egress to the Synalux portal and even the local tier is an HTTP call
+    // to Ollama.
+    annotations: {
+        title: "Local inference (prism-coder)",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+    },
     description:
         "Run an inference on a local prism-coder model (Ollama) to save cloud tokens. " +
         "Owns model selection across 27B / 9B / 4B / 2B using an explicit `model_ceiling` or " +
