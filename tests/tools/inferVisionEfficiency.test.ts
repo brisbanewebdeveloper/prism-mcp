@@ -133,6 +133,50 @@ describe("vision requests take the cheapest tier that can see", () => {
     });
 });
 
+describe("the vision prompt is accounted for, not just applied", () => {
+    it("charges the ctx gate for the prompt it actually sends", async () => {
+        // The gate used to price args.system while the model received
+        // effectiveSystem, so 46 tokens of vision prompt went uncounted against
+        // a 64-token margin. Reverting that leaves the whole suite green, which
+        // is why this test exists.
+        //
+        // Budget on a 4096-ctx tier: 4096 - 3000 (flat per-image estimate) - 64
+        // (template margin) = 1032 tokens. A 4000-char prompt estimates at 1000
+        // — under the budget without the vision prompt, over it with.
+        const seen: Seen[] = [];
+        const r = await runInfer(
+            { prompt: "x".repeat(4000), images: [PNG_B64], mode: "code" },
+            makeDeps(seen),
+        );
+        expect(
+            r.attempts.some(a => a.tier.includes("9b") && a.reason === "ctx_insufficient"),
+            "the 9b was priced as if the vision prompt were free",
+        ).toBe(true);
+    });
+
+    it("does not overrun the gate when the caller supplies no images", async () => {
+        // Same prompt, no image: no vision prompt is added, so nothing changes
+        // for text requests.
+        const seen: Seen[] = [];
+        const r = await runInfer({ prompt: "x".repeat(4000), mode: "code" }, makeDeps(seen));
+        expect(r.attempts.some(a => a.reason === "ctx_insufficient" && a.tier.includes("9b"))).toBe(false);
+    });
+
+    it("treats system:'' as a caller who wants no system prompt", async () => {
+        // `!args.system` swallowed the empty string and substituted the vision
+        // prompt over an explicit instruction. Reverting to the falsy check also
+        // leaves the suite green without this.
+        const seenSystem: Array<string | undefined> = [];
+        await runInfer(imageArgs({ system: "" }), makeDeps([], {
+            callLocal: async (_u, _m, _p, system) => {
+                seenSystem.push(system);
+                return { ok: true as const, text: "FILE: billing/pricing.py line 12", doneReason: "stop" };
+            },
+        }));
+        expect(seenSystem[0], "overrode an explicit empty system prompt").toBe("");
+    });
+});
+
 describe("thinking on image requests follows the tier, not the mode", () => {
     it("does NOT think on a small tier when one is explicitly chosen", async () => {
         // Thinking costs 867 tokens for the same answer the 2b gives in 185.

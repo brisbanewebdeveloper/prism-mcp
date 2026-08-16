@@ -130,6 +130,26 @@ describe("dimension reading", () => {
         expect(readImageDimensions(cgbi)).toEqual({ width: 1920, height: 1080 });
     });
 
+    it("does not accept a high-bit chunk type as IHDR", () => {
+        // `toString("ascii")` masks the high bit, so bytes C9 C8 C4 D2 decode to
+        // "IHDR" and a forged chunk placed first wins. Such a file is not
+        // decodable and sips refuses it, so the pipeline fails open — but the
+        // parser should not rely on a later stage to catch its own misread.
+        const png = makePng(800, 600);
+        const forgedIhdr = Buffer.alloc(13);
+        forgedIhdr.writeUInt32BE(4000, 0);
+        forgedIhdr.writeUInt32BE(3000, 4);
+        const spoofed = Buffer.concat([
+            png.subarray(0, 8),
+            Buffer.from([0x00, 0x00, 0x00, 0x0d]),          // length 13
+            Buffer.from([0xc9, 0xc8, 0xc4, 0xd2]),          // "IHDR" with the high bit set
+            forgedIhdr,
+            Buffer.alloc(4),                                 // crc
+            png.subarray(8),
+        ]);
+        expect(readImageDimensions(spoofed)).toEqual({ width: 800, height: 600 });
+    });
+
     it("rejects an absurd dimension rather than trusting it", () => {
         // Belt to the IHDR braces: any misparse that yields a huge number must
         // read as UNKNOWN (pass through untouched), never as "far above the cap,

@@ -1526,9 +1526,14 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // unroutable to the 4096-ctx tiers even for tiny prompts.
             // ctxTokens mirrors the live Modelfile values (see MODEL_TIERS).
             const CTX_TEMPLATE_MARGIN = 64;
-            // effectiveSystem, not args.system: the default vision prompt is ~35
-            // tokens and the model is charged for it, so an estimate built from
-            // args.system spends over half the 64-token margin without knowing.
+            // effectiveSystem, not args.system: the default vision prompt is 46
+            // estimated tokens and the model is charged for them, so an estimate
+            // built from args.system spends most of the 64-token margin without
+            // knowing. This narrows the usable prompt on the 4096-ctx tiers from
+            // 1032 to 986 tokens — about 184 characters — so a request near that
+            // edge now degrades to a 32k-ctx tier it previously squeaked past.
+            // That is the honest number, not a new class of failure: the same
+            // cliff already existed 184 characters further along.
             const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
                 + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
                 + CTX_TEMPLATE_MARGIN;

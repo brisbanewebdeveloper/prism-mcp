@@ -124,7 +124,13 @@ export interface ImageDims { width: number; height: number }
  *  it at all, and no real PNG approaches it — treating an absurd value as
  *  unknown means the image passes through untouched, which is the safe
  *  direction. Without this bound a misread produces a gigantic number that
- *  trivially clears the cap check and gets a small image resampled. */
+ *  trivially clears the cap check and gets a small image resampled.
+ *
+ *  Known cost, accepted: PNG permits 2^31-1 per axis, so a legitimate extreme
+ *  panorama (measured: a valid 70000x20 PNG) is no longer downscaled. It is
+ *  slower, never wrong, and the alternative — validating the IHDR tail's bit
+ *  depth and colour type instead — buys back that rare case at the price of a
+ *  bound that also catches misparse classes nobody has thought of yet. */
 const MAX_PLAUSIBLE_DIMENSION = 65_535;
 
 function sane(width: number, height: number): ImageDims | null {
@@ -161,7 +167,12 @@ export function readImageDimensions(buf: Buffer): ImageDims | null {
         // Bounded: every iteration advances by at least 12 bytes.
         while (off + 12 <= buf.length) {
             const chunkLen = buf.readUInt32BE(off);
-            const type = buf.toString("ascii", off + 4, off + 8);
+            // latin1, not ascii: ascii masks the high bit, so chunk-type bytes
+            // C9 C8 C4 D2 decode to "IHDR" and a forged chunk placed before the
+            // real one wins. Not reachable through this pipeline today — such a
+            // file is undecodable, sips refuses it and the resize fails open —
+            // but the parser should not depend on the next stage catching it.
+            const type = buf.toString("latin1", off + 4, off + 8);
             if (type === "IHDR") {
                 if (chunkLen < 13 || off + 8 + 13 > buf.length) return null;
                 return sane(buf.readUInt32BE(off + 8), buf.readUInt32BE(off + 12));
