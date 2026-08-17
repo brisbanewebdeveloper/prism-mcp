@@ -269,6 +269,18 @@ const LAYER1_TIMEOUT_MS = 1_500;
  *  1.5s text budget would time out every call and make the gate useless —
  *  a gate that always errors is a gate that never gates. */
 export const LAYER1_IMAGE_TIMEOUT_MS = 10_000;
+/** Total wall-clock the content screen may spend, across every attached image.
+ *
+ *  Bounds a stalled Ollama, which otherwise reached 180s on 8 images — nothing
+ *  else caps it, since no caller passes a timeout to callLayer1 and the server
+ *  has no dispatch timeout. With the classifier's own 20s worst case this keeps
+ *  Layer 1 under 50s, inside a typical 60s host tool timeout.
+ *
+ *  Sized against real work rather than guessed: an 8-image batch at production
+ *  2000px measures ~20s cold now that a multi-image batch takes one attempt per
+ *  image instead of two. Running out of budget counts as unknown, which
+ *  escalates — so the failure direction is a refusal, never a hang. */
+export const SCREEN_TOTAL_BUDGET_MS = 30_000;
 const LAYER1_RETRY_TIMEOUT_MS = 5_000;
 
 // Deterministic reserved-vocabulary backstop for the ERROR path.
@@ -413,11 +425,13 @@ export async function callLayer1(
     // question ("what is the last timestamp?") otherwise carries clinical
     // content past a classifier that only ever weighed the words.
     //
-    // Fails OPEN deliberately: a screen that errors or times out falls through
-    // to the classification below, which is exactly today's behaviour. Failing
-    // closed here would refuse every image request whenever Ollama hiccups, and
-    // an unusable gate gets disabled — but it does mean this adds protection
-    // only when the screen answers.
+    // Fails CLOSED. This comment used to say the opposite — that a screen which
+    // errors or times out falls through to the classification — and that was
+    // true of the first version. It is not true now: an unreadable screen
+    // escalates (see the "unknown" handling below). The stale sentence sat 20
+    // lines above the block that contradicted it, describing the security
+    // default incorrectly.
+    //
     // Sequential, deliberately. An earlier version started this concurrently
     // with the classification on the theory that two independent questions cost
     // max() rather than sum(). That was wrong: ollama serves vision with
@@ -455,26 +469,45 @@ export async function callLayer1(
         // Costs a call per image on an all-benign batch, and returns on the
         // first YES. Single-image requests, which are nearly all of them, are
         // unchanged.
+        // ONE wall-clock budget for the whole screen, however many images. Per
+        // image, an unbounded 2 attempts x 10s made a hung Ollama into a
+        // 180,035ms stall on 8 images, against 20,009ms before this loop
+        // existed — the /api/tags and /api/show probes answer instantly even
+        // while /api/chat is queued behind a big model load, so the block is
+        // entered and then sits there. No caller applies a timeout to
+        // callLayer1 and the server has no dispatch timeout, so nothing else
+        // bounds it.
+        //
+        // Running out of budget counts as unknown, which escalates. Slow is
+        // allowed to become "escalate"; it is not allowed to become "hang".
+        const deadline = Date.now() + SCREEN_TOTAL_BUDGET_MS;
+        // The retry is for a transient blip on a single image. Across a batch
+        // the other images already provide that signal, and retrying each one
+        // is what turns a stalled server into minutes.
+        const attempts = (images?.length ?? 0) > 1 ? 1 : 2;
         let sawUnknown = false;
         for (const image of images ?? []) {
-            const answer = await screenWithRetry([image]);
+            if (Date.now() >= deadline) { sawUnknown = true; break; }
+            const answer = await screenWithRetry([image], deadline, attempts);
             if (answer === "yes") return "yes";
             if (answer === "unknown") sawUnknown = true;
         }
         return sawUnknown ? "unknown" : "no";
     }
 
-    async function screenWithRetry(batch: string[]): Promise<"yes" | "no" | "unknown"> {
-        // Two attempts, matching the classifier's budget. Giving the screen one
-        // attempt and the classifier two is what made "busy machine" a bypass.
-        for (let attempt = 0; attempt < 2; attempt++) {
-            const answer = await screenOnce(batch);
+    async function screenWithRetry(
+        batch: string[], deadline: number, attempts: number,
+    ): Promise<"yes" | "no" | "unknown"> {
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) return "unknown";
+            const answer = await screenOnce(batch, Math.min(remaining, LAYER1_IMAGE_TIMEOUT_MS));
             if (answer !== "unknown") return answer;
         }
         return "unknown";
     }
 
-    async function screenOnce(batch: string[]): Promise<"yes" | "no" | "unknown"> {
+    async function screenOnce(batch: string[], budgetMs: number): Promise<"yes" | "no" | "unknown"> {
         try {
             const res = await fetchImpl(`${ollamaUrl}/api/chat`, {
                 method: "POST",
@@ -486,7 +519,7 @@ export async function callLayer1(
                     think: false,
                     options: { num_predict: 8, temperature: 0 },
                 }),
-                signal: AbortSignal.timeout(LAYER1_IMAGE_TIMEOUT_MS),
+                signal: AbortSignal.timeout(budgetMs),
             });
             if (res.ok) {
                 const data = await res.json() as { message?: { content?: string } };

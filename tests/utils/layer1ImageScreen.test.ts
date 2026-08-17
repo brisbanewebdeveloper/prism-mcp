@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { callLayer1, parseScreenAnswer, IMAGE_CONTENT_SCREEN, LAYER1_PROMPT } from "../../src/utils/layer1.js";
+import { callLayer1, parseScreenAnswer, IMAGE_CONTENT_SCREEN, LAYER1_PROMPT,
+         SCREEN_TOTAL_BUDGET_MS, LAYER1_IMAGE_TIMEOUT_MS } from "../../src/utils/layer1.js";
 
 /**
  * Layer 1 classifies a REQUEST. Measured 2026-08-16, that is all it does — the
@@ -99,6 +100,52 @@ describe("the picture overrules the words", () => {
             expect(JSON.parse(s.body).messages[0].images, "batched images into one screen call").toHaveLength(1);
         }
     });
+
+    it("escalates when ONE image of many is unreadable", async () => {
+        // The headline property of per-image screening, and it survived
+        // mutation: `if (answer === "unknown" && images.length === 1)` left all
+        // 4126 tests green. The only degenerate-answer test used a single
+        // image, while the failure that motivated the fix — `<|tool_call|>` —
+        // was observed specifically on a multi-image batch.
+        const many = Array.from({ length: 8 }, () => PNG);
+        let n = 0;
+        const fn = (async (_u: unknown, init?: RequestInit) => {
+            const body = String(init?.body ?? "");
+            if (isScreenBody(body)) {
+                n++;
+                // image 5 never yields a yes/no token, however often it is asked
+                return new Response(JSON.stringify({ message: { content: n === 5 ? '<|tool_call|> {"' : "NO" } }), { status: 200 });
+            }
+            return new Response(JSON.stringify({ message: { content: "OBVIOUS_NOT_RESERVED" } }), { status: 200 });
+        }) as unknown as typeof fetch;
+        const v = await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, many);
+        expect(v, "one unreadable image in a batch was treated as permission").toBe("UNCERTAIN");
+    });
+
+    it("bounds the whole screen with one wall-clock budget", async () => {
+        // 8 images x 2 attempts x 10s made a hung Ollama a 180s stall, against
+        // 20s before per-image screening existed. Nothing else bounds it: no
+        // caller passes a timeout to callLayer1 and the server has no dispatch
+        // timeout. Here every screen call hangs until its own signal aborts.
+        const many = Array.from({ length: 8 }, () => PNG);
+        const fn = (async (_u: unknown, init?: RequestInit, ) => {
+            const body = String(init?.body ?? "");
+            if (isScreenBody(body)) {
+                // resolve only when the caller's AbortSignal fires
+                return await new Promise<Response>((_res, rej) => {
+                    const sig = (init as RequestInit & { signal?: AbortSignal }).signal;
+                    sig?.addEventListener("abort", () => rej(new Error("TimeoutError")));
+                });
+            }
+            return new Response(JSON.stringify({ message: { content: "OBVIOUS_NOT_RESERVED" } }), { status: 200 });
+        }) as unknown as typeof fetch;
+        const t0 = Date.now();
+        const v = await callLayer1("read this screenshot", "http://x", "prism-coder:4b", fn, many);
+        const elapsed = Date.now() - t0;
+        expect(v).toBe("UNCERTAIN");
+        expect(elapsed, `screen ran ${elapsed}ms — the total budget is not bounding it`)
+            .toBeLessThan(SCREEN_TOTAL_BUDGET_MS + LAYER1_IMAGE_TIMEOUT_MS + 5_000);
+    }, 120_000);
 
     it("stops at the first YES instead of screening the rest", async () => {
         // An all-benign batch of 8 costs 8 calls; a batch containing reserved

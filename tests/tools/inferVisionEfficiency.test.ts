@@ -165,6 +165,28 @@ describe("a paid caller is never handed an answer about an image the cloud never
         expect(cloudCalls, "sent an image request to a cloud path with no image channel").toBe(0);
     });
 
+    it("refuses an IMAGE request when the classifier itself errored", async () => {
+        // callLayer1 maps ERROR to UNCERTAIN whenever images are present, so
+        // this branch is unreachable through the real classifier — which is
+        // exactly why it went untested and why reverting its guard left all
+        // 4126 tests green. If a caller injects a classifier that returns ERROR,
+        // nothing has looked at the image, so the answer is a refusal, not a
+        // fallthrough to the keyword backstop and a local answer.
+        _setCacheForTest(PAID, 60_000);
+        let cloudCalls = 0;
+        let localCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "ERROR" as const,
+            callCloud: (async () => { cloudCalls++; return { ok: true as const, output: "x", backend: "anthropic" }; }) as InferDeps["callCloud"],
+            callLocal: async () => { localCalls++; return { ok: true as const, text: "local", doneReason: "stop" }; },
+        });
+        await expect(
+            runInfer({ ...imageArgs(), cloud_fallback: true }, deps),
+        ).rejects.toThrow(/refused/);
+        expect(cloudCalls, "escalated an image to a text-only cloud").toBe(0);
+        expect(localCalls, "served an image locally that nothing had screened").toBe(0);
+    });
+
     it("still escalates a TEXT request to cloud — the guard is about images only", async () => {
         _setCacheForTest(PAID, 60_000);
         let cloudCalls = 0;
