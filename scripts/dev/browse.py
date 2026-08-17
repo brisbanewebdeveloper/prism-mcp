@@ -52,6 +52,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -111,6 +112,63 @@ def validate_profile_name(profile: str) -> str:
             "Profile names must be 1-64 characters using letters, numbers, '.', '_' or '-'."
         )
     return profile
+
+
+def clear_stale_singleton_locks(profile_dir) -> bool:
+    """Remove Chrome's singleton files when the process that made them is gone.
+
+    Chrome guards a user-data-dir with `SingletonLock`, a symlink whose target is
+    `<hostname>-<pid>`. A clean exit removes it; a crash does not. The leftover then
+    fails every LATER launch against that profile, so a single crash becomes a
+    permanent outage for every process sharing the profile -- measured 2026-08-16,
+    where one crashed run left `SingletonLock -> Dmitris-MBP-25638` and each
+    subsequent run inherited the failure until the file was removed by hand.
+
+    Only a provably dead owner is cleared:
+
+      * the hostname recorded in the link must be this host, because a pid from
+        another machine says nothing about a local process, and
+      * the pid must not exist -- `os.kill(pid, 0)` raising ProcessLookupError.
+
+    A live lock is left strictly alone. Another agent may legitimately be driving
+    that profile, and stealing its lock would corrupt a running session; on this
+    machine several sessions share one profile, which is exactly how the crash
+    spread. PermissionError means the pid exists under another uid, so it also
+    counts as alive.
+
+    Returns True when a stale lock was cleared.
+    """
+    lock = Path(profile_dir) / 'SingletonLock'
+    try:
+        target = os.readlink(lock)
+    except (OSError, ValueError):
+        # Absent, or not a symlink: nothing this function should act on.
+        return False
+
+    host, _, pid_text = target.rpartition('-')
+    if not host or not pid_text.isdigit():
+        return False
+    if host != socket.gethostname():
+        return False
+
+    pid = int(pid_text)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass          # owner is gone -- the lock is stale
+    except PermissionError:
+        return False  # exists under another uid, therefore alive
+    except OSError:
+        return False
+    else:
+        return False  # signal delivered: the owner is running
+
+    for name in ('SingletonLock', 'SingletonCookie', 'SingletonSocket'):
+        try:
+            (Path(profile_dir) / name).unlink()
+        except OSError:
+            pass
+    return True
 
 
 def stable_profile_index(profile: str, count: int) -> int:
@@ -799,6 +857,16 @@ class StealthBrowserSession:
             os.chmod(self.profile_dir, 0o700)
         except Exception:
             pass
+
+        # A crashed run leaves SingletonLock behind and every later launch against
+        # that profile then fails, so one crash locks out every process sharing it.
+        # Only a lock whose owner pid is provably dead on this host is removed.
+        if clear_stale_singleton_locks(self.profile_dir):
+            print(
+                f"⚠️  Cleared a stale singleton lock in {self.profile_dir} "
+                "(owning process was gone)",
+                file=sys.stderr,
+            )
 
         self._playwright = sync_playwright().start()
 
