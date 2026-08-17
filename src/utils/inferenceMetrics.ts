@@ -88,8 +88,23 @@ export function estimateTokens(text: string): number {
     const divisor =
         wsRatio < 0.01 ? 1.2      // base64, dense JSON — measured 1.31 and 1.58
         : wsRatio < 0.05 ? 2.2    // minified/packed source — measured 2.44
-        : isCode ? 3.3
+        : isCode ? 2.5            // see the range below — 3.3 was optimistic
         : 4.0;
+    // The code divisor was 3.3, which is the ratio of comfortable prose-like
+    // source. Measured across five code samples on prism-coder:4b it is a range,
+    // not a constant: repo TypeScript 3.65 and 3.35, dense short statements 2.92,
+    // shell 2.23, indented JSON-ish config 1.95.
+    //
+    // 2.5 covers real and dense source. It does NOT cover indented dense data —
+    // that would need ~1.9, which would refuse ordinary code files at roughly
+    // half the size they actually fit at, and a gate that refuses normal work
+    // gets routed around.
+    //
+    // That is a deliberate limit, not an oversight. No character-based estimate
+    // is safe across a 2x density spread, so the estimate is a ROUTING heuristic
+    // and the truncation detector in prismInferHandler is the actual guarantee:
+    // it keys on ollama collapsing prompt_eval_count to num_ctx/2, which is
+    // content-independent and therefore catches whatever this misjudges.
     const latinTokens = latinLen / divisor;
     const cjkTokens = cjkCount;          // ~1 token per CJK char
     const emojiTokens = emojiCount * 1.5; // ~1.5 BPE tokens per emoji
