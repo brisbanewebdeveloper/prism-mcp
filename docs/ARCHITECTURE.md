@@ -261,12 +261,22 @@ When `embedding_provider=auto`:
 
 For offline tool-routing via `prism_infer`:
 
-| Tag | Base | Size | BFCL Accuracy | Tier gate |
-|-----|------|------|---------------|-----------|
-| `prism-coder:2b` | Qwen 3.5-4B Q3_K_M | 2.3 GB | 99.1% | Free (mobile) |
-| `prism-coder:4b` | Qwen 3.5-4B Q4_K_M | 3.4 GB | 100% | Free |
-| `prism-coder:9b` | Qwen 3.5-9B | 5.8 GB | 100% | Standard+ automatic routing |
-| `prism-coder:27b` | Qwen 3.5-27B | 16 GB | 100% | Advanced+ automatic routing |
+| Tag | Base | Size | Routing accuracy¹ | Tier gate |
+|-----|------|------|-------------------|-----------|
+| `prism-coder:2b` | Qwen 3.5-4B Q4_K_S | 3.3 GB | 100% | Free (mobile) |
+| `prism-coder:4b` | Qwen 3.5-4B Q4_K_M | 3.5 GB | 100% | Free |
+| `prism-coder:9b` | Qwen 3.5-9B | 6.7 GB | 95.7%² | Standard+ automatic routing |
+| `prism-coder:27b` | Qwen 3.5-27B | 16.8 GB | 100% | Advanced+ automatic routing |
+
+¹ These are **self-run** results on a narrow 115-case MCP tool-selection suite —
+not [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) leaderboard
+submissions. This column previously read "BFCL Accuracy", which claimed a public
+benchmark result the project has never submitted. It measures whether these
+models pick the right tool on our own eval, and nothing beyond that. See the
+README for the full methodology caveats.
+
+² The 9B is the only tier that reasons before answering, and is measured with
+reasoning enabled: 95.7% with thinking, 83.5% without.
 
 Prism auto-detects both namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`)
 Ollama tags.

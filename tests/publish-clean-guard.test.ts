@@ -81,6 +81,7 @@ describe("private identifiers must not appear in tracked files", () => {
     "synalux" + "-private",
     "dcostencos" + "-projects",
     "bcba" + "-private",
+    "prism-aac" + "-internal",
     "/Users/" + "admin",
   ];
   const IGNORE = /package-lock\.json|\.github\/workflows\/ci\.yml|tests\/publish-clean-guard\.test\.ts/;

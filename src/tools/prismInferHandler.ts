@@ -45,7 +45,7 @@ import {
     passesCodingQualityGate,
 } from "../utils/codingQualityPolicy.js";
 import { checkInputSafety, checkOutputSafety } from "../utils/safetyGate.js";
-import { callLayer1 as defaultCallLayer1, keywordBackstop, type Layer1Verdict } from "../utils/layer1.js";
+import { callLayer1 as defaultCallLayer1, keywordBackstop, reservedCategory, type Layer1Verdict } from "../utils/layer1.js";
 import { recordInference, recordThinkOnlyRetry, formatInferenceMetrics, estimateTokens } from "../utils/inferenceMetrics.js";
 import { appendInferMetric } from "../storage/inferMetricsLedger.js";
 import { getStorage } from "../storage/index.js";
@@ -821,13 +821,40 @@ export async function callOllamaGenerate(
  */
 export class ReservedRefusalError extends Error {
     readonly refusal_reason = "layer1_reserved";
-    constructor(verdict: string, public readonly attempts: Array<{ tier: string; reason: string }>) {
-        super(`prism_infer: Layer 1 verdict=${verdict}, reserved content refused. attempts=${JSON.stringify(attempts)}`);
+    constructor(
+        verdict: string,
+        public readonly attempts: Array<{ tier: string; reason: string }>,
+        public readonly category: string | null = null,
+        cloudWasAllowed = false,
+    ) {
+        // Say what tripped and what would change the outcome.
+        //
+        // The old message named the verdict and nothing else, which left a
+        // caller with no way to tell an over-broad keyword match from a genuine
+        // clinical refusal, and no idea that escalation was even an option. That
+        // matters most in the configuration this most often hits: a host told to
+        // pass cloud_fallback: false meets a gate that forbids answering
+        // locally, so reserved content can ONLY refuse — correctly, but with no
+        // stated way forward.
+        const what = category ? `category="${category}"` : "matched the semantic classifier";
+        const remedy = cloudWasAllowed
+            ? "Cloud escalation was permitted and did not produce an answer; see attempts."
+            : "Reserved content is never answered by a local model. Pass cloud_fallback: true "
+              + "to escalate to a stronger model, or answer it in the host thread instead.";
+        super(
+            `prism_infer: Layer 1 verdict=${verdict}, ${what} — reserved content refused. `
+            + `${remedy} attempts=${JSON.stringify(attempts)}`,
+        );
         this.name = "ReservedRefusalError";
     }
 }
 
-function makeReservedRefusal(verdict: string, attempts: Array<{ tier: string; reason: string }>): ReservedRefusalError {
+function makeReservedRefusal(
+    verdict: string,
+    attempts: Array<{ tier: string; reason: string }>,
+    category: string | null = null,
+    cloudWasAllowed = false,
+): ReservedRefusalError {
     // Ledger the refusal (fire-and-forget). No prompt content is persisted —
     // same HIPAA posture as the safety_gate exclusion. gate_outcome mirrors
     // the §5.2 report-mode row so refusal queries see both modes.
@@ -836,7 +863,7 @@ function makeReservedRefusal(verdict: string, attempts: Array<{ tier: string; re
         gate_outcome: "refused",
         refusal_reason: "layer1_reserved",
     });
-    return new ReservedRefusalError(verdict, attempts);
+    return new ReservedRefusalError(verdict, attempts, category, cloudWasAllowed);
 }
 
 interface CloudResult {
@@ -1382,6 +1409,9 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         }
         // 4th arg is fetchImpl (default), 5th is the images the classifier must see.
         const l1 = await l1fn(args.prompt, deps.ollamaUrl, l1Model, undefined, resolvedImages);
+        // Null when the deterministic floor did not fire — the verdict then came
+        // from the semantic classifier, which has no per-rule attribution.
+        const reservedCat = reservedCategory(args.prompt);
         if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
             debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
@@ -1399,7 +1429,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
                 attempts.push({ tier: "synalux", reason: "reserved_escalation_refused_images_stay_local" });
                 if (wantReport) return refusedResult("layer1_reserved");
-                throw makeReservedRefusal(l1, attempts);
+                throw makeReservedRefusal(l1, attempts, reservedCat, true);
             }
             if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
@@ -1414,7 +1444,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                     if (weakBackend) {
                         attempts.push({ tier: "synalux", reason: `reserved_weak_backend:${cloud.backend}` });
                         if (wantReport) return refusedResult("layer1_reserved");
-                        throw makeReservedRefusal(l1, attempts);
+                        throw makeReservedRefusal(l1, attempts, reservedCat, true);
                     }
                     return await applyVerification(cloud.output, gatedArgs, deps, {
                         backend: cloud.backend ?? "synalux",
@@ -1431,7 +1461,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 attempts.push({ tier: "synalux", reason: cloud.reason ?? "unknown" });
             }
             if (wantReport) return refusedResult("layer1_reserved");
-            throw makeReservedRefusal(l1, attempts);
+            throw makeReservedRefusal(l1, attempts, reservedCat, allowCloud);
         }
         if (l1 === "UNCERTAIN_LENGTH") {
             // §5.3: prompt too long to classify in full, but the full-text

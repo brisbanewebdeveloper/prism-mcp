@@ -515,10 +515,10 @@ Prism ships open-weight models for offline tool-routing. Install [Ollama](https:
 then pull whichever fits your hardware:
 
 ```bash
-ollama pull dcostenco/prism-coder:2b     # 2.3 GB — mobile / lightweight (99.1% accuracy)
-ollama pull dcostenco/prism-coder:4b     # 3.4 GB — balanced (100% accuracy)
-ollama pull dcostenco/prism-coder:9b     # 5.8 GB — Mac default (100% routing accuracy)
-ollama pull dcostenco/prism-coder:27b    # 16 GB  — complex tasks (100% routing accuracy)
+ollama pull dcostenco/prism-coder:2b     # 3.3 GB — mobile / lightweight
+ollama pull dcostenco/prism-coder:4b     # 3.5 GB — balanced
+ollama pull dcostenco/prism-coder:9b     # 6.7 GB — Mac default
+ollama pull dcostenco/prism-coder:27b    # 16.8 GB — complex tasks
 ```
 
 Prism auto-detects running Ollama models. No configuration needed — `prism_infer`
