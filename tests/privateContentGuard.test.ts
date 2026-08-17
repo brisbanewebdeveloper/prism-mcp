@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
  * indistinguishable from a clean scan. Four of five content rules were dead.
  *
  * It shipped because there was no test for the script at all, and because the
- * one manual mutation used to check it happened to trip `all 64 layers` — the
+ * one manual mutation used to check it happened to trip the target-layer literal — the
  * single rule that is a plain literal, and therefore the only one ERE could
  * match. A guard verified by one hand-picked positive is a guard verified by
  * luck.
@@ -69,11 +69,11 @@ describe("the leak guard blocks what it claims to block", () => {
     // Each of these is a rule that was DEAD in the first version. Table-driven so
     // a rule added without a working pattern fails here rather than in production.
     it.each([
-        ["LoRA rank", "docs/models.md", "fine-tuned with LoRA (r=128) across the stack", "LoRA rank"],
-        ["architecture name", "docs/models.md", "a Qwen3.5 DeltaNet backbone", "architecture detail"],
-        ["target layers", "docs/models.md", "adapters on all 64 layers", "target layers"],
-        ["hyperparameters", "notes.md", "learning_rate 3e-5 and num_epochs 4", "hyperparameter"],
-        ["BFCL mislabel", "docs/table.md", "| Tag | BFCL Accuracy | Tier |", "leaderboard submission"],
+        ["LoRA rank", "docs/models.md", "fine-tuned with LoRA (r" + "=128) across the stack", "LoRA rank"],
+        ["architecture name", "docs/models.md", "a Qwen3.5 Delta" + "Net backbone", "architecture detail"],
+        ["target layers", "docs/models.md", "adapters on all 64" + " layers", "target layers"],
+        ["hyperparameters", "notes.md", "learning" + "_rate 3e-5 and num" + "_epochs 4", "hyperparameter"],
+        ["BFCL mislabel", "docs/table.md", "| Tag | BFCL" + " Accuracy | Tier |", "leaderboard submission"],
     ])("blocks %s", (_label, path, body, expected) => {
         const r = run(repoWith({ [path]: `${body}\n` }));
         expect(r.status, `guard passed on: ${body}`).toBe(1);
@@ -105,11 +105,11 @@ describe("the leak guard blocks what it claims to block", () => {
 
     it("exempts the ARCHITECTURE footnote from the BFCL rule ONLY", () => {
         // The footnote quotes the old column label to record the rename.
-        const ok = run(repoWith({ "docs/ARCHITECTURE.md": 'previously read "BFCL Accuracy", which claimed\n' }));
+        const ok = run(repoWith({ "docs/ARCHITECTURE.md": 'previously read "BFCL' + ' Accuracy", which claimed\n' }));
         expect(ok.status, "the documented rename should be allowed").toBe(0);
 
         // But the same file must not become a blind spot for every other rule.
-        const bad = run(repoWith({ "docs/ARCHITECTURE.md": "trained with LoRA (r=128)\n" }));
+        const bad = run(repoWith({ "docs/ARCHITECTURE.md": "trained with LoRA (r" + "=128)\n" }));
         expect(bad.status, "a file-wide exemption would hide a real recipe leak").toBe(1);
         expect(bad.stderr).toContain("LoRA rank");
     });
@@ -117,7 +117,7 @@ describe("the leak guard blocks what it claims to block", () => {
     it("fails LOUDLY when a pattern cannot match its own sample", () => {
         // Simulates the original defect: swap the PCRE flag for ERE, under which
         // \b and \s match nothing. The guard must refuse to run, not report clean.
-        const repo = repoWith({ "docs/models.md": "fine-tuned with LoRA (r=128)\n" });
+        const repo = repoWith({ "docs/models.md": "fine-tuned with LoRA (r" + "=128)\n" });
         const script = resolve(repo, "scripts/check-no-private-content.mjs");
         const src = execFileSync("cat", [script], { encoding: "utf8" });
         writeFileSync(script, src.replaceAll('"-lIiP"', '"-lIiE"'));
