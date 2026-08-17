@@ -13,7 +13,7 @@
  * This saves 11GB+ RAM vs 27b and keeps response times fast.
  *
  *   tag                 weights    need free   ctx     role
- *   prism-coder:27b     ~15.7 GiB  ≥ 21 GiB     4K    quality (on-demand, Qwen3.5 DeltaNet)
+ *   prism-coder:27b     ~15.7 GiB  ≥ 21 GiB     4K    quality (on-demand, Qwen3.5)
  *   prism-coder:9b      ~ 6.3 GiB  ≥  9 GiB     4K    default router (Qwen3.5, +vision)
  *   prism-coder:4b      ~ 3.3 GiB  ≥  5.2 GiB  32K    verifier (Qwen3.5, +vision)
  *   prism-coder:2b      ~ 3.1 GiB  ≥  4.5 GiB  32K    mobile / iPhone (Qwen3.5, +vision)
