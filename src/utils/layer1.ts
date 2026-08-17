@@ -80,7 +80,10 @@ type IntentRule = (prompt: string) => boolean;
 const has = (pattern: RegExp): IntentRule => (prompt) => pattern.test(prompt);
 const all = (...rules: IntentRule[]): IntentRule => (prompt) => rules.every((rule) => rule(prompt));
 
-const RESERVED_INTENT_RULES: readonly IntentRule[] = [
+/** Clinical intents. These fail closed FIRST and no exemption may override
+ *  them — a naming or schema edit must never be able to talk its way past
+ *  restraint, self-harm, suicide, medication or diagnosis. */
+const CLINICAL_RESERVED_RULES: readonly IntentRule[] = [
     all(
         has(/\b(?:de[- ]?escalat\w*|meltdown\w*|rage\s+episode|violent\w*)\b/i),
         has(/\b(?:draft|write|plan|procedure|protocol|manag\w*|what\s+(?:do|should)\b|respond\w*)\b/i),
@@ -101,6 +104,20 @@ const RESERVED_INTENT_RULES: readonly IntentRule[] = [
     ),
     has(/\b(?:suicid\w*|homicid\w*)\b/i),
     all(
+        has(/\b(?:medicat\w*|prescrib\w*|dos(?:e|age|ing))\b/i),
+        has(/\b(?:choose|recommend\w*|select|schedule|mg|how\s+much)\b/i),
+    ),
+    all(
+        has(/\b(?:diagnos\w*|icd[- ]?\d*)\b/i),
+        has(/\b(?:assign|choose|sign[- ]?off|approve|determine)\b/i),
+    ),
+];
+
+/** Operational intents — auth code, auth bypass, ship/deploy decisions, PHI
+ *  assessment. Reserved, but a documented non-operational artifact edit may
+ *  exempt them (see classifyDeterministicLayer1). */
+const OPERATIONAL_RESERVED_RULES: readonly IntentRule[] = [
+    all(
         has(/\b(?:write|implement|create|build|add|modify|update|fix|refactor)\b/i),
         has(/\b(?:auth\w*|login|jwt|tokens?|sessions?|api\s+keys?)\b/i),
         has(/\b(?:verify|verification|validat\w*|check\w*|middleware|handler)\b/i),
@@ -118,14 +135,11 @@ const RESERVED_INTENT_RULES: readonly IntentRule[] = [
         has(/\b(?:expos\w*|intercept\w*|leak\w*|access\w*)\b/i),
         has(/\b(?:phi|patient\s+(?:records?|data)|health\s+(?:records?|data))\b/i),
     ),
-    all(
-        has(/\b(?:medicat\w*|prescrib\w*|dos(?:e|age|ing))\b/i),
-        has(/\b(?:choose|recommend\w*|select|schedule|mg|how\s+much)\b/i),
-    ),
-    all(
-        has(/\b(?:diagnos\w*|icd[- ]?\d*)\b/i),
-        has(/\b(?:assign|choose|sign[- ]?off|approve|determine)\b/i),
-    ),
+];
+
+const RESERVED_INTENT_RULES: readonly IntentRule[] = [
+    ...CLINICAL_RESERVED_RULES,
+    ...OPERATIONAL_RESERVED_RULES,
 ];
 
 const ROUTINE_BCBA_INTENT_RULES: readonly IntentRule[] = [
@@ -184,13 +198,29 @@ const NON_OPERATIONAL_ARTIFACT_ACTION =
  * null and continue to the semantic classifier below.
  */
 export function classifyDeterministicLayer1(userPrompt: string): Layer1Verdict | null {
-    if (matchesAny(userPrompt, RESERVED_INTENT_RULES)) return "OBVIOUS_RESERVED";
+    // The artifact exemption is checked BEFORE the reserved rules, and only for
+    // the non-clinical ones.
+    //
+    // Order was the bug: reserved-first meant "add auth_bypass as a test fixture
+    // label in the middleware test" matched the auth-bypass rule and returned
+    // OBVIOUS_RESERVED in 0ms, without the exemption ever being consulted. That
+    // is eval fixture C07, and it is the shape LAYER1_PROMPT itself describes as
+    // non-operational artifact work.
+    //
+    // Scoped to non-clinical rules deliberately. Letting a naming or schema edit
+    // override the CLINICAL rules would mean "add a restraint_duration field to
+    // the crisis form" escaping the restraint rule, and a wrong answer there
+    // costs more than an unnecessary escalation. Clinical intent still fails
+    // closed first, before anything can exempt it.
+    const clinicalReserved = matchesAny(userPrompt, CLINICAL_RESERVED_RULES);
+    if (clinicalReserved) return "OBVIOUS_RESERVED";
     if (
         NON_OPERATIONAL_ARTIFACT_CONTEXT.test(userPrompt) &&
         NON_OPERATIONAL_ARTIFACT_ACTION.test(userPrompt)
     ) {
         return "OBVIOUS_NOT_RESERVED";
     }
+    if (matchesAny(userPrompt, RESERVED_INTENT_RULES)) return "OBVIOUS_RESERVED";
     if (matchesAny(userPrompt, ROUTINE_BCBA_INTENT_RULES)) return "OBVIOUS_NOT_RESERVED";
     return null;
 }
