@@ -456,9 +456,22 @@ describe("Layer 1 handler integration", () => {
             return { ok: true, text: "answer without thinking", doneReason: "stop" };
         });
 
+        // Pinned to a THINKING tier on purpose. This test protects the
+        // think_only retry, and that path can only be reached by a tier that
+        // reasons in the first place. makeBaseDeps installs 4b, which declares
+        // prefersThinking: false — it has no minLocalTokens floor, so reasoning
+        // there consumed the whole num_predict budget and returned an empty
+        // answer (measured: 319 tokens of reasoning, response ""). With 4b the
+        // first call now correctly has think=false, so nothing truncates, there
+        // is no retry, and this test would assert 2 calls while observing 1 —
+        // scoring the absence of the bug as a failure to handle it.
         const result = await runInfer(
             { prompt: "write a regex for emails", mode: "code", cloud_fallback: false, max_tokens: 256 },
-            makeBaseDeps({ callLocal }),
+            makeBaseDeps({
+                callLocal,
+                freemem: () => 12 * 1024 ** 3,
+                listTags: async () => new Set(["dcostenco/prism-coder:9b"]),
+            }),
         );
 
         expect(callCount).toBe(2);

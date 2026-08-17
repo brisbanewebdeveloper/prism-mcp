@@ -694,10 +694,10 @@ for manual configuration and host-specific paths.
 **Optional — local model fleet** for offline tool-routing. Pull whichever fits your hardware:
 
 ```bash
-ollama pull dcostenco/prism-coder:2b    # 3.3 GB · mobile / lightweight · sees images (99.1% on our routing suite)
-ollama pull dcostenco/prism-coder:4b    # 3.5 GB · verifier · sees images (100% on our routing suite)
-ollama pull dcostenco/prism-coder:9b    # 6.7 GB · default router · sees images (100% on our routing suite, Qwen3.5)
-ollama pull dcostenco/prism-coder:27b   # 16 GB  · complex tasks · text only (100% on our routing suite)
+ollama pull dcostenco/prism-coder:2b    # 3.3 GB  · on-device / lowest RAM · sees images (100% on our routing suite)
+ollama pull dcostenco/prism-coder:4b    # 3.5 GB  · verifier · sees images (100%)
+ollama pull dcostenco/prism-coder:9b    # 6.7 GB  · default router · sees images (95.7%, reasons before answering)
+ollama pull dcostenco/prism-coder:27b   # 16.8 GB · complex code / quality · text only (100%)
 ```
 
 Prism detects both the namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`) Ollama tags automatically.
@@ -852,7 +852,7 @@ air-gap. **Enterprise** includes a HIPAA Business Associate Agreement.
 
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on our internal 115-case tool-routing suite and 100% on an internal 15-problem coding eval, at $0 inference cost. These are self-run evaluations, not [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) leaderboard submissions.
 
-`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
+`prism_infer` supports three modes: `route` (tool routing, fast), `chat` (conversation) and `code` (code generation). Reasoning is decided by the **tier**, not the mode: a tier carrying `MODEL_TIERS.prefersThinking` also carries a `minLocalTokens` floor so reasoning cannot crowd out the answer, and only those tiers use `<think>` blocks (stripped before the response is served). The 9B does; the 4B and 2B do not, because on those tiers reasoning drew down the same `num_predict` budget the answer needed and returned an empty response. An explicit `think: true` still overrides, for a caller who has sized `max_tokens` for it. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
 
 Every route-mode result is parsed locally and checked against `allowed_tools`
 before it reaches the host. Malformed or unadvertised calls become `NO_TOOL`.
@@ -862,16 +862,33 @@ draft that may need correction—to Synalux for authenticated deterministic
 correction. Advertised custom host tools remain local. Set
 `route_guard: "local"` for a fully on-device route path.
 
-| Model | Ollama tag | Size | Routing accuracy¹ | Role | Automatic routing tier |
-|---|---|---|---|---|---|
-| Qwen3.5-4B Q3_K_M | `prism-coder:2b` | 2.3 GB | 99.1% × 3 seeds | iPhone / mobile first gate | Free |
-| Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.4 GB | 100% × 3 seeds | Verifier | Free |
-| Qwen3.5-9B (LoRA) | `prism-coder:9b` | 5.8 GB | 100% × 3 seeds | Default router | Standard+ |
-| Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16 GB | 100% × 3 seeds | Quality tier (DeltaNet, 28.5 tok/s) | Advanced+ |
+| Model | Ollama tag | Size | Vision | Routing accuracy¹ | Role | Automatic routing tier |
+|---|---|---|---|---|---|---|
+| Qwen3.5-4B Q4_K_S | `prism-coder:2b` | 3.3 GB | ✅ | 100% | On-device / lowest RAM (4.5 GiB free) | Free |
+| Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.5 GB | ✅ | 100% | Verifier (5.2 GiB free) | Free |
+| Qwen3.5-9B (LoRA) | `prism-coder:9b` | 6.7 GB | ✅ | 95.7%² | Default router / workhorse (9 GiB free) | Standard+ |
+| Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16.8 GB | — | 100% | Complex code / quality (21 GiB free) | Advanced+ |
 
-¹ Self-run on a narrow 115-case MCP tool-selection suite, 3 seeds. It says these
-models pick the right tool on our own eval, nothing more — not a general capability
-measure, and not an independent benchmark result. Full methodology caveats below.
+¹ Self-run on a narrow 115-case MCP tool-selection suite, `temperature: 0`,
+measured through the call path `prism_infer` actually uses (`/api/chat`, each
+model's own template). It says these models pick the right tool on our own eval,
+nothing more — not a general capability measure, and not an independent
+benchmark result. Earlier revisions of this table quoted 99.1–100% from a
+harness that hand-rolled a ChatML prompt with `raw: true`, bypassing the
+template; those numbers described a path no caller exercises. Full methodology
+caveats below.
+
+² The 9B is the one tier that reasons before answering, and it is measured with
+reasoning enabled: 95.7% with thinking, 83.5% without. `prism_infer` sets this
+per-tier (`MODEL_TIERS.prefersThinking`), so callers get the 95.7% path by
+default. Reasoning costs roughly 600 tokens, which is why the 9B also carries a
+2,048-token local floor.
+
+**Vision.** The 2B/4B/9B tags ship a separate `projector` layer (0.68–0.92 GB)
+and read images; the 27B is text-only. `prism_infer` probes for that layer and
+skips a tier with no vision rather than sending it an image — asked directly, a
+text-only model will still answer confidently about pixels it never received.
+Exercised against the real models in `tests/integration/visionScreenshot.test.ts`.
 
 These tiers control automatic `prism_infer` selection, not Ollama itself. Any
 user can run any downloaded on-device model directly through Ollama on every
@@ -926,9 +943,16 @@ reliability, not general model capability.
 
 | Model | Routing accuracy | Notes |
 |---|---|---|
-| prism-coder:2b (Q3_K_M) | 99.1% × 3 seeds | 1 failure: regex→knowledge_search |
-| prism-coder:4b / 9b / 27b | 100% × 3 seeds | Perfect on all 115 cases |
+| prism-coder:2b (Q4_K_S) | 100% | The 2B was requantised when vision shipped; the old 99.1% was Q3_K_M |
+| prism-coder:4b | 100% | |
+| prism-coder:9b | 95.7% with reasoning | 83.5% without — the only tier where this differs |
+| prism-coder:27b | 100% | |
 | Claude (frontier, same eval) | ~98% | Stronger everywhere outside this narrow task |
+
+Measured through `/api/chat` with each model's own template — the path
+`prism_infer` uses. `temperature: 0`, so the three seeds only reshuffle case
+order and cannot disagree; earlier revisions cited that agreement as
+confirmation, which it never was.
 
 **Memory uplift (LoCoMo-Plus, self-published).** A separate long-context dialogue benchmark ([dcostenco/Locomo-Plus](https://github.com/dcostenco/Locomo-Plus)) measures how much structured memory helps a base model retain multi-day context. Results show large gains when a model is paired with Prism memory versus running raw. Note this benchmark is authored, run, and LLM-judged by this project — treat it as a reproducible demonstration, not an independent third-party result, and run it yourself with the commands in that repo.
 
@@ -1059,9 +1083,14 @@ prism_infer({
 
 | Mode | Think | Model | Use case |
 |------|-------|-------|----------|
-| `route` | Off (fast) | 9B default | MCP tool routing |
-| `chat` | On | 27B preferred | Conversation, reasoning |
-| `code` | On | 27B preferred | Code generation, debugging |
+| `route` | Off (fast) — except a tier that reasons better, e.g. 9B | 9B default | MCP tool routing |
+| `chat` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Conversation, reasoning |
+| `code` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Code generation, debugging |
+
+Think is a **tier** property, not a mode property. Tiers with
+`prefersThinking` also declare a `minLocalTokens` floor that reserves budget for
+the answer; tiers without it spend the whole `num_predict` allowance inside
+`<think>` and return nothing. Pass `think` explicitly to override either way.
 
 Full TypeScript signatures live in [`src/tools/`](../../src/tools/); architecture in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
 

@@ -852,7 +852,7 @@ air-gap. **Enterprise** includes a HIPAA Business Associate Agreement.
 
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on our internal 115-case tool-routing suite and 100% on an internal 15-problem coding eval, at $0 inference cost. These are self-run evaluations, not [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) leaderboard submissions.
 
-`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
+`prism_infer` supports three modes: `route` (tool routing, fast), `chat` (conversation) and `code` (code generation). Reasoning is decided by the **tier**, not the mode: a tier carrying `MODEL_TIERS.prefersThinking` also carries a `minLocalTokens` floor so reasoning cannot crowd out the answer, and only those tiers use `<think>` blocks (stripped before the response is served). The 9B does; the 4B and 2B do not, because on those tiers reasoning drew down the same `num_predict` budget the answer needed and returned an empty response. An explicit `think: true` still overrides, for a caller who has sized `max_tokens` for it. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
 
 Every route-mode result is parsed locally and checked against `allowed_tools`
 before it reaches the host. Malformed or unadvertised calls become `NO_TOOL`.
@@ -1083,9 +1083,14 @@ prism_infer({
 
 | Mode | Think | Model | Use case |
 |------|-------|-------|----------|
-| `route` | Off (fast) | 9B default | MCP tool routing |
-| `chat` | On | 27B preferred | Conversation, reasoning |
-| `code` | On | 27B preferred | Code generation, debugging |
+| `route` | Off (fast) — except a tier that reasons better, e.g. 9B | 9B default | MCP tool routing |
+| `chat` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Conversation, reasoning |
+| `code` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Code generation, debugging |
+
+Think is a **tier** property, not a mode property. Tiers with
+`prefersThinking` also declare a `minLocalTokens` floor that reserves budget for
+the answer; tiers without it spend the whole `num_predict` allowance inside
+`<think>` and return nothing. Pass `think` explicitly to override either way.
 
 Full TypeScript signatures live in [`src/tools/`](src/tools/); architecture in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

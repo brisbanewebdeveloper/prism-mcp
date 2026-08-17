@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Every model call inside prism goes through prism_infer.
@@ -20,7 +21,7 @@ import { join } from "node:path";
  * which catches both forms.
  */
 
-const SRC = new URL("../src", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
 /** The one module allowed to hold a raw local-model HTTP call. */
 const OWNER = "tools/prismInferHandler.ts";
@@ -50,7 +51,16 @@ function walk(dir: string, out: string[] = []): string[] {
     return out;
 }
 
-const FILES = walk(SRC).map(f => ({ rel: f.slice(SRC.length + 1), text: readFileSync(f, "utf8") }));
+// `rel` is compared against ALLOWED, which is written with forward slashes, so
+// it must be normalised. Slicing an absolute path keeps the OS separator, and on
+// Windows that yields `utils\localLlm.ts` — which matches no allowlist entry, so
+// every allowlisted file reads as an offender AND as missing at the same time.
+// This was invisible until the path resolution above was fixed, because the
+// suite crashed before it ever reached the comparison.
+const FILES = walk(SRC).map(f => ({
+    rel: f.slice(SRC.length + 1).split(sep).join("/"),
+    text: readFileSync(f, "utf8"),
+}));
 
 describe("no module bypasses prism_infer to reach a model", () => {
     it("nothing imports the low-level local-LLM helper", () => {

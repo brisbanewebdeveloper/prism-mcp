@@ -138,6 +138,10 @@ describe("infer chain with screenshots", () => {
           return { ok: true as const, text: "YES — Sources & Citations", doneReason: "stop" };
         },
       }));
+    // Largest-first. Smallest-first was tried twice and settled against on
+    // measurement: on a real 2992x1800 capture the 2b costs ~10.5s (not the
+    // ~2s a rendered image suggested), and on handwriting both small tiers
+    // transcribe 555-0182 as 655-0182 while the 9b reads it correctly.
     expect(r.model_picked).toContain("9b");
     expect(seen[0]).toEqual([B64]);          // images actually reached the model
   });
@@ -152,7 +156,11 @@ describe("infer chain with screenshots", () => {
       }));
     expect(r.output.length).toBeGreaterThan(0);
     expect(tried.some(m => m.includes("27b"))).toBe(false); // never handed the image prompt
-    expect(tried.some(m => m.includes("9b"))).toBe(true);   // 9b remains the workhorse
+    // This was briefly weakened to "any vision tier" during the smallest-first
+    // experiment. That was reverted, so the assertion goes back to naming the
+    // tier that actually serves — an any-of-three check passes under orderings
+    // this file exists to catch.
+    expect(tried.some(m => m.includes("9b"))).toBe(true);
   });
 
   it("stays LOCAL-FIRST when the ceiling tier lacks RAM — degrades to 9b, never the cloud", async () => {
