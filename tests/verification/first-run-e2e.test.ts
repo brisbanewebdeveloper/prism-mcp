@@ -38,7 +38,20 @@ describe("first-run experience (E2E over stdio)", { timeout: 60_000 }, () => {
   let scrubHome: string;
   let foreignServer: http.Server;
   let greeting = "";
-  let structured: Record<string, unknown> | null = null;
+  let structured: Record<string, string> | null = null;
+
+  /**
+   * Read the trailing <prism_session /> line. Replaced structuredContent,
+   * which some hosts surface INSTEAD of the text block — dropping the whole
+   * startup payload (see ledgerHandlers.buildSessionFactsLine).
+   */
+  const readSessionFacts = (text: string): Record<string, string> | null => {
+    const match = text.match(/<prism_session ([^>]*)\/>/);
+    if (!match) return null;
+    const out: Record<string, string> = {};
+    for (const [, k, v] of match[1].matchAll(/(\w+)="([^"]*)"/g)) out[k] = v;
+    return out;
+  };
 
   beforeAll(async () => {
     // The suite runs after "Build TypeScript" in CI. Fail loudly rather than
@@ -68,6 +81,11 @@ describe("first-run experience (E2E over stdio)", { timeout: 60_000 }, () => {
         HOME: scrubHome,
         USERPROFILE: scrubHome, // Windows equivalent of HOME
         PRISM_SKILL_SYNC_DISABLED: "true",
+        // The spawned server does not inherit VITEST/NODE_ENV, so the hook
+        // self-heal timer would fire inside this child. It is a no-op on a
+        // scrubbed HOME, but a test must not depend on that: disable it
+        // explicitly rather than rely on the absence of host roots.
+        PRISM_DISABLE_HOOK_AUTOINSTALL: "1",
         PRISM_DASHBOARD_PORT: String(foreignPort),
       },
     });
@@ -79,7 +97,7 @@ describe("first-run experience (E2E over stdio)", { timeout: 60_000 }, () => {
       arguments: { prompt: "hello" },
     });
     greeting = String((result.content as Array<{ text?: string }>)?.[0]?.text ?? "");
-    structured = (result.structuredContent as Record<string, unknown>) ?? null;
+    structured = readSessionFacts(greeting);
   });
 
   afterAll(async () => {
@@ -135,9 +153,12 @@ describe("first-run experience (E2E over stdio)", { timeout: 60_000 }, () => {
     expect(greeting).not.toContain("http://localhost");
   });
 
-  it("flags the run as first in structured output", () => {
-    expect(structured).toMatchObject({ first_run: true, projects: [] });
-    expect(typeof structured?.conversation_id).toBe("string");
+  it("flags the run as first on the machine-readable session line", () => {
+    // Must live in the TEXT: a host that prefers structuredContent renders it
+    // and discards everything else, which is exactly how three weeks of
+    // startup context went undelivered.
+    expect(structured).toMatchObject({ first_run: "true", projects: "" });
+    expect(structured?.conversation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("the wizard the greeting points at accepts the bare call it documents", async () => {
@@ -170,7 +191,7 @@ describe("first-run experience (E2E over stdio)", { timeout: 60_000 }, () => {
       arguments: { prompt: "hello again" },
     });
     const text = String((second.content as Array<{ text?: string }>)?.[0]?.text ?? "");
-    expect((second.structuredContent as Record<string, unknown>)?.first_run).not.toBe(true);
+    expect(readSessionFacts(text)?.first_run).toBeUndefined();
     expect(text).not.toContain("first run detected");
     // The demo is one-shot: replaying it every session would turn the payoff
     // into noise and re-seed rows the user may have deleted.

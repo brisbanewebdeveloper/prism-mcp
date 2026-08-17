@@ -62,6 +62,14 @@ describe('assembleSkillBlock', () => {
       entry({ name: 'skipped-two', content: K(1000) }),
     ], 200);
     expect(r.block).toContain('SKILLS NOT INLINED');
+    // The overflow manifest is an INSTRUCTION, not metadata. The 2026-08-11
+    // incident: verified-shipping sat name-only in this list while an agent
+    // claimed UI fixes it never rendered — the passive wording invited
+    // skipping. The message must bind the agent to consult the governing
+    // skill before completion claims, and must name the mechanism.
+    expect(r.block).toContain('RULES YOU ARE BOUND BY');
+    expect(r.block).toContain('before any completion claim');
+    expect(r.block).toContain('Skill tool');
     expect(r.block).toContain('skipped-one, skipped-two');
     expect(r.block).toContain('re-call session_load_context with a higher max_tokens');
   });
@@ -85,9 +93,31 @@ describe('assembleSkillBlock', () => {
     for (let i = 0; i < 19; i++) entries.push(entry({ name: `tail${i}`, priority: 100 + i, content: K(4000) }));
     const r = assembleSkillBlock(entries, 8400);
     expect(r.inlined.filter(n => n.startsWith('prot')).length).toBe(13); // floor holds over budget
-    expect(r.inlined.filter(n => n.startsWith('tail')).length).toBe(0);  // tail waits for budget
-    expect(r.overflow.length).toBe(19);                                  // flood prevented, all named
-    expect(r.block.length).toBeLessThan(44_000);                         // preserves >1k headroom
+    // The tranche is ADDITIVE on top of the floor. This assertion previously
+    // expected 0 — pinning the bug as intent: the floor debited the budget, so
+    // with floor > tranche NOTHING unprotected ever inlined, at any level,
+    // for anyone. 8,400 chars buys exactly two 4K tail skills.
+    expect(r.inlined.filter(n => n.startsWith('tail')).length).toBe(2);
+    expect(r.overflow.length).toBe(17);                                  // flood prevented, all named
+    expect(r.block.length).toBeLessThan(52_000);                         // floor + tranche + manifest
+  });
+
+  it('INCIDENT 2026-08-11: a prompt-matched skill inlines even when the floor alone exceeds the budget', () => {
+    // An agent shipped unverified UI claims while verified-shipping — prompt-
+    // matched for its task — sat name-only in overflow. Routing gave it rank;
+    // the accounting bug made rank irrelevant. This is the shape that must
+    // never regress: floor 39K, budget 8,400, one prompt-matched 4.6K skill.
+    const protSizes = [2513, 2173, 5000, 1619, 1462, 2092, 1896, 1683, 2186, 7066, 3913, 3354, 4035];
+    const entries: SkillEntryForBudget[] = protSizes.map((n, i) =>
+      entry({ name: `prot${i}`, protected: true, priority: i, content: K(n) }));
+    entries.push(entry({ name: 'verified-shipping', category: 'prompt', priority: 200, content: K(4600) }));
+    for (let i = 0; i < 19; i++) entries.push(entry({ name: `tail${i}`, priority: 100 + i, content: K(4000) }));
+    const r = assembleSkillBlock(entries, 8400);
+    expect(r.inlined).toContain('verified-shipping');       // the DoD checklist arrives
+    expect(r.block).toContain('[📜 SKILL: verified-shipping]');
+    expect(r.overflow).not.toContain('verified-shipping');
+    // Prompt category outranks tail: the matched skill spends first.
+    expect(r.inlined.filter(n => n.startsWith('tail')).length).toBeLessThanOrEqual(1);
   });
 });
 

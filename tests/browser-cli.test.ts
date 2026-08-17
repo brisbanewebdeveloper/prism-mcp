@@ -28,7 +28,31 @@ import {
 
 const scriptPath = resolve('scripts/dev/browse.py');
 const python = resolvePythonCommand();
-const playwrightRuntimeAvailable = python ? hasPlaywrightRuntime(python) : false;
+
+// These suites scrub HOME for isolation. On a machine where playwright lives
+// in the USER site-packages (~/Library/Python/.../site-packages), scrubbing
+// HOME also removes it from sys.path, so browse.py died with
+// ModuleNotFoundError while the availability probe — which ran with the REAL
+// process.env — reported the runtime as present. 14 tests failed instead of
+// skipping. Carry the interpreter's user-site directory through explicitly,
+// and probe under the SAME env the runs use.
+const userSitePackages: string = (() => {
+  if (!python) return '';
+  const r = spawnSync(python.executable,
+    [...python.prefixArgs, '-c', 'import site; print(site.getusersitepackages())'],
+    { encoding: 'utf8' });
+  return r.status === 0 ? (r.stdout || '').trim() : '';
+})();
+
+/** Scrubbed HOME that still resolves the Python runtime. */
+function scrubbedEnv(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const pythonPath = [userSitePackages, process.env.PYTHONPATH].filter(Boolean).join(':');
+  return { ...process.env, HOME: home, ...(pythonPath ? { PYTHONPATH: pythonPath } : {}), ...extra };
+}
+
+const playwrightRuntimeAvailable = python
+  ? hasPlaywrightRuntime(python, scrubbedEnv(tmpdir()))
+  : false;
 const tempDirs: string[] = [];
 
 function expectPosixMode(path: string, mode: number): void {
@@ -160,7 +184,7 @@ describe.skipIf(!python)('Prism Browser Python safety helpers', () => {
       ' "contact=patient@example.test source=https://example.test/path?code=hidden",',
       ')',
       'print(browse.AUDIT_LOG_PATH)',
-    ].join('\n'), { ...process.env, HOME: home });
+    ].join('\n'), scrubbedEnv(home));
 
     expect(result.status, result.stderr).toBe(0);
     const auditPath = result.stdout.trim();
@@ -205,7 +229,7 @@ describe.skipIf(!python)('Prism Browser Python safety helpers', () => {
 
 const browserRoot = playwrightBrowserRoot();
 
-describe.skipIf(!python || !browserRoot)('Prism Browser real local acceptance', () => {
+describe.skipIf(!python || !browserRoot || !playwrightRuntimeAvailable)('Prism Browser real local acceptance', () => {
   it('reuses a named profile across separate browser launches', async () => {
     const home = makeTempDir('prism-browser-profile-home-');
     const result = runPython([
@@ -217,11 +241,7 @@ describe.skipIf(!python || !browserRoot)('Prism Browser real local acceptance', 
       'with browse.StealthBrowserSession(profile="paid-proof", headless=True, stealth_level="light", local_only=True) as second:',
       ' cookies = second._context.cookies("http://localhost")',
       'print(json.dumps({cookie["name"]: cookie["value"] for cookie in cookies}))',
-    ].join('\n'), {
-      ...process.env,
-      HOME: home,
-      PLAYWRIGHT_BROWSERS_PATH: browserRoot!,
-    });
+    ].join('\n'), scrubbedEnv(home, { PLAYWRIGHT_BROWSERS_PATH: browserRoot! }));
 
     expect(result.signal, result.stderr).toBeNull();
     expect(result.status, result.stderr).toBe(0);
@@ -276,8 +296,7 @@ describe.skipIf(!python || !browserRoot)('Prism Browser real local acceptance', 
       {
         encoding: 'utf8',
         env: {
-          ...process.env,
-          HOME: home,
+          ...scrubbedEnv(home),
           PLAYWRIGHT_BROWSERS_PATH: browserRoot!,
         },
         input,
@@ -349,7 +368,7 @@ function runBrowser(
   options: { home?: string; cwd?: string } = {},
 ): Promise<PipeRun> {
   const home = options.home ?? regressionHome();
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  const env: NodeJS.ProcessEnv = scrubbedEnv(home);
   if (browserRoot) env.PLAYWRIGHT_BROWSERS_PATH = browserRoot;
   profileCounter += 1;
   return new Promise<PipeRun>((settle) => {
@@ -525,7 +544,7 @@ describe.skipIf(!python)('Prism Browser policy helpers (regression)', () => {
   });
 });
 
-describe.skipIf(!python || !browserRoot)('Prism Browser runtime regression', () => {
+describe.skipIf(!python || !browserRoot || !playwrightRuntimeAvailable)('Prism Browser runtime regression', () => {
   let server: Server | null = null;
   let origin = '';
   const requestLog: Array<{ path: string; headers: Record<string, string | undefined> }> = [];
@@ -790,7 +809,7 @@ describe.skipIf(!python || !browserRoot)('Prism Browser runtime regression', () 
   }, 70_000);
 });
 
-describe.skipIf(!python || !browserRoot || !firstExternalIPv4())(
+describe.skipIf(!python || !browserRoot || !playwrightRuntimeAvailable || !firstExternalIPv4())(
   'Prism Browser --local-only socket boundary',
   () => {
     let listener: TcpServer | null = null;
@@ -847,3 +866,78 @@ describe.skipIf(!python || !browserRoot || !firstExternalIPv4())(
     }, 70_000);
   },
 );
+
+describe.skipIf(!python)('screenshot cap is viewport-bound, not viewport-normalizing', () => {
+  // Regression, 2026-08-13: `_enforce_max_edge` shelled straight to `sips -Z`,
+  // which resamples in BOTH directions. Every macOS capture came out at exactly
+  // the cap on its long edge — a 1440x900 viewport was written as 1900x1187 —
+  // so a screenshot asserted as viewport-bound was not evidence of what
+  // rendered, and every acceptance gate built on that assertion was reading a
+  // resampled image. The Pillow branch had always guarded correctly; only the
+  // sips branch upscaled.
+  //
+  // These tests probe pixel dimensions through the same path the fix uses, so
+  // they fail on the pre-fix code (which upscales the small PNG to the cap)
+  // and pass after it.
+  function writePng(dir: string, name: string, width: number, height: number): string {
+    const path = join(dir, name);
+    const result = runPython([
+      'from PIL import Image',
+      `Image.new("RGB", (${width}, ${height}), (10, 20, 30)).save(${JSON.stringify(path)})`,
+      'print("ok")',
+    ].join('\n'));
+    if (result.status !== 0) return '';   // Pillow absent — caller skips
+    return path;
+  }
+
+  function dimensions(path: string): [number, number] {
+    const probe = runPython([
+      'from PIL import Image',
+      `im = Image.open(${JSON.stringify(path)})`,
+      'print(json.dumps(list(im.size)))',
+    ].join('\n'));
+    return JSON.parse(probe.stdout.trim()) as [number, number];
+  }
+
+  it('leaves an already-small capture byte-identical', () => {
+    const dir = makeTempDir('prism-capture-small-');
+    const path = writePng(dir, 'small.png', 1440, 900);
+    if (!path) return;                    // no Pillow in this runtime
+
+    const before = statSync(path).size;
+    const run = runPython([
+      `warning = browse._enforce_max_edge(${JSON.stringify(path)}, 2000)`,
+      'print(json.dumps({"warning": warning}))',
+    ].join('\n'));
+    expect(run.status, run.stderr).toBe(0);
+
+    // The assertion that would have caught the original bug: a sub-cap image
+    // must come back untouched, not resampled to the cap.
+    expect(dimensions(path)).toEqual([1440, 900]);
+    expect(statSync(path).size).toBe(before);
+  });
+
+  it('still shrinks a genuinely oversized capture', () => {
+    const dir = makeTempDir('prism-capture-big-');
+    const path = writePng(dir, 'big.png', 1200, 3000);
+    if (!path) return;
+
+    const run = runPython([
+      `warning = browse._enforce_max_edge(${JSON.stringify(path)}, 2000)`,
+      'print(json.dumps({"warning": warning}))',
+    ].join('\n'));
+    expect(run.status, run.stderr).toBe(0);
+
+    const [width, height] = dimensions(path);
+    expect(Math.max(width, height)).toBeLessThanOrEqual(2000);
+    expect(width).toBeLessThan(1200);     // proportional, not cropped
+  });
+
+  it('caps at 2000 so a 1920-wide desktop viewport is never resampled', () => {
+    // 1900 sat just under the standard 1920 desktop width, so the most common
+    // UI-evidence capture was the one guaranteed to be rewritten.
+    const source = readFileSync(scriptPath, 'utf8');
+    expect(source).toMatch(/_enforce_max_edge\(path,\s*2000\)/);
+    expect(source).not.toMatch(/_enforce_max_edge\(path,\s*1900\)/);
+  });
+});

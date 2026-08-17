@@ -32,10 +32,24 @@ import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, setSetting, getAllSettings, refreshConfigStorageCache } from "../storage/configStorage.js";
-import type { SkillSyncResult } from "../skillManifestSync.js";
+import { MATERIALIZED_GENERATION_KEY, type SkillSyncResult } from "../skillManifestSync.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
 import { resolveProject } from "../utils/projectResolver.js";
+import { getUpdateNotice } from "../updateNotice.js";
 import type { StorageBackend } from "../storage/interface.js";
+
+// The running server's own version, for the update-available notice. A read
+// failure must never affect startup: an empty string fails the notice's
+// semver gate, so no notice renders rather than a bogus "running 0.0.0".
+const SERVER_PACKAGE_VERSION: string = (() => {
+  try {
+    return JSON.parse(
+      fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ).version ?? "";
+  } catch {
+    return "";
+  }
+})();
 import {
   isRecoverableStartupStorageError,
   LOCAL_STARTUP_FALLBACK_NOTICE,
@@ -194,6 +208,16 @@ function stripSkillFrontmatter(raw: string | null): string {
   return text.slice(text.indexOf("\n", end + 1) + 1).trim();
 }
 
+/**
+ * Room reserved for the trailing <prism_session /> facts line so it never
+ * competes with the skill block. The allocator below already subtracts
+ * systemReadyBlock.length — skills are protected and PROJECTS absorb budget
+ * pressure — so the facts line is reserved the same way rather than capping
+ * the assembled text, which truncates from the TAIL and would eat the very
+ * skill block this whole fix exists to deliver.
+ */
+const SESSION_FACTS_RESERVE = 256;
+
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
   standard: 8_000,
@@ -253,6 +277,8 @@ interface NativeSkillManifestSnapshot {
   source: "validated-partial" | "committed" | "tier-fallback";
   syncStatus: SkillSyncResult["status"];
   conflicts: string[];
+  /** Generation the DB accepted but whose files never reached disk. */
+  undeliveredGeneration: string;
 }
 
 function parseNativeSkillNames(value: string): string[] {
@@ -271,10 +297,36 @@ async function resolveNativeSkillManifestSnapshot(
   syncResult: SkillSyncResult,
 ): Promise<NativeSkillManifestSnapshot> {
   const { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
-  const [storedNamesValue, storedTierValue] = await Promise.all([
-    getSetting("skill_manifest:names", "[]"),
-    getSetting("skill_manifest:tier", ""),
-  ]);
+  const [storedNamesValue, storedTierValue, committedGeneration, materializedGeneration] =
+    await Promise.all([
+      getSetting("skill_manifest:names", "[]"),
+      getSetting("skill_manifest:tier", ""),
+      getSetting("skill_manifest:generation", ""),
+      // The exported constant, not a copied literal: a key rename on either
+      // side would otherwise leave this read returning "" forever -- warning
+      // permanently silent -- with both sides' tests still green, because each
+      // asserts against its own copy of the string.
+      getSetting(MATERIALIZED_GENERATION_KEY, ""),
+    ]);
+  // The DB half of a sync commits before files are written, by design: the
+  // committed names are what let a crashed run prune obsolete skills offline on
+  // restart. The cost is that this snapshot can describe an entitlement whose
+  // files never landed. A DIVERGENCE here is that exact state, and it persists
+  // across sessions -- a later sync reports "unchanged" because nothing needed
+  // writing, while the roots agents actually read stay frozen. Unreported, it
+  // ran for nine days on 2026-08-10.
+  // An EMPTY marker is "never recorded", not "never delivered": every install
+  // that predates the marker has a committed generation and no marker at all,
+  // and an offline user's failed fetch must not scream STALE at them on
+  // upgrade day. A false alarm here trains people to ignore the line, which is
+  // how the real one gets waved through. The fresh-install failure case is
+  // still covered -- that run's own syncStatus is "partial" and the
+  // validated-partial branch already reports materialization incomplete.
+  const undeliveredGeneration =
+    Boolean(committedGeneration) && Boolean(materializedGeneration) &&
+    committedGeneration !== materializedGeneration
+      ? committedGeneration
+      : "";
   const partialNamesInput = syncResult.status === "partial" && Array.isArray(syncResult.entitledNames)
     ? syncResult.entitledNames
     : null;
@@ -312,6 +364,7 @@ async function resolveNativeSkillManifestSnapshot(
     tier,
     source,
     syncStatus: syncResult.status,
+    undeliveredGeneration,
     conflicts: [...new Set(syncResult.conflicts)],
   };
 }
@@ -366,8 +419,24 @@ async function buildNativeSystemReadyBlock(
       `directory out of the native skills folder and rerun \`prism connect\` ` +
       `(or a session bootstrap) to reinstall the managed copy.`
     : "";
+  // Durable, not per-run: a later sync reports "unchanged" while the roots stay
+  // frozen from an earlier failed materialization. This line is the difference
+  // between that outage being visible on the next startup and it running for
+  // nine days.
+  //
+  // Rendered directly UNDER the header, never appended at the tail:
+  // capNativeStartupText keeps the head and cuts the tail, so a tail-placed
+  // warning is the first thing truncated at capped depths -- observed live in
+  // the divergence simulation (STALE was line 19 of 20). The most important
+  // line goes where truncation cannot reach it.
+  const undeliveredWarning = snapshot.undeliveredGeneration
+    ? `\n> - ⚠️ **Skill files are STALE:** the entitlement DB is at generation ` +
+      `\`${snapshot.undeliveredGeneration.slice(0, 12)}…\` but its files never finished ` +
+      `reaching the skill roots. Agents are reading older skills. Run a sync ` +
+      `(restart the host or \`prism connect\`) and report this if it persists.`
+    : "";
   if (snapshot.source === "validated-partial") {
-    return `> **Prism System Ready**\n>\n` +
+    return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 📦 **Entitled skills (materialization incomplete):** ${snapshot.names.length}\n` +
       `> - 📚 **Core/protected entitlements:** ${formatBoundedSkillNames(coreSkills, "entitled")}\n` +
@@ -379,7 +448,7 @@ async function buildNativeSystemReadyBlock(
       freeTierUpgradeLine(snapshot.tier);
   }
   if (snapshot.source === "tier-fallback") {
-    return `> **Prism System Ready**\n>\n` +
+    return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
@@ -387,7 +456,7 @@ async function buildNativeSystemReadyBlock(
       conflictWarning +
       freeTierUpgradeLine(snapshot.tier);
   }
-  return `> **Prism System Ready**\n>\n` +
+  return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
     `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
     `> - 📦 **Provisioned skills:** ${snapshot.names.length}\n` +
     `> - 📚 **Core/protected skills provisioned:** ${formatBoundedSkillNames(coreSkills, "provisioned")}\n` +
@@ -560,26 +629,19 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
   const storage = await getStorage();
 
-  // ─── Project mismatch validation (v13 — hard-rejects on mismatch) ───
-  // Replaces the old soft-warning behavior that allowed cross-project
-  // writes. See projectResolver.ts for the lookup logic.
+  // ─── Project validation (v14 — warns, NEVER refuses the write) ───
+  // v13 hard-rejected on mismatch, trusting auto-created registry rows that
+  // turned out to be junk on a live machine (home-dir and relative-path
+  // entries) — agents got contradictory rejections and sessions ended
+  // UNSAVED. A memory product must not drop data to enforce taxonomy.
   let resolverNote = "";
   const resolved = await resolveProject(project, files_changed);
-  if (!resolved.ok) {
-    return {
-      content: [{
-        type: "text",
-        text:
-          `❌ ${resolved.error}\n` +
-          (resolved.hint ? `Hint: ${resolved.hint}\n` : "") +
-          `\nNo ledger entry was written. Re-issue the call with the correct project.`,
-      }],
-      isError: true,
-    };
-  }
   project = resolved.project;
+  if (resolved.warning) {
+    resolverNote = `\n⚠️ ${resolved.warning}`;
+  }
   if (resolved.autoCreated) {
-    resolverNote = `\n📝 Auto-registered project "${project}" with repo_path derived from files_changed.`;
+    resolverNote += `\n📝 Auto-registered project "${project}" with repo_path derived from files_changed.`;
   }
 
   debugLog(`[session_save_ledger] Saving ledger entry for project="${project}"`);
@@ -1611,10 +1673,17 @@ export async function sessionLoadContextHandler(
         // here; without it a stale cached table would never be detected on
         // this path, since there is no portal response to compare against.
         const manifestVersion = Number(await getSetting("skill_manifest:routing_version", ""));
+        // Account/team skills can never appear in the PUBLIC routing table —
+        // listing a private skill's name and trigger words in a world-readable
+        // file is the leak this feature exists to avoid — so they declare
+        // `prompt_triggers` in their own frontmatter and are matched here, on
+        // device, from bodies already cached for injection.
+        const scoped = await collectSkillTriggersOnThisMachine();
         const matched = (await resolvePromptSkillNames(
           prompt,
           Number.isFinite(manifestVersion) && manifestVersion > 0 ? manifestVersion : undefined,
-        )).filter((name) => entitledSkillNames.has(name));
+          scoped?.triggers,
+        )).filter((name) => entitledSkillNames.has(name) || scoped?.localNames.has(name));
         if (matched.length > 0) {
           const shown = matched.slice(0, MAX_SYMPTOM_SKILLS);
           const overflow = matched.length - shown.length;
@@ -2012,16 +2081,201 @@ export async function seedAndRecallDemoMemory(conversationId: string): Promise<s
       limit: "1",
     })) as Array<{ summary?: string; todos?: string[] }>;
     const recalled = rows[0];
-    if (!recalled?.summary) return null;
+    if (!recalled?.summary) {
+      console.error(`[first-run-demo] read-back returned ${Array.isArray(rows) ? rows.length : "non-array"} rows — seed row not visible`);
+      return null;
+    }
     const todo = Array.isArray(recalled.todos) && recalled.todos[0] ? `\n  - TODO it carried: ${recalled.todos[0]}` : "";
     return (
       `- 🧠 **Watch this — Prism just saved a memory and recalled it from disk:**\n` +
       `  - "${recalled.summary}"${todo}\n` +
       `  - This round-trip is what every future session gets: your decisions, TODOs, and changed files, back the moment you return. (Demo lives in the \`${DEMO_PROJECT}\` project — delete it anytime.)`
     );
-  } catch {
+  } catch (error) {
+    // Still swallow — a first run must never break on a demo — but say WHY on
+    // stderr. This block went missing intermittently on one CI leg
+    // (ubuntu/node 20) and the silent catch made every investigation start
+    // from nothing: the failure was only ever visible as an ABSENT paragraph.
+    console.error(`[first-run-demo] seed/recall failed: ${error instanceof Error ? `${error.name}: ${error.message}\n${error.stack}` : String(error)}`);
     return null;
   }
+}
+
+/**
+ * Machine-readable session facts, carried INSIDE the text block.
+ *
+ * Why not `structuredContent`: a tool result may carry both a text block and
+ * `structuredContent`, and a host is free to surface only the latter — Claude
+ * Code does exactly that, so from 2026-07-22 (when structuredContent was added
+ * here) until this fix, every Claude Code session received these 129 bytes of
+ * JSON and NONE of the ~7KB startup text: no memory context, no protected
+ * skill floor, no symptom-triggered skills. Measured three ways: a text-only
+ * tool (session_health_check) arrived intact, this one and skill_manage did
+ * not, and Claude Code v2.1.212 delivered the full text before the change and
+ * 129 bytes after it — same host version, so the regression was ours.
+ *
+ * MCP pairs `structuredContent` with an `outputSchema`; Prism declares none,
+ * so emitting it was out of spec and a host preferring it is reasonable. The
+ * facts now ride in the text, which every host renders.
+ */
+export function buildSessionFactsLine(facts: Record<string, string | number | boolean | string[]>): string {
+  // Attribute-safe, NOT markdown-escaped: escapeNativeMarkdown backslashes
+  // hyphens, which corrupts every UUID it touches (`conv-abc` → `conv\-abc`)
+  // and would make the id unusable by the caller it exists for. Strip only
+  // what can break out of the attribute or the line.
+  const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f"<>]+/g, " ").trim();
+  const attrs = Object.entries(facts)
+    .map(([key, value]) => `${key}="${safe(String(Array.isArray(value) ? value.join(",") : value))}"`)
+    .join(" ");
+  return `<prism_session ${attrs} />`;
+}
+
+/**
+ * Prompt triggers declared by skills on this machine.
+ *
+ * Two sources, because a skill can reach a machine two ways:
+ *   - the `skill:<name>` settings cache, which backs body injection for every
+ *     DELIVERED skill (platform, account, team); and
+ *   - local skill directories, for skills saved with scope "local", which are
+ *     written straight to disk and never enter that cache.
+ *
+ * Missing the second source made `prompt_triggers` silently do nothing for
+ * local skills — the same "configured and inert" experience the feature exists
+ * to remove. Local skill NAMES are returned too: the caller filters matches by
+ * entitlement, and a local skill is not in the entitlement manifest, so without
+ * this it would match and then be discarded. A file the user wrote on their own
+ * machine needs no entitlement.
+ *
+ * Failures are swallowed — a broken trigger degrades to "the public table
+ * only", never takes down startup.
+ */
+export async function collectSkillTriggersOnThisMachine(): Promise<
+  { triggers: Record<string, string[]>; localNames: Set<string> } | undefined
+> {
+  try {
+    const { collectScopedTriggers, collectLocalSkillTriggers } = await import("./scopedSkillTriggers.js");
+    const merged: Record<string, string[]> = {};
+    const localNames = new Set<string>();
+    const errors: Array<{ skill: string; reason: string }> = [];
+
+    const settings = await getAllSettings();
+    const bodies: Array<[string, string]> = [];
+    for (const [key, value] of Object.entries(settings)) {
+      if (key.startsWith("skill:") && value) bodies.push([key.slice("skill:".length), value]);
+    }
+    if (bodies.length > 0) {
+      const delivered = collectScopedTriggers(bodies);
+      for (const [pattern, names] of Object.entries(delivered.triggers)) {
+        (merged[pattern] ||= []).push(...names);
+      }
+      errors.push(...delivered.errors);
+    }
+
+    // Isolated: a disk problem (or a host without the local root) must not cost
+    // us the DELIVERED skills' triggers, which are already in hand.
+    try {
+      const { readdir, stat, readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      // The skills root is overridable per caller and per home; skillManifestSync
+      // owns it. Scanning the canonical root alone is sufficient because
+      // skill_save writes every local skill there before mirroring.
+      const { resolveCanonicalSkillsDir } = await import("../skillManifestSync.js");
+      const local = await collectLocalSkillTriggers(
+        [resolveCanonicalSkillsDir()],
+        {
+          readdir: (path) => readdir(path),
+          stat: async (path) => ({ size: (await stat(path)).size }),
+          readFile: (path) => readFile(path, "utf8"),
+        },
+        join,
+      );
+      for (const [pattern, names] of Object.entries(local.triggers)) {
+        (merged[pattern] ||= []).push(...names);
+      }
+      for (const name of local.names) localNames.add(name);
+      errors.push(...local.errors);
+    } catch (error) {
+      debugLog(`[skill-triggers] local scan skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    for (const error of errors) {
+      // Loud, not silent: a rejected trigger looks exactly like the defect this
+      // feature fixes — a skill that is installed and never fires.
+      debugLog(`[skill-triggers] ignored trigger in "${error.skill}": ${error.reason}`);
+    }
+    return Object.keys(merged).length > 0 ? { triggers: merged, localNames } : undefined;
+  } catch (error) {
+    debugLog(`[skill-triggers] collection failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * session_route_prompt — the mid-session half of skill routing.
+ *
+ * Everything here is deliberately borrowed from the first-turn path rather
+ * than reimplemented: the same on-device matcher, the same scoped-frontmatter
+ * triggers, the same entitlement set and the same local-skill bypass. A second
+ * implementation would drift, and a routing table that behaves differently at
+ * turn 500 than at turn 1 is worse than no routing at all.
+ */
+/**
+ * Prompt routing from CACHED state only — no network, no manifest sync.
+ *
+ * Shared by the MCP tool and the `prism route-prompt` CLI (which the
+ * prism-route host hook shells out to on every prompt). Entitlement comes
+ * from the last-synced manifest in the settings DB; the server refreshes it
+ * at startup, and a per-prompt path must never trigger a portal round-trip.
+ * One implementation on purpose: a table that matches differently in the
+ * hook than in the server is worse than no hook.
+ */
+export async function runPromptRouteFromCache(prompt: string, loaded: string[]) {
+  const { routePrompt } = await import("./promptRouteHandler.js");
+  const { resolvePromptSkillNames, _setStorage } = await import("./skillRouting.js");
+  // The CLI is a fresh process per prompt: without storage wiring the keyword
+  // table can neither be read from disk (offline = dead routing) nor
+  // persisted after a fetch (every prompt = a network GET). The server paths
+  // wire this at bootstrap; the CLI must do it itself.
+  _setStorage(
+    async (key, value) => { await setSetting(key, value); },
+    async (key) => getSetting(key, ""),
+  );
+  return routePrompt(prompt, loaded, {
+    resolvePromptSkillNames,
+    collectTriggers: collectSkillTriggersOnThisMachine,
+    entitledNames: async () => {
+      try {
+        const parsed: unknown = JSON.parse(await getSetting("skill_manifest:names", "[]"));
+        return new Set(Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string") : []);
+      } catch {
+        return new Set<string>();
+      }
+    },
+    getBody: (name: string) => getSetting(`skill:${name}`, ""),
+    manifestVersion: async () => {
+      const v = Number(await getSetting("skill_manifest:routing_version", ""));
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    },
+  });
+}
+
+export async function sessionRoutePromptHandler(
+  args: unknown,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const input = (typeof args === "object" && args !== null && !Array.isArray(args) ? args : {}) as {
+    prompt?: unknown; loaded?: unknown; project?: unknown;
+  };
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  const loaded = Array.isArray(input.loaded)
+    ? input.loaded.filter((n): n is string => typeof n === "string")
+    : [];
+
+  const result = await runPromptRouteFromCache(prompt, loaded);
+
+  // Text only, never structuredContent. A result carrying both lets a host
+  // surface just the structured half — which is exactly how Claude Code
+  // silently dropped the bootstrap payload for three weeks.
+  return { content: [{ type: "text", text: result.text }] };
 }
 
 export async function sessionBootstrapHandler(
@@ -2088,7 +2342,17 @@ export async function sessionBootstrapHandler(
     ? `👋 Welcome to Prism — first run detected. Let's get you productive in a few minutes.`
     : `👋 Welcome back, ${greetingName}. Prism is loading ${depth} context.`;
   const identityBlock = `- 🤖 **Agent Identity:** ${escapeNativeMarkdown(compactWithOmissionCount(role, 80))} — ${greetingName}`;
-  const startupHeader = isFirstRun ? greeting : `${greeting}\n\n${identityBlock}`;
+  // Cache-only by contract: server startup refreshes the cache asynchronously;
+  // this call never touches the npm registry. First run skips the notice — a
+  // just-installed machine is current, and that screen is action-first.
+  const updateNotice = isFirstRun ? "" : await getUpdateNotice({
+    currentVersion: SERVER_PACKAGE_VERSION,
+    getSetting,
+    runningFrom: process.argv[1],
+  });
+  const startupHeader = isFirstRun
+    ? greeting
+    : `${greeting}\n\n${identityBlock}${updateNotice ? `\n${updateNotice}` : ""}`;
 
   if (projects.length === 0) {
     const dashboardUrl = await readDashboardUrl();
@@ -2116,10 +2380,10 @@ export async function sessionBootstrapHandler(
       return {
         content: [{
           type: "text",
-          text: capNativeStartupText(firstRunText, depth),
+          text: capNativeStartupText(firstRunText, depth, undefined,
+            `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth, first_run: true })}`),
         }],
         isError: false,
-        structuredContent: { conversation_id: conversationId, projects: [], depth, first_run: true },
       };
     }
     const unconfiguredState = (depth === "quick" ? "" : `\n- 📝 **Last Session Summary:** Not loaded`) +
@@ -2130,10 +2394,10 @@ export async function sessionBootstrapHandler(
     return {
       content: [{
         type: "text",
-        text: capNativeStartupText(noProjectsText, depth),
+        text: capNativeStartupText(noProjectsText, depth, undefined,
+          `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth })}`),
       }],
       isError: false,
-      structuredContent: { conversation_id: conversationId, projects: [], depth },
     };
   }
 
@@ -2150,7 +2414,7 @@ export async function sessionBootstrapHandler(
     const separatorsLength = Math.max(0, renderedProjectCount - 1) * 2;
     perProjectMaxChars = Math.floor(
       (startupMaxChars - startupHeader.length - systemReadyBlock.length - LOCAL_STARTUP_FALLBACK_NOTICE.length -
-        6 - omissionLength - separatorsLength) /
+        SESSION_FACTS_RESERVE - 6 - omissionLength - separatorsLength) /
         renderedProjectCount,
     );
     if (perProjectMaxChars >= 512 || renderedProjectCount === 1) break;
@@ -2211,15 +2475,17 @@ export async function sessionBootstrapHandler(
       type: "text",
       text: `${startupHeader}\n\n${fallbackNotice}${startupContext.loaded.join("\n\n")}` +
         (omittedProjectsText ? `\n\n${omittedProjectsText}` : "") +
-        `\n\n${systemReadyBlock}`,
+        `\n\n${systemReadyBlock}` +
+        // Appended, not capped: SESSION_FACTS_RESERVE already bought this room
+        // out of the PROJECT budget, so nothing here can displace the skills.
+        `\n\n${buildSessionFactsLine({
+          conversation_id: conversationId,
+          projects: compactWithOmissionCount(renderedProjects.join(","), 120),
+          depth,
+          context_source: usedLocalFallback ? "local-last-good" : activeStorageBackend,
+        })}`,
     }],
     isError: startupContext.hadError,
-    structuredContent: {
-      conversation_id: conversationId,
-      projects: renderedProjects,
-      depth,
-      context_source: usedLocalFallback ? "local-last-good" : activeStorageBackend,
-    },
   };
 }
 

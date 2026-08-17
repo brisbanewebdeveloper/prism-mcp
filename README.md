@@ -116,6 +116,92 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.12.1
+
+- **`prism connect --refresh` now converges every registration it owns**, not
+  just the top-level one — directory-scoped entries could otherwise keep
+  launching an old build indefinitely.
+- **`prism update` checks the installed package**, not the CLI that happens to
+  be running, so it can no longer report "current" while the install is stale.
+- **The opt-in scheduled updater can actually start** — the LaunchAgent now
+  carries a PATH that includes node and npm.
+
+## What's New in v20.12.0
+
+- **Prism now tells you when it's out of date.** Session startup shows a
+  one-line update notice when a newer release exists — cache-backed, at most
+  one registry check per day, silent offline. `PRISM_NO_UPDATE_CHECK=1`
+  opts out.
+- **Hands-free updates, if you want them.** `prism autoupdate enable` sets up
+  a daily `prism update --if-idle`: it updates only the global npm package,
+  defers while any Prism server is running, and never touches host
+  configuration — that stays behind a visible `prism connect`.
+
+## What's New in v20.11.1
+
+- **Saving memory never gets refused.** The save path used to reject
+  `session_save_ledger`/`save_handoff` calls when its path-to-project
+  heuristic disagreed with the project you declared — and the registry the
+  heuristic trusted could contain junk from earlier auto-registration, so
+  legitimate sessions ended unsaved. Your declaration now always wins; the
+  disagreement is returned as an advisory warning, and auto-registration
+  only accepts real repository roots.
+- **Screenshots are evidence again.** `prism browser` captures on macOS were
+  silently *upscaled* to the size cap, so a screenshot no longer showed what
+  actually rendered. Only genuinely oversized captures are resized now, and
+  the cap no longer clips a standard 1920-wide viewport.
+
+## What's New in v20.10.0 – v20.11.0
+
+- **Skill routing now works mid-session.** New prompts are matched on-device
+  as the conversation moves — not just on turn one — and injected within each
+  host's real context limits (Claude Code caps hook output at 10k chars;
+  Codex truncates by default), with pointer-first delivery when a payload
+  can't fit inline.
+- **`prism connect` is a converge command.** It self-updates first, re-execs,
+  then reconciles MCP registration, skills, and hooks — no more
+  "fresh config, stale code" machines.
+- **Scoped skills route on prompts too**, and startup output survives hosts
+  that discard structured tool content.
+
+## What's New in v20.9.0 – v20.9.3
+
+- **Your skills follow your account.** `skill_save` stores a skill at the
+  scope you choose: this machine only (`local`, works offline and signed out),
+  your account (`user` — every machine you sign into receives it), or a
+  workspace (`team` — shared with members, admin-managed, optionally targeted
+  to specific people).
+- **Trim the catalog you don't use.** `skill_manage` can release platform
+  skills you never touch — freeing host skill-catalog budget — and restore
+  them any time, losslessly. Deleting a scoped skill archives its final
+  content locally first, so nothing is ever silently unrecoverable.
+
+- **Delivery that queues instead of failing.** Concurrent sessions no longer
+  starve skill sync on the local config store (WAL + busy-timeout) — a failure
+  that previously reported only "partial" where nobody could see it.
+- **Withheld rules still bind.** When the context budget can't inline a
+  skill's text, the manifest of withheld names now states that those skills
+  still govern the work and names every way to load them before completion
+  claims.
+- **The budget the floor never spent.** A long-standing accounting bug meant
+  no unprotected skill ever inlined at any normal context level — the
+  always-inlined protected floor was debiting the budget meant for everything
+  else. Task-matched skills (like the completion-evidence checklist) now
+  actually arrive.
+
+## What's New in v20.8.2
+
+- **Skill delivery now admits failure instead of hiding it.** A filesystem
+  permission edge case (a umask stripping the owner-execute bit) could leave
+  skill sync writing nothing while reporting itself current — measured at nine
+  days on a real machine. Broken managed directories are repaired in place,
+  every directory is created umask-proof, and the repair path refuses symlinks
+  via an `O_NOFOLLOW` descriptor.
+- **A stale install tells you at startup.** Prism now tracks the generation
+  that actually reached disk separately from the one the database accepted; if
+  they diverge, the startup banner says so in a warning placed where display
+  truncation cannot cut it. A successful sync clears it automatically.
+
 ## What's New in v20.7 – v20.8.0
 
 - **First run proves the memory instead of describing it** — `session_bootstrap`
@@ -608,13 +694,19 @@ for manual configuration and host-specific paths.
 **Optional — local model fleet** for offline tool-routing. Pull whichever fits your hardware:
 
 ```bash
-ollama pull dcostenco/prism-coder:2b    # 2.3 GB · mobile / lightweight (99.1% on our routing suite)
-ollama pull dcostenco/prism-coder:4b    # 3.4 GB · verifier (100% on our routing suite)
-ollama pull dcostenco/prism-coder:9b    # 5.8 GB · default router (100% on our routing suite, Qwen3.5)
-ollama pull dcostenco/prism-coder:27b   # 16 GB  · complex tasks (100% on our routing suite)
+ollama pull dcostenco/prism-coder:2b    # 3.3 GB  · on-device / lowest RAM · sees images (100% on our routing suite)
+ollama pull dcostenco/prism-coder:4b    # 3.5 GB  · verifier · sees images (100%)
+ollama pull dcostenco/prism-coder:9b    # 6.7 GB  · default router · sees images (95.7%, reasons before answering)
+ollama pull dcostenco/prism-coder:27b   # 16.8 GB · complex code / quality · text only (100%)
 ```
 
 Prism detects both the namespaced (`dcostenco/prism-coder:9b`) and bare (`prism-coder:9b`) Ollama tags automatically.
+
+The 2b/4b/9b tiers carry a vision tower and accept screenshots through
+`prism_infer({ images: [...] })` — pass absolute paths or base64. Image
+requests are refused rather than answered blind when no tier (or the Layer 1
+safety classifier) can actually see the image, so a text-only model is never
+handed a prompt about a screenshot it never received. The 27b is text only.
 
 ---
 
@@ -760,7 +852,7 @@ air-gap. **Enterprise** includes a HIPAA Business Associate Agreement.
 
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned with LoRA (r=128, all 64 layers including DeltaNet); the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on our internal 115-case tool-routing suite and 100% on an internal 15-problem coding eval, at $0 inference cost. These are self-run evaluations, not [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) leaderboard submissions.
 
-`prism_infer` supports three modes: `route` (tool routing, fast, nothink), `chat` (conversation with thinking), and `code` (code generation with thinking). In chat/code modes, the model uses `<think>` blocks for chain-of-thought reasoning, which are stripped before the response is served. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
+`prism_infer` supports three modes: `route` (tool routing, fast), `chat` (conversation) and `code` (code generation). Reasoning is decided by the **tier**, not the mode: a tier carrying `MODEL_TIERS.prefersThinking` also carries a `minLocalTokens` floor so reasoning cannot crowd out the answer, and only those tiers use `<think>` blocks (stripped before the response is served). The 9B does; the 4B and 2B do not, because on those tiers reasoning drew down the same `num_predict` budget the answer needed and returned an empty response. An explicit `think: true` still overrides, for a caller who has sized `max_tokens` for it. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
 
 Every route-mode result is parsed locally and checked against `allowed_tools`
 before it reaches the host. Malformed or unadvertised calls become `NO_TOOL`.
@@ -770,16 +862,33 @@ draft that may need correction—to Synalux for authenticated deterministic
 correction. Advertised custom host tools remain local. Set
 `route_guard: "local"` for a fully on-device route path.
 
-| Model | Ollama tag | Size | Routing accuracy¹ | Role | Automatic routing tier |
-|---|---|---|---|---|---|
-| Qwen3.5-4B Q3_K_M | `prism-coder:2b` | 2.3 GB | 99.1% × 3 seeds | iPhone / mobile first gate | Free |
-| Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.4 GB | 100% × 3 seeds | Verifier | Free |
-| Qwen3.5-9B (LoRA) | `prism-coder:9b` | 5.8 GB | 100% × 3 seeds | Default router | Standard+ |
-| Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16 GB | 100% × 3 seeds | Quality tier (DeltaNet, 28.5 tok/s) | Advanced+ |
+| Model | Ollama tag | Size | Vision | Routing accuracy¹ | Role | Automatic routing tier |
+|---|---|---|---|---|---|---|
+| Qwen3.5-4B Q4_K_S | `prism-coder:2b` | 3.3 GB | ✅ | 100% | On-device / lowest RAM (4.5 GiB free) | Free |
+| Qwen3.5-4B Q4_K_M | `prism-coder:4b` | 3.5 GB | ✅ | 100% | Verifier (5.2 GiB free) | Free |
+| Qwen3.5-9B (LoRA) | `prism-coder:9b` | 6.7 GB | ✅ | 95.7%² | Default router / workhorse (9 GiB free) | Standard+ |
+| Qwen3.5-27B (LoRA) | `prism-coder:27b` | 16.8 GB | — | 100% | Complex code / quality (21 GiB free) | Advanced+ |
 
-¹ Self-run on a narrow 115-case MCP tool-selection suite, 3 seeds. It says these
-models pick the right tool on our own eval, nothing more — not a general capability
-measure, and not an independent benchmark result. Full methodology caveats below.
+¹ Self-run on a narrow 115-case MCP tool-selection suite, `temperature: 0`,
+measured through the call path `prism_infer` actually uses (`/api/chat`, each
+model's own template). It says these models pick the right tool on our own eval,
+nothing more — not a general capability measure, and not an independent
+benchmark result. Earlier revisions of this table quoted 99.1–100% from a
+harness that hand-rolled a ChatML prompt with `raw: true`, bypassing the
+template; those numbers described a path no caller exercises. Full methodology
+caveats below.
+
+² The 9B is the one tier that reasons before answering, and it is measured with
+reasoning enabled: 95.7% with thinking, 83.5% without. `prism_infer` sets this
+per-tier (`MODEL_TIERS.prefersThinking`), so callers get the 95.7% path by
+default. Reasoning costs roughly 600 tokens, which is why the 9B also carries a
+2,048-token local floor.
+
+**Vision.** The 2B/4B/9B tags ship a separate `projector` layer (0.68–0.92 GB)
+and read images; the 27B is text-only. `prism_infer` probes for that layer and
+skips a tier with no vision rather than sending it an image — asked directly, a
+text-only model will still answer confidently about pixels it never received.
+Exercised against the real models in `tests/integration/visionScreenshot.test.ts`.
 
 These tiers control automatic `prism_infer` selection, not Ollama itself. Any
 user can run any downloaded on-device model directly through Ollama on every
@@ -834,9 +943,16 @@ reliability, not general model capability.
 
 | Model | Routing accuracy | Notes |
 |---|---|---|
-| prism-coder:2b (Q3_K_M) | 99.1% × 3 seeds | 1 failure: regex→knowledge_search |
-| prism-coder:4b / 9b / 27b | 100% × 3 seeds | Perfect on all 115 cases |
+| prism-coder:2b (Q4_K_S) | 100% | The 2B was requantised when vision shipped; the old 99.1% was Q3_K_M |
+| prism-coder:4b | 100% | |
+| prism-coder:9b | 95.7% with reasoning | 83.5% without — the only tier where this differs |
+| prism-coder:27b | 100% | |
 | Claude (frontier, same eval) | ~98% | Stronger everywhere outside this narrow task |
+
+Measured through `/api/chat` with each model's own template — the path
+`prism_infer` uses. `temperature: 0`, so the three seeds only reshuffle case
+order and cannot disagree; earlier revisions cited that agreement as
+confirmation, which it never was.
 
 **Memory uplift (LoCoMo-Plus, self-published).** A separate long-context dialogue benchmark ([dcostenco/Locomo-Plus](https://github.com/dcostenco/Locomo-Plus)) measures how much structured memory helps a base model retain multi-day context. Results show large gains when a model is paired with Prism memory versus running raw. Note this benchmark is authored, run, and LLM-judged by this project — treat it as a reproducible demonstration, not an independent third-party result, and run it yourself with the commands in that repo.
 
@@ -967,9 +1083,14 @@ prism_infer({
 
 | Mode | Think | Model | Use case |
 |------|-------|-------|----------|
-| `route` | Off (fast) | 9B default | MCP tool routing |
-| `chat` | On | 27B preferred | Conversation, reasoning |
-| `code` | On | 27B preferred | Code generation, debugging |
+| `route` | Off (fast) — except a tier that reasons better, e.g. 9B | 9B default | MCP tool routing |
+| `chat` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Conversation, reasoning |
+| `code` | Per tier: on for 9B, off for 4B/2B | 27B preferred | Code generation, debugging |
+
+Think is a **tier** property, not a mode property. Tiers with
+`prefersThinking` also declare a `minLocalTokens` floor that reserves budget for
+the answer; tiers without it spend the whole `num_predict` allowance inside
+`<think>` and return nothing. Pass `think` explicitly to override either way.
 
 Full TypeScript signatures live in [`src/tools/`](src/tools/); architecture in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

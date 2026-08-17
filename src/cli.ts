@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, mkdirSync, readdirSync, statSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { SqliteStorage } from './storage/sqlite.js';
 import { handleVerifyStatus, handleGenerateHarness } from './verification/cliHandler.js';
 import * as path from 'path';
@@ -26,6 +29,7 @@ import {
   migrateLegacyClaudeInstructions,
   migrateLegacyClaudeManagedStartup,
   migrateLegacyClaudeProjectMcp,
+  connectResultLine,
   normalizeHostName,
 } from './connect.js';
 import { runBrowserCli } from './browserCli.js';
@@ -205,6 +209,51 @@ program
   .command('browser')
   .description('Run the packaged local Prism Browser automation CLI');
 
+// ─── prism update / prism autoupdate ──────────────────────────
+// Unattended-safe package updates. Deliberately NOT connect-on-a-timer:
+// connect writes host configuration and expects hosts to be closed, which
+// a scheduler cannot guarantee. `update` touches only the global npm
+// package; running servers pick the release up on their next start.
+
+program
+  .command('update')
+  .description('Update the global prism-mcp-server package (never touches host configuration)')
+  .option('--if-idle', 'Only update while no Prism MCP server process is running (scheduler-safe)')
+  .action(async (options: { ifIdle?: boolean }) => {
+    const { runPackageUpdate } = await import('./autoUpdate.js');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    const result = runPackageUpdate({
+      currentVersion: pkg.version,
+      ifIdle: options.ifIdle,
+      log: (l) => console.log(l),
+    });
+    console.log(`${result.action}: ${result.detail}`);
+    process.exit(result.action === 'failed' ? 1 : 0);
+  });
+
+program
+  .command('autoupdate <action>')
+  .description('Scheduled daily `prism update --if-idle` — enable | disable | status (opt-in, macOS)')
+  .action(async (action: string) => {
+    const { enableAutoupdate, disableAutoupdate, autoupdateStatus } = await import('./autoUpdate.js');
+    const log = (l: string) => console.log(l);
+    let status;
+    if (action === 'enable') status = enableAutoupdate(log);
+    else if (action === 'disable') status = disableAutoupdate();
+    else if (action === 'status') status = autoupdateStatus();
+    else {
+      console.error(`unknown action "${action}" — use enable, disable, or status`);
+      process.exit(1);
+    }
+    if (!status.supported) {
+      console.log(`− ${status.detail}`);
+      process.exit(action === 'status' ? 0 : 1);
+    }
+    console.log(status.enabled
+      ? `✓ autoupdate ${status.detail}\n  agent: ${status.plistPath}`
+      : `− autoupdate ${status.detail}`);
+  });
+
 // ─── prism connect ────────────────────────────────────────────
 // Registers this installed package with supported MCP hosts. The
 // merge is additive: an existing `prism` or `prism-mcp` entry is
@@ -217,8 +266,29 @@ program
   .option('--all', 'Target all supported hosts instead of auto-detecting installed hosts')
   .option('--dry-run', 'Preview configuration changes without writing files')
   .option('--refresh', 'Refresh only entries previously created by Prism; custom entries stay untouched')
-  .action(async (options: { host?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }) => {
+  .option('--no-self-update', 'Skip the npm self-update check; configure with the currently installed version')
+  .action(async (options: { host?: string; all?: boolean; dryRun?: boolean; refresh?: boolean; selfUpdate?: boolean }) => {
     try {
+      // ── Converge the PACKAGE first, then the configs ──────────────
+      // connect is the one command the operator runs to make a machine
+      // current; leaving it configuring with stale code produced the
+      // "fresh hook, stale CLI" state observed live on 2026-08-13. After a
+      // successful update we RE-EXEC the new binary so the remainder of
+      // connect runs the code it just installed. Dry runs never update.
+      if (options.selfUpdate !== false && !options.dryRun) {
+        const { maybeSelfUpdate } = await import('./selfUpdate.js');
+        const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+        const upd = maybeSelfUpdate({ currentVersion: pkg.version, invokedFrom: process.argv[1], log: (l) => console.log(l) });
+        if (upd.action === 'updated') {
+          console.log(`✓ prism updated to ${upd.latest}; re-running connect with the new version`);
+          const rerun = spawnSync(process.execPath, [process.argv[1], 'connect', ...process.argv.slice(3), '--no-self-update'], { stdio: 'inherit' });
+          process.exit(rerun.status ?? 0);
+        } else if (upd.action === 'failed') {
+          console.log(`⚠ self-update: ${upd.detail}`);
+        } else if (upd.action === 'skipped') {
+          console.log(`− self-update skipped: ${upd.detail}`);
+        }
+      }
       if (!options.dryRun) {
         console.log('Close target MCP hosts before registration so they cannot edit configuration concurrently.');
       }
@@ -237,19 +307,11 @@ program
       }
 
       for (const result of summary.results) {
-        if (result.status === 'registered') {
-          console.log(`✓ ${result.label}: registered (${result.path})`);
-        } else if (result.status === 'would-register') {
-          console.log(`• ${result.label}: would register (${result.path})`);
-        } else if (result.status === 'refreshed') {
-          console.log(`✓ ${result.label}: Prism-managed entry refreshed (${result.path})`);
-        } else if (result.status === 'would-refresh') {
-          console.log(`• ${result.label}: would refresh Prism-managed entry (${result.path})`);
-        } else if (result.status === 'existing') {
-          console.log(`− ${result.label}: already registered — untouched (${result.path})`);
-        } else {
-          console.error(`✗ ${result.label}: ${result.message || 'registration failed'} (${result.path})`);
+        if (result.status === 'error') {
+          console.error(connectResultLine(result));
           process.exitCode = 1;
+        } else {
+          console.log(connectResultLine(result));
         }
       }
       const connectedClaude = summary.results.some((result) =>
@@ -321,6 +383,38 @@ program
         if (skillSync.status !== 'disabled') {
           const changed = skillSync.installed.length + skillSync.updated.length + skillSync.pruned.length;
           console.log(`✓ Synalux skills: ${skillSync.tier || 'free'} tier (${changed} changed)`);
+          // prism-route hook: AFTER sync success on purpose — a connect that
+          // fails must leave the machine untouched (pinned by the
+          // "keeps legacy Claude hooks when the snapshot fails" test).
+          {
+            const hookHosts: Array<'claude' | 'codex'> = [];
+            if (summary.results.some((r) => (r.host === 'claude-code' || r.host === 'claude-desktop') && r.status !== 'error')) hookHosts.push('claude');
+            if (summary.results.some((r) => r.host === 'codex' && r.status !== 'error')) hookHosts.push('codex');
+            if (hookHosts.length > 0) {
+              try {
+                const { ensurePromptRouteHook } = await import('./promptRouteHostHook.js');
+                for (const r of ensurePromptRouteHook({ hosts: hookHosts, mode: 'explicit' })) {
+                  const state = r.script === 'unchanged' && r.config === 'unchanged' ? 'up to date' : 'installed';
+                  if (r.host === 'codex' && r.codexApproval === 'pending-or-unknown') {
+                    // Codex silently skips untrusted hooks — a green "installed"
+                    // here would be the "configured and inert" lie.
+                    console.log(`⚠ codex: prism-route hook ${state}, AWAITING TRUST — run codex, then /hooks, and trust the entry ending prism-route/on_prompt.py`);
+                  } else if (r.host === 'codex' && r.codexApproval === 'state-present-unverifiable') {
+                    // Approvals are keyed by definition hash, whose algorithm is
+                    // not public — once ANY trust state exists we cannot tell
+                    // ours apart from here. Say exactly that; asserting AWAITING
+                    // after the operator pressed t reads as "the trust didn't
+                    // take", which is a false alarm against their own action.
+                    console.log(`− codex: prism-route hook ${state}; trust state exists but is not verifiable from here — confirm once in /hooks`);
+                  } else {
+                    console.log(`✓ ${r.host}: prism-route prompt hook ${state} (${r.scriptPath})`);
+                  }
+                }
+              } catch {
+                console.error('⚠ prism-route hook installation failed — skills still route at session start');
+              }
+            }
+          }
           if (skillSync.conflicts.length > 0) {
             console.error(`⚠ Preserved locally modified skill conflicts: ${skillSync.conflicts.join(', ')}`);
           }
@@ -425,6 +519,71 @@ program
 //
 // JSON MODE: Structured envelope for programmatic consumption
 // (session loader scripts, CI/CD pipelines, etc.).
+
+// ── route-prompt ──────────────────────────────────────────────
+// Called by the prism-route UserPromptSubmit hook on EVERY prompt in both
+// Claude Code and Codex, so the contract is: always exit 0, always print one
+// JSON object, and stay off the network (cached settings DB only). A hook
+// that can fail a turn gets uninstalled; a hook that is slow gets noticed.
+
+/** Deliberate offload for payloads over the host inline cap. The host's own
+ *  overflow path swaps the payload for a 2KB preview with no instruction to
+ *  read the rest; this file plus the inline pointer is the recoverable form. */
+function writeRouteOffload(fullText: string): string | undefined {
+  try {
+    const dir = path.join(homedir(), '.prism-mcp', 'route-context');
+    mkdirSync(dir, { recursive: true });
+    try {
+      // Best-effort prune: one file per over-budget routed prompt, kept a week.
+      for (const f of readdirSync(dir)) {
+        const p = path.join(dir, f);
+        try {
+          if (Date.now() - statSync(p).mtimeMs > 7 * 86_400_000) rmSync(p);
+        } catch { /* skip unstat-able entries */ }
+      }
+    } catch { /* prune failure never blocks the write */ }
+    const target = path.join(dir, `route-${Date.now()}-${process.pid}.md`);
+    writeFileSync(target, fullText);
+    return target;
+  } catch {
+    return undefined; // reshape degrades to the loud in-band fallback
+  }
+}
+
+program
+  .command('route-prompt')
+  .description('Match a prompt (stdin) against skill triggers; prints {names, text} JSON. Used by the prism-route host hook.')
+  .option('--loaded <names>', 'Comma-separated skill names already active in the session')
+  .action(async (options: { loaded?: string }) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+      // A pasted log can be megabytes; triggers live in the first human-sized
+      // stretch of a prompt, and unbounded input is regex food.
+      const prompt = Buffer.concat(chunks).toString('utf8').slice(0, 100_000);
+      const loaded = (options.loaded ?? '')
+        .split(',')
+        .map((n) => n.trim())
+        .filter(Boolean);
+      const { runPromptRouteFromCache } = await import('./tools/ledgerHandlers.js');
+      const { reshapeForInlineBudget, HOOK_INLINE_SAFE_CHARS } = await import('./tools/promptRouteHandler.js');
+      const result = await runPromptRouteFromCache(prompt, loaded);
+      // The hook path must fit the host's inline cap; the MCP tool path
+      // (session_route_prompt) keeps the full 30k — tool results inline far
+      // higher than hook context does.
+      const shaped = result.names.length > 0
+        ? reshapeForInlineBudget(result, HOOK_INLINE_SAFE_CHARS, writeRouteOffload)
+        : { text: '' };
+      const payload = JSON.stringify({ names: result.names, text: result.names.length > 0 ? shaped.text : '' });
+      await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
+    } catch {
+      // Never break the hook: an empty result is a routing miss, not an error.
+      await new Promise<void>((resolveWrite) => process.stdout.write('{"names":[],"text":""}\n', () => resolveWrite()));
+    } finally {
+      try { await closeStorage(); } catch { /* exit anyway */ }
+      process.exit(0);
+    }
+  });
 
 program
   .command('load <project>')

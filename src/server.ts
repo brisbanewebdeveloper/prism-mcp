@@ -94,6 +94,7 @@ import type { SyncEvent } from "./sync/index.js";
 import { startDashboardServer } from "./dashboard/server.js";
 import { acquireLock, registerShutdownHandlers } from "./lifecycle.js";
 import { verifyBehaviorHandler } from "./tools/behavioralVerifierHandler.js";
+import { SKILL_SAVE_TOOL, SKILL_MANAGE_TOOL, skillSaveHandler, skillManageHandler } from "./tools/skillScopeHandlers.js";
 
 // ─── v2.3.6 FIX: Use Storage Abstraction for Prompts/Resources ───
 // CRITICAL FIX: Previously imported supabaseRpc/supabaseGet directly,
@@ -140,6 +141,7 @@ import {
   SESSION_SAVE_HANDOFF_TOOL,
   SESSION_LOAD_CONTEXT_TOOL,
   SESSION_BOOTSTRAP_TOOL,
+  SESSION_ROUTE_PROMPT_TOOL,
   KNOWLEDGE_SEARCH_TOOL,
   KNOWLEDGE_FORGET_TOOL,
   // ─── v0.4.0: New tool definitions (Enhancements #2 and #4) ───
@@ -193,6 +195,7 @@ import {
   sessionSaveHandoffHandler,
   sessionLoadContextHandler,
   sessionBootstrapHandler,
+  sessionRoutePromptHandler,
   knowledgeSearchHandler,
   knowledgeForgetHandler,
   // ─── v0.4.0: New tool handlers ───
@@ -330,6 +333,9 @@ function toStandardWebSearchArgs(args: unknown): {
 function buildSessionMemoryTools(): Tool[] {
   return [
     SESSION_BOOTSTRAP_TOOL,      // session_bootstrap — hook-free configured first-turn greeting + context
+    SESSION_ROUTE_PROMPT_TOOL,   // session_route_prompt — routes EVERY turn after the first
+    SKILL_SAVE_TOOL,             // skill_save — save a skill at local/user/team scope
+    SKILL_MANAGE_TOOL,           // skill_manage — list/delete scoped skills, release/restore platform skills
     SESSION_SAVE_LEDGER_TOOL,    // session_save_ledger — append immutable session log
     SESSION_SAVE_HANDOFF_TOOL,   // session_save_handoff — upsert latest project state (now with OCC)
     SESSION_LOAD_CONTEXT_TOOL,   // session_load_context — explicit project reload / legacy fallback
@@ -480,6 +486,35 @@ export function registerServerNotificationTarget(server: Server): () => void {
 // Compatibility export for handlers that still import the server-level
 // notifier directly. The primary runtime path uses the per-server callback
 // created inside createServer() so HTTP sessions keep isolated subscriptions.
+
+// ─── prism-route hook self-heal ──────────────────────────────
+// The safety net of the three install paths (connect, postinstall, here):
+// covers installs that skipped npm scripts and machines that never re-ran
+// connect. Idempotent and version-marked, so the steady-state cost is two
+// stat calls a few seconds after boot. Opt out: PRISM_DISABLE_HOOK_AUTOINSTALL=1.
+// Guarded against test runners: five suites import this module, and a
+// module-scope timer would otherwise rewrite the DEVELOPER'S real host
+// configs five seconds into every vitest run.
+if (
+  process.env.PRISM_DISABLE_HOOK_AUTOINSTALL !== "1" &&
+  !process.env.VITEST &&
+  process.env.NODE_ENV !== "test"
+) {
+  setTimeout(() => {
+    import("./promptRouteHostHook.js")
+      .then((m) => m.ensurePromptRouteHook({ mode: "auto" }))
+      .catch(() => { /* never disturb the server */ });
+  }, 5000).unref();
+}
+
+/**
+ * Notifies subscribed clients that a resource has changed.
+ *
+ * Called from sessionSaveHandoffHandler after a successful save.
+ * This triggers Claude Desktop to silently re-fetch the attached
+ * memory resource, keeping the paperclipped context up-to-date
+ * without the user doing anything.
+ */
 export function notifyResourceUpdate(project: string, server: Server) {
   server.notification({
     method: "notifications/resources/updated",
@@ -779,13 +814,14 @@ export const PRISM_SERVER_INSTRUCTIONS =
   `trigger rules — read each before proposing any change. Surfacing a name is not loading it: hosts that ` +
   `do not auto-load skill files must fetch each body with knowledge_search, passing the skill name ` +
   `exactly as listed. ` +
+  `AFTER that first turn, routing does not stop: call session_route_prompt at the start of any turn where the user states a new task, changes the kind of work, or reports a defect, passing their verbatim message as {prompt} and the skills you already hold as {loaded}. session_bootstrap routes only turn one, so without this a long session keeps working with whatever it happened to load hours earlier. The call is cheap — a single line when nothing new matches, and never the same skill twice. When it returns skills, read and follow them before doing the work. ` +
   `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
   `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
   `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +
   `Do not substitute session_load_context while session_bootstrap is available; use session_load_context ` +
   `only for an explicit project reload or as an older-server fallback. ` +
   `Use session_save_ledger to log completed work and session_save_handoff to preserve state for the next session. ` +
-  `Reuse the conversation_id returned by session_bootstrap in structuredContent for those saves and for ` +
+  `Reuse the conversation_id from session_bootstrap's <prism_session /> line for those saves and for ` +
   `session_detect_drift, the 60-minute goal-alignment drift check. Do not add the id to the visible greeting.\n\n` +
   `${LOCAL_FIRST_POLICY_TEXT}\n\n` +
   `${EVIDENCE_WORKFLOW_POLICY_TEXT}\n\n` +
@@ -1250,10 +1286,22 @@ export function createServer() {
             contextLoadedByClient = true;  // v5.2.1: suppress deferred auto-push
             result = await sessionLoadContextHandler(args); break;
 
+          case "skill_save":
+            result = await skillSaveHandler(args);
+            break;
+          case "skill_manage":
+            result = await skillManageHandler(args);
+            break;
           case "session_bootstrap":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
             contextLoadedByClient = true;
             result = await sessionBootstrapHandler(args); break;
+
+          case "session_route_prompt":
+            // Deliberately NOT gated on SESSION_MEMORY_ENABLED: routing is
+            // on-device against a cached table, so it must keep working when
+            // the memory backend is unconfigured or unreachable.
+            result = await sessionRoutePromptHandler(args); break;
 
           case "knowledge_search":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
@@ -1696,6 +1744,22 @@ export async function startServer() {
   runSkillManifestSync();
   const skillManifestRefresh = setInterval(runSkillManifestSync, 5 * 60 * 1000);
   skillManifestRefresh.unref();
+
+  // Update-check refresh: 30s AFTER startup on an unref'd timer, so the
+  // registry ping is never on the prompt-critical path and never interleaves
+  // with first-boot storage initialization (a boot-time kick raced the
+  // first-run demo seed on CI — same-instant sqlite init from two paths).
+  // Short-lived spawns (codex exec) exit before the timer fires and never
+  // ping npm; long-lived hosts refresh 30s in, ample for a 24h TTL.
+  // session_bootstrap renders from the persisted cache only.
+  const updateCheckTimer = setTimeout(() => {
+    void (async () => {
+      const { refreshUpdateCache } = await import("./updateNotice.js");
+      const { getSetting, setSetting } = await import("./storage/configStorage.js");
+      await refreshUpdateCache({ getSetting, setSetting });
+    })().catch(() => { /* offline is silent by contract */ });
+  }, 30_000);
+  updateCheckTimer.unref();
 
   // Register graceful shutdown handlers (SIGTERM, SIGINT, SIGHUP, stdin close).
   // The stdin close handler is critical — when MCP clients disconnect, they

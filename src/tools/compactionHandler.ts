@@ -10,7 +10,7 @@
 import { getStorage } from "../storage/index.js";
 import { PRISM_USER_ID } from "../config.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
-import { callLocalLlm } from "../utils/localLlm.js";
+import { inferText } from "./prismInferHandler.js";
 import { PRISM_LOCAL_LLM_ENABLED, PRISM_STRICT_LOCAL_MODE } from "../config.js";
 import { debugLog } from "../utils/logger.js";
 
@@ -136,7 +136,10 @@ async function summarizeEntries(entries: any[]): Promise<any> {
   // ── Path 1: Local LLM (prism-coder:9b) ───────────────────────────
   if (PRISM_LOCAL_LLM_ENABLED) {
     debugLog(`[compact_ledger] Attempting local LLM summarization (${entries.length} entries)`);
-    const localResponse = await callLocalLlm(prompt);
+    // Ledger content goes through the full ladder so Layer 1 screening, the
+    // quality gate and the entitlement ceiling all apply — this summarises
+    // session records that may carry sensitive material.
+    const localResponse = await inferText(prompt, { mode: "chat" });
     if (localResponse) {
       debugLog(`[compact_ledger] Local LLM summarization succeeded`);
       return parseCompactionResponse(localResponse, "local-llm");

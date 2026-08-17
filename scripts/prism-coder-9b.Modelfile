@@ -1,0 +1,55 @@
+# prism-coder:9b — pin num_ctx, and NOTHING else
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS EXISTS
+#
+# The 2026-08-14 vision push republished prism-coder:9b with its SYSTEM line and
+# all four PARAMETER lines dropped. Confirm with:
+#
+#     ollama show --modelfile prism-coder:9b                      # TEMPLATE only
+#     ollama show --modelfile dcostenco/prism-coder:9b-textonly-backup
+#
+# 4b and 2b survived the same push intact, so this is a 9b-only packaging
+# regression: the weights are fine, the manifest is not.
+#
+# WHY IT DOES NOT SIMPLY RESTORE THE BACKUP
+#
+# The obvious move — copy the four PARAMETER lines and the SYSTEM line back from
+# the backup — is measurably WRONG. Isolated 2026-08-16 on the executed-code
+# suite (temperature 0, verified deterministic over 3 runs each, comparing
+# SHA-256 of the generated source):
+#
+#   prism-coder:9b            (stock)             semver PASS   hash 3fd3e65e
+#   + PARAMETER num_ctx only                      semver PASS   hash 3fd3e65e  <- identical
+#   + SYSTEM line only                            semver FAIL   hash 8f87b3ee
+#   + SYSTEM and all backup PARAMETERs            semver FAIL   hash 8f87b3ee
+#
+# The SYSTEM line alone flips the result. Ollama injects it even though
+# TEMPLATE is a bare `{{ .Prompt }}` passthrough with no {{ .System }}
+# placeholder, and prism already builds its own full prompt — so the Modelfile
+# SYSTEM is a second, conflicting instruction written for the pre-vision
+# text-only weights. Restoring it costs accuracy for nothing.
+#
+# num_ctx is byte-identical to stock, so pinning it is free. That is the whole
+# change: make the context explicit instead of inheriting whatever default the
+# installed Ollama happens to use. TEMPLATE {{ .Prompt }} is deliberate and
+# matches 4b/2b. temperature is passed per-request by prism, not baked here.
+#
+# Measured KV cost of the 32768 pin on this host: 6.3 -> 6.9 GB resident
+# (`ollama ps`), well inside the tier's 9 GB minFreeGb gate.
+#
+# AFTER ADOPTING THIS, and only after, modelPicker.ts MODEL_TIERS may raise the
+# 9b ctxTokens from 4_096 to 32_768. Raising it first would be fail-open: on a
+# host still inheriting a smaller default, an oversize prompt is truncated
+# silently, which is exactly what the §5.4 ctx gate exists to prevent.
+#
+# Build a candidate (safe — leaves the live tag alone):
+#   ollama create prism-coder:9b-fixed -f scripts/prism-coder-9b.Modelfile
+# Adopt (OVERWRITES the live tag; other agents on this machine share the
+# registry, so do this deliberately, not incidentally):
+#   ollama create prism-coder:9b -f scripts/prism-coder-9b.Modelfile
+
+FROM prism-coder:9b
+
+TEMPLATE {{ .Prompt }}
+
+PARAMETER num_ctx 32768

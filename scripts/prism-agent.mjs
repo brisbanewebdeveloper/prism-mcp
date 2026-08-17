@@ -24,12 +24,18 @@
 import { readFileSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, extname, sep } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 // ── env ──────────────────────────────────────────────────────────────────────
 const envPath = join(homedir(), "prism", ".env");
+// Tolerate a missing .env: this module is imported by tests and by tooling on
+// machines that never ran `prism connect`. Throwing at import time made the
+// whole file untestable and crashed any consumer for a file it may not need.
+const envText = (() => {
+  try { return readFileSync(envPath, "utf8"); } catch { return ""; }
+})();
 const env = Object.fromEntries(
-  readFileSync(envPath, "utf8")
+  envText
     .split("\n")
     .filter((l) => l.includes("=") && !l.startsWith("#"))
     .map((l) => {
@@ -429,6 +435,12 @@ const SHELL_ALLOWLIST = [
   /^git\s+(?:log|status|diff|show|branch)(?:\s+\S+)*$/,
 ];
 
+/** Executables shell_run may spawn. Values are literals: the caller's token is
+ *  only ever a KEY into this table, never the path that gets executed. */
+const SHELL_BINARIES = Object.freeze({
+  npm: "npm", npx: "npx", pytest: "pytest", cargo: "cargo", git: "git",
+});
+
 export function shellRunTool(command) {
   const trimmed = command.trim();
   // A4: newlines are shell command separators not caught by regex flags — reject first
@@ -438,7 +450,22 @@ export function shellRunTool(command) {
   // Block remaining shell metacharacters (defense-in-depth; execSync still invokes a shell)
   if (/[;&|`$(){}[\]<>\\]/.test(trimmed)) return "[shell_run error: shell metacharacters not allowed]";
   try {
-    const output = execSync(trimmed, { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+    // No shell. The filters above are defence in depth, but execSync spawns a
+    // shell, so the injection class exists by construction (CodeQL
+    // js/command-line-injection, critical). Splitting into argv and using
+    // execFileSync removes the interpreter entirely: metacharacters, globs and
+    // expansions cannot be interpreted because nothing is there to interpret
+    // them. Safe to split on whitespace here — newlines are rejected above and
+    // every allowlist entry is whitespace-delimited.
+    const [requested, ...argv] = trimmed.split(/\s+/);
+    // The EXECUTABLE must never be model-derived. Dropping the shell removed
+    // metacharacter injection, but execFileSync(userString) still let the
+    // caller choose which binary runs (CodeQL js/command-line-injection stayed
+    // critical). The name is used only to look up a LITERAL from this table, so
+    // what reaches execFileSync is always one of these constants.
+    const file = SHELL_BINARIES[requested];
+    if (!file) return `[shell_run error: executable not permitted — ${requested.slice(0, 40)}]`;
+    const output = execFileSync(file, argv, { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
     return output.trim() || "(no output)";
   } catch (err) {
     return `[shell_run error: ${err.message.split("\n")[0]}]`;

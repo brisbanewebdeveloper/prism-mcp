@@ -1249,6 +1249,53 @@ def cmd_open(session, url):
     return result
 
 
+def _enforce_max_edge(path, max_edge):
+    """Downscale an image in place so its longest edge is <= max_edge.
+
+    Returns a warning string when the image remains oversized (no scaler
+    available), else None. Never raises: a failed downscale must not turn a
+    real capture into a failure — but it must not stay silent either.
+    """
+    try:
+        import shutil as _shutil, subprocess as _subprocess
+        if _shutil.which("sips"):
+            # `sips -Z` resamples in BOTH directions — it UPSCALES an image that
+            # is already smaller than max_edge. Unguarded, every macOS capture
+            # came out at exactly the cap on its long edge: a 1440x900 viewport
+            # was written as 1900x1187 and a 1920x1280 one as 1900x1266. That is
+            # not evidence of what rendered, and it breaks any acceptance gate
+            # that asserts a capture is viewport-bound. Measure first and only
+            # shrink when the image genuinely exceeds the cap — the Pillow branch
+            # below already guards this way.
+            probe = _subprocess.run(
+                ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                capture_output=True, timeout=30, text=True)
+            edges = [int(part.split(":")[1].strip())
+                     for part in probe.stdout.splitlines()
+                     if "pixelWidth:" in part or "pixelHeight:" in part]
+            if edges and max(edges) <= max_edge:
+                return None
+            _subprocess.run(["sips", "-Z", str(max_edge), str(path)],
+                            capture_output=True, timeout=30, check=True)
+            return None
+        try:
+            from PIL import Image  # type: ignore
+            with Image.open(path) as im:
+                w, h = im.size
+                if max(w, h) <= max_edge:
+                    return None
+                scale = max_edge / max(w, h)
+                im.resize((int(w * scale), int(h * scale))).save(path)
+            return None
+        except ImportError:
+            pass
+        return (f"image may exceed {max_edge}px and no scaler is available "
+                f"(sips/Pillow) — large images poison Claude image attach "
+                f"after ~20 images per conversation")
+    except Exception as error:  # noqa: BLE001 — never fail a capture on scaling
+        return f"downscale failed ({error}); image may exceed {max_edge}px"
+
+
 def cmd_screenshot(session, output=None, cleanup=False, full_page=True, selector=None):
     """Capture a screenshot and validate that it is not an empty frame."""
     session.screenshot_counter += 1
@@ -1269,6 +1316,22 @@ def cmd_screenshot(session, output=None, cleanup=False, full_page=True, selector
     else:
         session.page.screenshot(path=str(path), full_page=full_page)
 
+    # ── Anthropic many-image rule (learned live, 2026-08-13) ─────────────
+    # Past ~20 images in a conversation, the API caps every image at 2000px
+    # per dimension and re-validates the WHOLE history on each request. One
+    # oversized capture early in a session poisons every later attach — the
+    # agent that must LOOK at screenshots loses the ability to see them,
+    # mid-conversation, permanently. Full-page captures routinely exceed
+    # 2000px in height, so oversized captures are shrunk here, at the source.
+    # sips is macOS-only; elsewhere we fall back to Pillow if present and
+    # otherwise WARN LOUDLY rather than emit poison silently.
+    #
+    # 2000, not 1900: the API limit quoted above is 2000px per dimension, and a
+    # 1900 cap sits just under the standard 1920-wide desktop viewport — so the
+    # single most common UI-evidence capture was resampled to 1900x1266 for no
+    # benefit, failing every gate that asserts a capture is viewport-bound.
+    _downscale_warning = _enforce_max_edge(path, 2000)
+
     size = path.stat().st_size
     audit_log("screenshot", str(path), f"size={size},ephemeral={cleanup}")
     result = {
@@ -1281,6 +1344,8 @@ def cmd_screenshot(session, output=None, cleanup=False, full_page=True, selector
     # A blank or error frame must not report success: a screenshot is evidence
     # only if something actually rendered.
     warnings = []
+    if _downscale_warning:
+        warnings.append(_downscale_warning)
     if size < MIN_SCREENSHOT_BYTES:
         result["status"] = "failed"
         warnings.append(f"image is {size} bytes, below the {MIN_SCREENSHOT_BYTES}-byte floor")

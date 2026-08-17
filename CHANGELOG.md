@@ -2,6 +2,220 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.12.1 — 2026-08-14
+
+- **Fixed: `prism connect --refresh` converged only one registration per host.**
+  Claude Code keeps additional directory-scoped entries under
+  `projects["<dir>"].mcpServers`, and the scoped one wins for sessions started
+  in that directory. A machine could therefore keep launching an old build in
+  some directories forever, with `connect` reporting success. Refresh now
+  converges every Prism-managed entry in the files it owns, in one atomic
+  write, preserving per-entry settings and credentials, and never touching a
+  hand-rolled entry. A plugin-owned `.mcp.json` remains outside its reach.
+- **Fixed: `prism update` compared the wrong version.** It checked the version
+  of the CLI making the call rather than the globally installed package it
+  updates, so it could report "current" while the installed package was a
+  release behind. It now reads the installed version from the npm global
+  prefix.
+- **Fixed: the opt-in scheduled updater could not start.** launchd gives an
+  agent a minimal PATH that omits `/usr/local/bin` and `/opt/homebrew/bin`,
+  where node and npm live on a standard install, so the agent died before
+  running anything. The generated LaunchAgent now carries a working PATH;
+  `prism autoupdate status` flags an older PATH-less agent as needing repair
+  instead of reporting a clean "enabled".
+
+## 20.12.0 — 2026-08-14
+
+- **New: Prism tells you when a newer release exists.** Session startup now
+  carries a one-line notice ("Update available: Prism X.Y.Z — run
+  `prism connect`") whenever the installed version is behind npm. The check
+  is cache-only on the prompt-critical path — a background refresh pings the
+  registry at most once a day, 30 seconds after startup, and offline machines
+  stay silent. Checkout registrations are told `prism connect --refresh`.
+  Opt out with `PRISM_NO_UPDATE_CHECK=1`.
+- **New: opt-in scheduled updates that are safe unattended.** `prism update
+  [--if-idle]` updates ONLY the global npm package — host configuration,
+  hooks, and hook trust are untouchable from it — and with `--if-idle` it
+  defers while any Prism MCP server process is running (an unverifiable
+  process list counts as busy). A single-instance lock prevents overlapping
+  runs. `prism autoupdate enable|disable|status` manages a daily 03:30
+  LaunchAgent (macOS) running exactly that. Configuration migrations stay
+  behind a visible `prism connect`, which expects hosts to be closed — that
+  is why the scheduler never runs connect.
+
+## 20.11.1 — 2026-08-13
+
+- **Fixed: `session_save_ledger`/`save_handoff` could refuse to save — and did.**
+  The project resolver hard-rejected on declared-vs-derived mismatch while the
+  registry it trusted contained auto-created junk (including a row whose
+  repo_path was the user's home directory, which matches every absolute path).
+  Agents received contradictory rejections and sessions ended unsaved. The
+  resolver never refuses a write now: a mismatch saves under the DECLARED
+  project and surfaces the derivation as an advisory warning in the save
+  confirmation. Auto-create gained hygiene — only absolute, ≥3-segment
+  prefixes that are not an ancestor of an existing entry can be registered —
+  so the junk that caused this cannot be written again.
+- **Fixed: `prism browser` screenshots were upscaled to the cap on macOS.**
+  `sips -Z` resamples in BOTH directions, so every capture smaller than the
+  limit came out at exactly 1900px on its long edge (a 1440×900 viewport was
+  written as 1900×1187) — not evidence of what rendered, and a silent breaker
+  of any gate that asserts captures are viewport-bound. Dimensions are probed
+  first and only genuinely oversized captures are shrunk; the cap is 2000px
+  (the per-dimension attach limit), so a standard 1920-wide viewport is never
+  resampled.
+
+## 20.11.0 — 2026-08-13
+
+- **Fixed: mid-session skill injection silently degraded on both hosts.** The
+  routing hook emitted up to 30k chars inline, but Claude Code hard-caps hook
+  context at 10,000 chars (anything larger becomes a file plus a 2KB preview
+  the model is never told to read — three live instances measured), and Codex
+  truncates at ~2,500 tokens by default. Injections now fit a 9,800-char
+  inline budget; anything larger is written to `~/.prism-mcp/route-context/`
+  with an imperative Read pointer that LEADS the text, so it survives every
+  preview window and even the final clamp. Codex registrations converge
+  `additionalContextLimit: 0` (verified live: the full payload reaches the
+  model). Budget enforcement is by construction, not by data staying small —
+  each guard has a mutation-killing test.
+- **New: `prism connect` is now a converge command.** It self-updates from the
+  registry first, re-execs the new binary, and only then reconciles MCP
+  registration, skills, and hooks — ending the "fresh config, stale code"
+  machine state. Dev builds and source checkouts are never touched; an offline
+  or failed update reports and continues rather than bricking connect.
+- **Fixed: Codex hook trust is now honest.** The hook version rides in the
+  registered command, so Codex's definition-hash actually changes when the
+  script does; trust state is surfaced three ways (approved / awaiting your
+  one-time `t` in `/hooks` / present-but-unverifiable) instead of a false
+  green "registered".
+- **Fixed: offline routing was dead.** The keyword table now loads
+  persisted-first when current (0.5s offline instead of a 5.5s stall into
+  nothing), and the hook's JSON parsing survives stdout pollution from
+  NODE_OPTIONS wrappers.
+- **Fixed: captures no longer poison the session that must look at them.**
+  Every browser screenshot is normalized to a 1900px long edge at the source —
+  past ~20 images, the Claude API enforces a 2000px cap against the whole
+  conversation, and one oversized Retina capture blinded image attach for the
+  rest of a session.
+- The routed-payload cap rose 24k → 30k so the UI-review bundle it was sized
+  for no longer trims its own third skill at the moment it matters most.
+
+## 20.10.0 — 2026-08-12
+
+- **Fixed: hosts that prefer `structuredContent` received no startup context.**
+  `session_bootstrap` returned both a text block and `structuredContent`; a host
+  may surface only the latter, and one popular host does — since 2026-07-22 its
+  sessions got 129 bytes of JSON instead of the startup display, memory context,
+  and skill routing. Bootstrap (and `skill_save`/`skill_manage`) now carry all
+  data in the text; session facts ride a trailing `<prism_session />` line.
+- **New: scoped skills route themselves.** Account/team/local skills may declare
+  `prompt_triggers` (up to 5 regexes) in their own frontmatter. Matching runs
+  on-device against the delivered copy, so private trigger words never enter the
+  public routing table and the prompt never leaves the machine. Patterns that
+  could backtrack catastrophically are refused at save time, server-side and in
+  the client.
+- Local-scope skills (written to the host skill roots) are scanned for triggers
+  too — previously only delivered skills routed.
+
+## [20.9.3] - 2026-08-11 — The Budget the Floor Never Spent
+
+### Fixed
+- **Unprotected skills can actually inline now.** The skill-injection budget
+  compared against the whole assembled block — which the always-inlined
+  protected floor had already filled — so with a floor larger than every
+  tranche, no unprotected skill ever inlined at any normal context level, for
+  anyone, since budgeting shipped. Prompt-matched skills now spend a budget
+  the floor never touches, matching the documented ADDITIVE contract. Found
+  tracing why a task-matched verification skill stayed name-only while an
+  agent shipped unverified UI claims; an incident-shaped regression test now
+  pins the fix, and reverting the accounting fails exactly that test.
+
+## [20.9.2] - 2026-08-11 — Withheld Rules Still Bind
+
+### Fixed
+- **The skills-not-inlined manifest now binds instead of informing.** When the
+  context budget withholds a skill's text, the list of withheld names read as
+  optional extra material — and an agent claimed UI fixes it never rendered
+  while the completion-evidence skill sat name-only in that very list. The
+  manifest now states that the listed skills are rules the agent is bound by,
+  spells out the consequence (load the governing skill before any completion
+  claim, push, or PR), and names every mechanism for doing so. Paired with a
+  server-side routing change that inlines the verification skills outright for
+  UI-defect and completion-claim prompts.
+
+## [20.9.1] - 2026-08-11 — Queueing, Not Failing
+
+### Fixed
+- **Config DB writes no longer lose races on multi-window machines.** libsql
+  defaults to `busy_timeout=0` (a writer meeting any lock fails instantly) and
+  rollback-journal mode (every reader blocks the writer). With several host
+  windows sharing the file, a skill-manifest apply could starve indefinitely —
+  measured at 10 consecutive losses. Connections now set `busy_timeout=5000`
+  and `journal_mode=WAL` at creation; WAL is persistent and upgrades existing
+  databases the first time a post-fix server starts with the file unlocked.
+  If a stale pre-fix process still holds a long-lived lock, restart your host
+  windows once.
+
+## [20.9.0] - 2026-08-11 — Your Skills, Everywhere You Sign In
+
+### Added
+- **`skill_save` — save a skill at the scope you mean.** `local` keeps it a
+  plain file on this machine (works signed out; the local-first path makes
+  zero network calls). `user` attaches it to your signed-in account so every
+  machine you sign into receives it via the managed sync. `team` shares it
+  with a workspace — admin-writable, optionally targeted to specific members.
+  An explicit scope always wins; signed-in saves default to `user` and the
+  result says so; `team` is never a default.
+- **`skill_manage` — list, delete, release, restore.** `release` deactivates a
+  platform skill you never use, per user or per team, freeing host
+  skill-catalog budget; `restore` brings it back losslessly. `delete` removes
+  a scoped skill everywhere — after archiving its final content to
+  `~/.prism-mcp/skill-archive/`, because the stored copy IS the content.
+  The protected behavioral floor is not releasable: deployed clients validate
+  it fail-closed, so honoring such a request would stop skill sync entirely.
+
+### Fixed
+- A sync already in flight when a save lands cannot contain it; the save now
+  verifies its skill actually arrived and re-runs the sync once if not.
+
+### Compatibility
+- Existing clients receive account/team skills with no upgrade. The
+  compatibility contract was proven against the released validator: scoped
+  skills are paid-tier entries carrying `minimum_plan`, and free-tier
+  manifests remain exactly the public startup package — the validator's own
+  rules, pinned by tests on both sides.
+
+## [20.8.2] - 2026-08-11 — The Sync That Reported Healthy
+
+### Fixed
+- **Skill delivery could die silently and report itself current.** A umask
+  carrying the owner-execute bit turned the transaction directory's
+  `mkdir(..., 0o700)` into `drw-------` — readable, writable, impossible to
+  enter. Every staging `mkdtemp` then failed, and because the config DB commits
+  before files are written, the client recorded each new generation while no
+  file ever reached disk. Measured on a real machine: **nine days** of stale
+  skill roots behind a green status. Managed directories that exist but cannot
+  be entered are now repaired to exactly `0o700` — never widened — and every
+  creation site builds level-by-level so a persistently hostile umask cannot
+  reproduce the state one directory deeper.
+- **The repair cannot be redirected.** Permission restoration goes through an
+  `O_NOFOLLOW` descriptor, and the unreadable-directory fallback refuses
+  symlinks — proven against a live symlink-to-unreadable-file exploit during
+  review, then pinned as tests.
+- **Divergence is now visible.** The client records which generation actually
+  materialized to disk, separately from what the DB accepted. When they differ,
+  the next startup says so — a ⚠️ line rendered directly under the *Prism
+  System Ready* header, where display truncation cannot cut it (the first
+  placement put it last, exactly where capped depths truncate first). A
+  successful sync heals the divergence and silences the line; installs
+  predating the marker never see a false alarm.
+- **nanoid advisory cleared** and local CI now runs the two steps whose absence
+  let earlier failures through (Linux `npm ci` parity via Docker, raw-inference
+  chokepoint guard).
+
+### Changed
+- README documents `session_export_memory` and scopes the model-accuracy table
+  to the internal routing suite it actually measures.
+
 ## [20.8.1] - 2026-08-07 — The Dashboard Was Never Loading
 
 ### Fixed

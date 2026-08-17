@@ -153,19 +153,20 @@ describe("ingestKnowledge — chunking", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("ingestKnowledge — Q&A generation", () => {
-  it("calls Claude API with correct format", async () => {
+  // CONTRACT CHANGE (2026-08-15): Q&A generation no longer POSTs to
+  // api.anthropic.com with a key read from ANTHROPIC_API_KEY or
+  // ~/.anthropic_key. That was an ambient-credential path — any process with
+  // the variable set bills the owner — and it sat outside every gate prism
+  // applies to model calls. It now goes through prism_infer like everything
+  // else, so the assertion is that NO provider endpoint is contacted directly.
+  it("never contacts a provider API directly", async () => {
     const content = "export function authenticate(token: string) { /* JWT verification */ }".repeat(10);
     await ingestKnowledge({ project: "test", content, source_label: "auth" });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.anthropic.com/v1/messages",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "anthropic-version": "2023-06-01",
-        }),
-      })
-    );
+    const providerCalls = mockFetch.mock.calls
+      .map(c => String(c[0]))
+      .filter(u => /api\.anthropic\.com|api\.openai\.com|generativelanguage/.test(u));
+    expect(providerCalls, `ingest called a provider directly: ${providerCalls.join(", ")}`).toEqual([]);
   });
 
   it("handles Claude API errors gracefully", async () => {

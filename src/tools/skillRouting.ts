@@ -260,6 +260,23 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
     kwCache = null;
   }
   if (kwCache && Date.now() - kwCache.at < TABLE_TTL) return kwCache.table;
+  // Persisted-first when the version is KNOWN-GOOD. The in-memory cache is
+  // per-process, and the route-prompt CLI is a fresh process on EVERY user
+  // prompt — without this, each prompt made a network GET (measured: a
+  // captive-portal network stalled every prompt 5.5s, and offline routed
+  // nothing because a fresh process had no fallback wired). A persisted
+  // table whose version equals what the manifest sync last reported is
+  // exactly as fresh as a re-download; version bumps still refetch below.
+  if (expectVersion !== undefined && readFn) {
+    try {
+      const stored = await readFn(TABLE_STORAGE_KEY);
+      const parsed: unknown = stored ? JSON.parse(stored) : null;
+      if (isKeywordTable(parsed) && parsed.version === expectVersion) {
+        kwCache = { table: parsed, at: Date.now() };
+        return parsed;
+      }
+    } catch { /* fall through to network */ }
+  }
   if (!kwInflight) {
     kwInflight = (async (): Promise<KeywordTable | null> => {
       try {
@@ -358,11 +375,22 @@ export function _applyPromptRouting(
 export async function resolvePromptSkillNames(
   prompt: string,
   expectVersion?: number,
+  scopedTriggers?: Record<string, string[]>,
 ): Promise<string[]> {
   if (!prompt) return [];
   const kw = await fetchKeywordTable(expectVersion);
-  if (!kw) return [];
-  return _applyPromptRouting([], prompt, kw.prompt_keywords).map((s) => s.name);
+  // Scoped triggers must still route when the PUBLIC table is unavailable:
+  // they are declared in skill bodies already on this machine and owe nothing
+  // to a network fetch. Returning [] here would make a private skill's routing
+  // depend on a public file it can never appear in.
+  const publicKeywords = kw?.prompt_keywords ?? {};
+  if (!kw && !scopedTriggers) return [];
+
+  const combined: Record<string, string[]> = { ...publicKeywords };
+  for (const [pattern, names] of Object.entries(scopedTriggers ?? {})) {
+    combined[pattern] = [...(combined[pattern] ?? []), ...names];
+  }
+  return _applyPromptRouting([], prompt, combined).map((s) => s.name);
 }
 
 /**

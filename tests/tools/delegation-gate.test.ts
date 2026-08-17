@@ -18,7 +18,7 @@ vi.mock("../../src/config.js", async (importOriginal) => {
 
 const mockGetSetting = vi.fn();
 const mockGetExperienceBias = vi.fn();
-const mockCallLocalLlm = vi.fn();
+const mockCallLocalLlm = vi.fn();  // now stands in for inferText
 vi.mock("../../src/storage/configStorage.js", () => ({
     getSetting: (...args: unknown[]) => mockGetSetting(...args),
 }));
@@ -35,8 +35,12 @@ vi.mock("../../src/tools/routerExperience.js", () => ({
     getExperienceBias: (...args: unknown[]) => mockGetExperienceBias(...args),
 }));
 
-vi.mock("../../src/utils/localLlm.js", () => ({
-    callLocalLlm: (...args: unknown[]) => mockCallLocalLlm(...args),
+// 2026-08-15: the router used to call the low-level localLlm helper directly,
+// which skipped the entitlement ceiling, RAM gate, tier walk, quality gate and
+// Layer 1. It now goes through inferText -> runInfer like every other model
+// call in prism, so the mock moves with it.
+vi.mock("../../src/tools/prismInferHandler.js", () => ({
+    inferText: (...args: unknown[]) => mockCallLocalLlm(...args),
 }));
 
 import { sessionTaskRouteHandler } from "../../src/tools/taskRouterHandler.js";
@@ -155,7 +159,7 @@ describe("delegation gate", () => {
         expect(body.recommended_args).toBeUndefined();
     });
 
-    it("uses the local LLM only as a low-confidence delegability review", async () => {
+    it("uses prism_infer only as a low-confidence delegability review", async () => {
         mockGetSetting.mockResolvedValue("true");
         mockCallLocalLlm.mockResolvedValue("claw");
 

@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  # First publish of a NEW npm name cannot use trusted publishing — claim the
+  # name once by hand (npm login && npm publish in packages/prism-coder), then
+  # configure the trusted publisher on npmjs.com and tags take over.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +24,9 @@ jobs:
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles 10.9.8.
+      # Without this the publish goes out unauthenticated and npm answers E404.
+      - run: npm install -g npm@latest
       - name: Check if version already published
         id: check
         working-directory: packages/prism-coder
@@ -34,5 +41,3 @@ jobs:
       - if: steps.check.outputs.skip != 'true'
         working-directory: packages/prism-coder
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

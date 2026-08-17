@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -160,6 +160,234 @@ describe("subscription-tier skill manifest sync", () => {
       }
       await expect(readFile(join(nativeRoot, "current-staging-acceptance", "SKILL.md"), "utf8"))
         .rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+    it("COMPAT: deployed validators accept scoped native skills on PAID tiers and REJECT them on free", async () => {
+    // Written as an every-tier proof; the validator refuted it twice and the
+    // server contract is what the failures dictated:
+    //   1. native-category skills REQUIRE a paid minimum_plan
+    //      ("native skill requires a paid minimum_plan")
+    //   2. free manifests must contain EXACTLY the public startup package
+    //      ("free manifest must contain exactly the public startup package")
+    // So scoped skills ship paid-tiers-only, tagged minimum_plan standard, and
+    // the free half of this test pins the REJECTION that forces that rule —
+    // a server serving scoped skills to free would not degrade old clients,
+    // it would brick their entire skill sync.
+    for (const tier of ["standard", "enterprise"] as const) {
+      const snapshot = manifest(tier, [`${tier}-skill`]);
+      const content = "---\nname: my-scoped-skill\ndescription: scoped\n---\n# mine\n";
+      snapshot.skills.push({
+        name: "my-scoped-skill", content, digest: digest(content), version: 3,
+        // minimum_plan 'standard' is CLIENT BOOKKEEPING here, not a tier gate:
+        // deployed validators REQUIRE a paid minimum_plan on native-category
+        // skills (this test failed with "native skill requires a paid
+        // minimum_plan" without it) and apply no tier-vs-plan filtering, so a
+        // free-tier manifest carrying it still validates and materializes. The
+        // SERVER decides delivery; this field just keeps old clients green.
+        source: "database", metadata: { protected: false, priority: 500, categories: ["native"], minimum_plan: "standard" },
+        files: { "SKILL.md": { content, digest: digest(content), encoding: "utf8" } },
+      } as never);
+      snapshot.generation = computeSkillManifestGeneration(snapshot);
+      expect(() => validateSkillManifest(snapshot)).not.toThrow();
+
+      const agentsSkillsDir = await root();
+      const result = await synchronizeSkillManifest({
+        agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+        applyManifest: vi.fn(async () => undefined),
+        fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+        ...paidAuth,
+      });
+      expect(result.status, tier).toBe("applied");
+      expect(await readFile(join(agentsSkillsDir, "my-scoped-skill", "SKILL.md"), "utf8"), tier)
+        .toContain("my-scoped-skill");
+      _resetSkillManifestSyncForTest();
+    }
+    const freeSnapshot = manifest("free", []);
+    const freeContent = "---\nname: my-scoped-skill\ndescription: scoped\n---\n# mine\n";
+    freeSnapshot.skills.push({
+      name: "my-scoped-skill", content: freeContent, digest: digest(freeContent), version: 1,
+      source: "database", metadata: { protected: false, priority: 500, categories: ["native"], minimum_plan: "standard" },
+      files: { "SKILL.md": { content: freeContent, digest: digest(freeContent), encoding: "utf8" } },
+    } as never);
+    freeSnapshot.generation = computeSkillManifestGeneration(freeSnapshot);
+    expect(() => validateSkillManifest(freeSnapshot)).toThrow(/free manifest must contain exactly/);
+  });
+
+  it.skipIf(process.platform === "win32")("advances the materialized generation only when files actually land", async () => {
+    // THE CLASS, not a cause: the DB half commits before the file half by
+    // design (committed names drive offline pruning after a crash), so any
+    // materialization failure leaves the DB claiming a generation no file
+    // ever reached. This durable marker is how the next startup can SEE that
+    // divergence instead of trusting "unchanged" for nine days.
+    const agentsSkillsDir = await root();
+    const applied: Array<Record<string, string>> = [];
+    const applyManifest = vi.fn(async (state: { generation: string }) => {
+      applied.push({ generation: state.generation });
+    });
+    // A UNIQUE paid skill so this manifest's generation differs from every
+    // other test's: the config DB is per-process, not per-test, and the
+    // deterministic default generation was already recorded as materialized by
+    // an earlier successful sync in this file — which made the "did not
+    // advance" assertion vacuously false. Caught when the file ran as a whole
+    // after passing in isolation.
+    const snapshot = manifest("enterprise", ["marker-divergence-probe"]);
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .not.toBe(snapshot.generation);
+
+    // Fail AFTER the DB commit, which is the split this marker exists to
+    // expose. A broken root fails at the lock, BEFORE fetch and DB apply --
+    // reviewing this very test caught that wrong shape -- so the failure is
+    // injected at native staging instead, which runs after dbApplied = true.
+    const failed = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest,
+      fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+      beforeNativeStage: async () => { throw new Error("injected materialization failure"); },
+      ...paidAuth,
+    });
+    expect(failed.status).toBe("partial");
+    expect(applied.length).toBe(1);                     // DB half DID commit
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .not.toBe(snapshot.generation);                   // file half did NOT
+
+    const good = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest,
+      fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+      ...paidAuth,
+    });
+    expect(good.status).toBe("applied");
+    expect(await getSetting("skill_manifest:materialized_generation", ""))
+      .toBe(snapshot.generation);
+  });
+
+  // POSIX-only. Found by adversarial review of the FIRST fix: repairing a
+  // pre-existing directory does nothing about a umask that is STILL restrictive,
+  // because mkdtemp and every nested mkdir then create fresh untraversable
+  // directories. The reviewer reproduced the original split-commit against the
+  // rebuilt dist -- DB committed, disk ENOENT -- through a repaired transaction
+  // base containing a brand-new unusable txn-* directory.
+  it.skipIf(process.platform === "win32")("materializes under a persistent umask that strips owner-execute", async () => {
+    // The temp base is made BEFORE the umask changes: root() is harness, not the
+    // code under test. Everything below it is created by the sync itself while
+    // the restrictive umask is active, which is the real scenario.
+    const base = await root();
+    const previous = process.umask(0o177);   // every mkdir/mkdtemp lands 0o600
+    try {
+      const agentsSkillsDir = join(base, "nested", "skills");   // ancestors must be created too
+      const result = await synchronizeSkillManifest({
+        agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+        applyManifest: vi.fn(async () => undefined),
+        fetchImpl: vi.fn(() => jsonResponse(manifest("enterprise", ["enterprise-skill"]))) as unknown as typeof fetch,
+        ...paidAuth,
+      });
+      expect(result.error).toBeFalsy();
+      expect(result.status).toBe("applied");
+      expect(await readFile(join(agentsSkillsDir, "prism-startup", "SKILL.md"), "utf8"))
+        .toContain("name: prism-startup");
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  // POSIX-only: Windows chmod maps to the read-only attribute alone and lstat
+  // reports 0o666 for every writable directory, so a directory that cannot be
+  // entered has no Windows analogue and the mode assertion is meaningless
+  // there. Ran red on windows-latest with "expected 438 to be 448" before this.
+it.skipIf(process.platform === "win32")("repairs an unusable managed directory to 0o700 without widening access", async () => {
+    // Repairing must restore the creation intent, not merely unblock the run.
+    // An earlier version of this fix OR-ed the owner bits onto whatever mode was
+    // there, so 0o606 became 0o706 and the skills root — entitled, paid-tier
+    // content — stayed world-readable on a shared machine. The observed outage
+    // was 0o600, where both forms yield 0o700, so only a mode carrying group or
+    // other bits distinguishes them.
+    const agentsSkillsDir = await root();
+    const transactionBase = join(dirname(agentsSkillsDir), ".prism-skill-transactions");
+    await mkdir(transactionBase, { recursive: true, mode: 0o700 });
+    await chmod(transactionBase, 0o606);          // owner rw, NO owner-x, other rw
+
+    // The base is deleted once it drains, so the mode has to be observed while
+    // the transaction is still open.
+    let modeDuringRun = -1;
+    const result = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest: vi.fn(async () => undefined),
+      fetchImpl: vi.fn(() => jsonResponse(manifest("enterprise", ["enterprise-skill"]))) as unknown as typeof fetch,
+      beforeNativeCommit: async () => { modeDuringRun = (await lstat(transactionBase)).mode & 0o777; },
+      ...paidAuth,
+    });
+
+    expect(result.status).toBe("applied");
+    expect(modeDuringRun).toBe(0o700);
+    expect(await readFile(join(agentsSkillsDir, "prism-startup", "SKILL.md"), "utf8"))
+      .toContain("name: prism-startup");
+  });
+
+    // POSIX-only: Windows chmod maps to the read-only attribute alone and lstat
+  // reports 0o666 for every writable directory, so a directory that cannot be
+  // entered has no Windows analogue and the mode assertion is meaningless
+  // there. Ran red on windows-latest with "expected 438 to be 448" before this.
+it.skipIf(process.platform === "win32")("materializes when the skills root itself cannot be entered", async () => {
+    // Found reviewing the transaction-directory fix: the root was guarded by a
+    // plain mkdir (a no-op on an existing directory) plus a symlink check, so a
+    // root left without owner rwx failed at the first readdir and nothing ever
+    // repaired it — the same permanent-silent-failure shape, one level up.
+    const agentsSkillsDir = await root();
+    await chmod(agentsSkillsDir, 0o606);
+
+    const result = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir: false, cursorSkillsDir: false,
+      applyManifest: vi.fn(async () => undefined),
+      fetchImpl: vi.fn(() => jsonResponse(manifest("enterprise", ["enterprise-skill"]))) as unknown as typeof fetch,
+      ...paidAuth,
+    });
+
+    expect(result.status).toBe("applied");
+    expect((await lstat(agentsSkillsDir)).mode & 0o777).toBe(0o700);
+    expect(await readFile(join(agentsSkillsDir, "prism-startup", "SKILL.md"), "utf8"))
+      .toContain("name: prism-startup");
+  });
+
+    // POSIX-only: Windows chmod maps to the read-only attribute alone and lstat
+  // reports 0o666 for every writable directory, so a directory that cannot be
+  // entered has no Windows analogue and the mode assertion is meaningless
+  // there. Ran red on windows-latest with "expected 438 to be 448" before this.
+it.skipIf(process.platform === "win32")("materializes through a pre-existing transaction directory that cannot be entered", async () => {
+    // The 2026-08-10 outage, reproduced. mkdir's mode is masked by the creating
+    // process's umask, so a umask carrying the owner-execute bit leaves the
+    // transaction base at drw------- : readable, writable, impossible to enter.
+    // Every mkdtemp inside it then throws EACCES.
+    //
+    // The damage was silent because the halves of a sync commit independently:
+    // the config DB recorded the new generation and per-skill digests while no
+    // file was ever written, so the client reported itself current for nine
+    // days while every managed root stayed frozen at older content. A guard
+    // that asks "is this a real directory" and not "can I use it" cannot
+    // recover, because nothing in the loop repairs the mode.
+    const agentsSkillsDir = await root();
+    const claudeCodeSkillsDir = join(dirname(agentsSkillsDir), ".claude", "skills");
+    const cursorSkillsDir = join(dirname(agentsSkillsDir), ".cursor", "skills");
+    const transactionBase = join(dirname(agentsSkillsDir), ".prism-skill-transactions");
+    await mkdir(transactionBase, { recursive: true, mode: 0o700 });
+    await chmod(transactionBase, 0o600);
+    expect((await lstat(transactionBase)).mode & 0o700).not.toBe(0o700);
+
+    const snapshot = manifest("enterprise", ["enterprise-skill"]);
+    const result = await synchronizeSkillManifest({
+      agentsSkillsDir, claudeCodeSkillsDir, cursorSkillsDir,
+      applyManifest: vi.fn(async () => undefined),
+      fetchImpl: vi.fn(() => jsonResponse(snapshot)) as unknown as typeof fetch,
+      ...paidAuth,
+    });
+
+    // Without the repair this is "partial" with an EACCES mkdtemp error and no
+    // skill reaches disk, which is precisely how the outage presented.
+    expect(result.status).toBe("applied");
+    expect(result.error).toBeFalsy();
+    for (const nativeRoot of [agentsSkillsDir, claudeCodeSkillsDir, cursorSkillsDir]) {
+      expect(await readFile(join(nativeRoot, "prism-startup", "SKILL.md"), "utf8"))
+        .toContain("name: prism-startup");
     }
   });
 
