@@ -954,14 +954,20 @@ describe.skipIf(!python)('screenshot cap is viewport-bound, not viewport-normali
 // real file, so exists() follows the dangling link and reports false for a lock
 // that is very much present. That is the same trap the implementation avoids by
 // reading the link rather than stat-ing it.
-describe('stale singleton lock cleanup', () => {
+describe.skipIf(!python)('stale singleton lock cleanup', () => {
+  // Creating a symlink on Windows needs elevated privileges, and Chrome there does
+  // not use a SingletonLock symlink at all -- the helper's readlink() raises OSError
+  // and returns immediately. So the symlink cases are POSIX-only; the no-lock and
+  // ordering contracts still run everywhere.
+  const symlinkUnavailable = process.platform === 'win32';
+
   function lockState(dir: string, body: string[]) {
     const r = runPython(['import os, socket', `d = ${JSON.stringify(dir)}`, ...body].join('\n'));
     rmSync(dir, { recursive: true, force: true });
     return r;
   }
 
-  it('clears a lock whose owner pid is dead, and its companion files', () => {
+  it.skipIf(symlinkUnavailable)('clears a lock whose owner pid is dead, and its companion files', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prism-lock-dead-'));
     const r = lockState(dir, [
       // 4194303 is above the platform pid maximum, so it cannot be running.
@@ -977,7 +983,7 @@ describe('stale singleton lock cleanup', () => {
     expect((r.stdout || '').trim()).toBe('True False False False');
   });
 
-  it('leaves a LIVE lock alone — stealing it would corrupt a running session', () => {
+  it.skipIf(symlinkUnavailable)('leaves a LIVE lock alone — stealing it would corrupt a running session', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prism-lock-live-'));
     const r = lockState(dir, [
       'os.symlink(socket.gethostname() + "-" + str(os.getpid()), os.path.join(d, "SingletonLock"))',
@@ -988,7 +994,7 @@ describe('stale singleton lock cleanup', () => {
     expect((r.stdout || '').trim()).toBe('False True');
   });
 
-  it('ignores a lock from a different host, where a pid proves nothing', () => {
+  it.skipIf(symlinkUnavailable)('ignores a lock from a different host, where a pid proves nothing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prism-lock-host-'));
     const r = lockState(dir, [
       'os.symlink("some-other-machine-4194303", os.path.join(d, "SingletonLock"))',
