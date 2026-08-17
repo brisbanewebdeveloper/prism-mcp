@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Every model call inside prism goes through prism_infer.
@@ -20,7 +21,7 @@ import { join } from "node:path";
  * which catches both forms.
  */
 
-const SRC = new URL("../src", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
 /** The one module allowed to hold a raw local-model HTTP call. */
 const OWNER = "tools/prismInferHandler.ts";

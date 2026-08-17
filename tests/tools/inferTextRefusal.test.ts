@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ReservedRefusalError } from "../../src/tools/prismInferHandler.js";
+import { fileURLToPath } from "node:url";
 
 /**
  * A Layer 1 refusal must never be reported as "no local answer".
@@ -33,7 +34,7 @@ describe("inferText fails CLOSED on a reserved-content refusal", () => {
         // structural: the catch block must not swallow this error type.
         const { readFileSync } = await import("node:fs");
         const src = readFileSync(
-            new URL("../../src/tools/prismInferHandler.ts", import.meta.url).pathname,
+            fileURLToPath(new URL("../../src/tools/prismInferHandler.ts", import.meta.url)),
             "utf8",
         );
         const catchBlock = src.slice(src.indexOf("export async function inferText"));
@@ -48,7 +49,7 @@ describe("inferText fails CLOSED on a reserved-content refusal", () => {
     it("compaction's cloud fallback is only reachable on unavailability", async () => {
         const { readFileSync } = await import("node:fs");
         const src = readFileSync(
-            new URL("../../src/tools/compactionHandler.ts", import.meta.url).pathname,
+            fileURLToPath(new URL("../../src/tools/compactionHandler.ts", import.meta.url)),
             "utf8",
         );
         // The fallback triggers on a falsy local response. That is now only
