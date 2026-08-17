@@ -413,11 +413,13 @@ export async function callLayer1(
     // question ("what is the last timestamp?") otherwise carries clinical
     // content past a classifier that only ever weighed the words.
     //
-    // Fails OPEN deliberately: a screen that errors or times out falls through
-    // to the classification below, which is exactly today's behaviour. Failing
-    // closed here would refuse every image request whenever Ollama hiccups, and
-    // an unusable gate gets disabled — but it does mean this adds protection
-    // only when the screen answers.
+    // Fails CLOSED. This comment used to say the opposite — that a screen which
+    // errors or times out falls through to the classification — and that was
+    // true of the first version. It is not true now: an unreadable screen
+    // escalates (see the "unknown" handling below). The stale sentence sat 20
+    // lines above the block that contradicted it, describing the security
+    // default incorrectly.
+    //
     // Sequential, deliberately. An earlier version started this concurrently
     // with the classification on the theory that two independent questions cost
     // max() rather than sum(). That was wrong: ollama serves vision with
@@ -455,26 +457,50 @@ export async function callLayer1(
         // Costs a call per image on an all-benign batch, and returns on the
         // first YES. Single-image requests, which are nearly all of them, are
         // unchanged.
+        // Bounded by CONSECUTIVE TIMEOUTS, not by a wall clock.
+        //
+        // A wall-clock budget was tried and reverted. It cannot tell a stalled
+        // server from a slow one, and at the advertised maximum of 8 images the
+        // legitimate work does not fit under any cap that also bounds a hang:
+        // screening one image measures 2.5-2.9s quiet, 3.4-4.2s with normal
+        // background activity and 4.1-5.9s beside a concurrent 9b generation,
+        // so eight of them take 24.6-29.8s. A 30s budget refused benign
+        // 8-image requests 5/5 where the previous commit served 4/5, and n=7
+        // refused 2/3. The gate was rejecting ordinary screenshots.
+        //
+        // The distinction that actually separates the two cases is whether calls
+        // ANSWER. A hung server fails every attempt; a loaded one answers
+        // slowly. So give each image the full per-call timeout, retry a blip as
+        // before, and stop at the FIRST image that stays unreadable — by then
+        // the server has already failed twice on it, and the verdict is unknown
+        // whatever the remaining images say, so screening them buys nothing.
+        //
+        // A hang therefore costs ~2 x 10s no matter how many images are
+        // attached, and slow-but-working work is never cut off part way.
         let sawUnknown = false;
         for (const image of images ?? []) {
-            const answer = await screenWithRetry([image]);
+            const answer = await screenWithRetry([image], 2);
             if (answer === "yes") return "yes";
-            if (answer === "unknown") sawUnknown = true;
+            if (answer === "unknown") { sawUnknown = true; break; }
         }
         return sawUnknown ? "unknown" : "no";
     }
 
-    async function screenWithRetry(batch: string[]): Promise<"yes" | "no" | "unknown"> {
-        // Two attempts, matching the classifier's budget. Giving the screen one
-        // attempt and the classifier two is what made "busy machine" a bypass.
-        for (let attempt = 0; attempt < 2; attempt++) {
-            const answer = await screenOnce(batch);
+    async function screenWithRetry(
+        batch: string[], attempts: number,
+    ): Promise<"yes" | "no" | "unknown"> {
+        // The retry is restored for every image, not just single-image
+        // requests. Dropping it for batches made one transient blip fatal to
+        // the whole request: a single 10s abort on image 1 of 8, with the other
+        // seven clean, refused where a retry recovered.
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const answer = await screenOnce(batch, LAYER1_IMAGE_TIMEOUT_MS);
             if (answer !== "unknown") return answer;
         }
         return "unknown";
     }
 
-    async function screenOnce(batch: string[]): Promise<"yes" | "no" | "unknown"> {
+    async function screenOnce(batch: string[], budgetMs: number): Promise<"yes" | "no" | "unknown"> {
         try {
             const res = await fetchImpl(`${ollamaUrl}/api/chat`, {
                 method: "POST",
@@ -486,7 +512,7 @@ export async function callLayer1(
                     think: false,
                     options: { num_predict: 8, temperature: 0 },
                 }),
-                signal: AbortSignal.timeout(LAYER1_IMAGE_TIMEOUT_MS),
+                signal: AbortSignal.timeout(budgetMs),
             });
             if (res.ok) {
                 const data = await res.json() as { message?: { content?: string } };

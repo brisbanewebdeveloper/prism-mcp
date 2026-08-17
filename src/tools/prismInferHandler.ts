@@ -1451,9 +1451,19 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // cloud never saw. callLayer1 maps ERROR to UNCERTAIN when images are
             // present, so this should be unreachable in production — it is here
             // so the invariant holds for every caller, including injected ones.
-            if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
+            // Refuses rather than annotating and falling through. The first
+            // version pushed this attempt and then continued to the keyword
+            // backstop, so a clean prompt went on to be served locally from an
+            // image nothing had screened — an audit trail that recorded a
+            // refusal for a request that was answered. If the classifier failed
+            // AND we cannot escalate an image, there is nothing left that has
+            // looked at the picture.
+            if ((resolvedImages?.length ?? 0) > 0) {
                 attempts.push({ tier: "synalux", reason: "error_escalation_refused_images_stay_local" });
-            } else if (allowCloud) {
+                if (wantReport) return refusedResult("layer1_error");
+                throw makeReservedRefusal(l1, attempts);
+            }
+            if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
                 const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
                 if (cloud.ok && cloud.output) {
