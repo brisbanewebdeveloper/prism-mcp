@@ -695,6 +695,56 @@ export async function tiersSupportingVision(
     return keep;
 }
 
+/**
+ * Effective context window for a tag, read from the model itself.
+ *
+ * MODEL_TIERS.ctxTokens is a MIRROR of each Modelfile's `num_ctx`, and a mirror
+ * goes stale silently. It did: the 2026-08-14 vision push republished
+ * prism-coder:9b with no PARAMETER lines at all, so the table kept declaring
+ * 4_096 while Ollama granted its own larger default. The §5.4 gate then refused
+ * that tier — and the 27b above it — for prompts it demonstrably serves,
+ * measured at 18,575 tokens answered rather than truncated, and fell through to
+ * 4b/2b instead.
+ *
+ * `/api/show` returns the pinned value under `parameters` when the Modelfile
+ * declares one. Measured across the fleet:
+ *
+ *   prism-coder:4b   num_ctx 32768   pinned
+ *   prism-coder:2b   num_ctx 32768   pinned
+ *   prism-coder:27b  num_ctx  4096   pinned
+ *   prism-coder:9b   ABSENT          <- exactly the tag whose packaging broke
+ *
+ * So the live read is authoritative wherever packaging is intact, and reports
+ * nothing precisely where it is not. Returning null on absence lets the caller
+ * keep the conservative table value, which keeps the failure mode fail-SAFE: an
+ * unpinned tier is under-declared and merely loses work, instead of being
+ * over-declared and silently truncating a prompt.
+ *
+ * `model_info["<arch>.context_length"]` is deliberately NOT used as a fallback.
+ * That is the architecture's maximum — 262144 for qwen35 — not what the runtime
+ * grants, and trusting it would turn every unpinned tier fail-open.
+ *
+ * Adopting scripts/prism-coder-9b.Modelfile therefore unlocks the 9b on its own,
+ * with no code change and no second edit to remember.
+ */
+export async function probeNumCtx(url: string, model: string): Promise<number | null> {
+    try {
+        const res = await fetch(`${url}/api/show`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model }),
+            signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { parameters?: string };
+        const m = /^\s*num_ctx\s+(\d+)\s*$/m.exec(data.parameters ?? "");
+        const n = m ? Number(m[1]) : NaN;
+        return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+        return null; // unreachable or unparseable -> fall back to the table
+    }
+}
+
 /** Default vision probe: /api/show reports capabilities for the local model. */
 export async function probeVision(url: string, model: string): Promise<boolean> {
     const res = await fetch(`${url}/api/show`, {
@@ -1036,6 +1086,8 @@ export interface InferDeps {
     entitlements?: PrismEntitlements;
     /** Injectable vision probe for testing. Defaults to probeVision (/api/show). */
     probeVision?: (url: string, model: string) => Promise<boolean>;
+    /** Injectable context probe for testing. Defaults to probeNumCtx (/api/show). */
+    probeNumCtx?: (url: string, model: string) => Promise<number | null>;
     /** Injectable Layer 1 classifier for testing. Defaults to callLayer1 from layer1.ts. */
     callLayer1?: (userPrompt: string, ollamaUrl: string, model: string, fetchImpl?: typeof fetch, images?: string[]) => Promise<Layer1Verdict>;
 }
@@ -1648,8 +1700,30 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
                 + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
                 + CTX_TEMPLATE_MARGIN;
-            if (promptTokensEst > tier.ctxTokens) {
-                attempts.push({ tier: tier.tag, reason: "ctx_insufficient" });
+            // Prefer what the model reports over what the table remembers. A
+            // tag with a pinned num_ctx is authoritative; one without keeps the
+            // table's conservative value, so an unpinned tier can only LOSE work,
+            // never silently truncate. See probeNumCtx.
+            // Wrapped, not just trusted. The default probeNumCtx catches its own
+            // failures, but an INJECTED probe (tests, or a future variant) may
+            // throw — and an exception here would abort the whole tier walk on a
+            // diagnostic lookup, turning "could not read num_ctx" into a failed
+            // request. Same fail-safe the eviction and vision probe sites use:
+            // unprobeable means fall back to the table, never unlock.
+            let liveCtx: number | null = null;
+            try {
+                liveCtx = await (deps.probeNumCtx ?? probeNumCtx)(deps.ollamaUrl, ollamaName);
+            } catch {
+                liveCtx = null;
+            }
+            const effectiveCtx = liveCtx ?? tier.ctxTokens;
+            if (promptTokensEst > effectiveCtx) {
+                attempts.push({
+                    tier: tier.tag,
+                    reason: liveCtx && liveCtx !== tier.ctxTokens
+                        ? `ctx_insufficient:live_${liveCtx}`
+                        : "ctx_insufficient",
+                });
                 continue;
             }
             if (visionOk && !visionOk.has(ollamaName)) {
