@@ -1793,6 +1793,51 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 );
             }
             if (result.ok) {
+                // Did ollama silently drop part of the prompt?
+                //
+                // The ctx gate above is an ESTIMATE, and an estimate can be
+                // wrong for content nobody has measured yet. When it is wrong in
+                // the unsafe direction the request is accepted, ollama discards
+                // whatever does not fit, and the answer comes back confident and
+                // wrong with a normal done_reason.
+                //
+                // My first attempt at detecting this looked for prompt_eval_count
+                // SATURATING near num_ctx, found it did not, and concluded the
+                // response carried no signal. That was wrong: it does not
+                // saturate, it COLLAPSES to num_ctx/2 — ollama's context shift
+                // keeps half the window. Measured on prism-coder:4b (num_ctx
+                // 32768), evaluated tokens for four unrelated content types:
+                //
+                //   prose 432,000 chars -> 16386      base64 300,000 -> 16386
+                //   JSON  159,392       -> 16386      code   390,000 -> 16386
+                //
+                // Exactly 16386 every time, against 28,310 for a 195,200-char
+                // prompt that genuinely fit. The collapse IS the signal.
+                //
+                // Guarded on EXACTNESS, not on size. The first version of this
+                // check required the estimate to exceed num_ctx — which the ctx
+                // gate above already refuses, so it could never fire. Dead code
+                // that reads like a safety net is worse than none; its own test
+                // is what caught it.
+                //
+                // The reachable case is precisely the one the gate cannot see:
+                // the estimate came in UNDER the window while the truth was over
+                // it. So the trigger is the arithmetic signature — evaluated
+                // landing within a few tokens of exactly num_ctx/2 — plus a floor
+                // saying we sent at least half a window, so a short prompt is
+                // never a candidate. Landing on that exact value by coincidence
+                // is a ~0.05% event for any single call.
+                const halfCtx = liveCtx != null ? Math.floor(liveCtx / 2) : null;
+                const looksTruncated = halfCtx != null
+                    && result.promptTokens != null
+                    && Math.abs(result.promptTokens - halfCtx) <= 8
+                    && promptTokensEst >= halfCtx;
+                if (looksTruncated) {
+                    debugLog(`[prism_infer] ${tier.tag} evaluated ${result.promptTokens} tokens ≈ num_ctx/2 on a ${promptTokensEst}-token estimate — prompt was truncated`);
+                    attempts.push({ tier: tier.tag, reason: `input_truncated:${result.promptTokens}_of_${liveCtx}` });
+                    continue;   // try a larger tier rather than answer from a fragment
+                }
+
                 let { stripped, thinkOnly } = stripThink(result.text);
                 let output = stripped;
 

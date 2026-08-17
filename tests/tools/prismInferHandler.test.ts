@@ -1799,3 +1799,72 @@ describe("runInfer — mode/think parameter", () => {
         expect(capturedUrl).toBe("http://localhost:11434");
     });
 });
+
+describe("a truncated prompt is never answered from the fragment", () => {
+    // The ctx gate is an estimate, and an estimate can be wrong for content
+    // nobody has measured. When it is wrong in the unsafe direction, ollama
+    // discards what does not fit and answers from the rest with a normal
+    // done_reason — the caller cannot tell.
+    //
+    // The response does carry a signal, but not the obvious one. prompt_eval_count
+    // does not saturate near num_ctx; it COLLAPSES to num_ctx/2, because ollama's
+    // context shift keeps half the window. Measured on prism-coder:4b at num_ctx
+    // 32768: prose 432,000 chars, base64 300,000, JSON 159,392 and code 390,000
+    // all evaluated at exactly 16386, against 28,310 for a 195,200-char prompt
+    // that genuinely fit.
+    const GB2 = 1024 ** 3;
+    // 80,000 chars of prose estimates ~20,000 tokens: it CLEARS the 32,768
+    // gate, which is the only situation where truncation can happen at all.
+    const big = "The quarterly reconciliation report was adjusted. ".repeat(1_600);
+
+    function deps(overrides: Partial<InferDeps> = {}): InferDeps {
+        return {
+            freemem: () => 40 * GB2,
+            listTags: async () => new Set(["prism-coder:4b"]),
+            listLoaded: async () => new Set<string>(),
+            probeVision: async () => false,
+            probeNumCtx: async () => 32_768,
+            callLocal: async () => ({ ok: true as const, text: "answer from a fragment", doneReason: "stop", promptTokens: 16_386 }),
+            callCloud: async () => ({ ok: false as const, reason: "no_cloud" }),
+            ollamaUrl: "http://x",
+            callLayer1: async () => "OBVIOUS_NOT_RESERVED" as const,
+            ...overrides,
+        } as InferDeps;
+    }
+
+    it("refuses rather than serving an answer built from half the window", async () => {
+        // The tier is abandoned, so with no larger tier available the request
+        // fails loudly instead of returning "answer from a fragment".
+        await expect(
+            runInfer({ prompt: big, mode: "code" }, deps()),
+        ).rejects.toThrow(/no backend produced output/);
+    });
+
+    it("records WHY it was abandoned, so the refusal is diagnosable", async () => {
+        let seen: string[] = [];
+        try {
+            await runInfer({ prompt: big, mode: "code" }, deps());
+        } catch (e) {
+            seen = ((e as { attempts?: Array<{ reason: string }> }).attempts ?? []).map(a => a.reason);
+        }
+        expect(seen.some(r => r.startsWith("input_truncated:")),
+            `attempts were ${JSON.stringify(seen)}`).toBe(true);
+    });
+
+    it("does NOT fire when the evaluated count is nowhere near half", async () => {
+        // A prompt that genuinely fits must still be served.
+        const r = await runInfer({ prompt: big, mode: "code", escalation: "report" }, deps({
+            callLocal: async () => ({ ok: true as const, text: "real answer", doneReason: "stop", promptTokens: 28_310 }),
+        }));
+        expect(r.output).toContain("real answer");
+    });
+
+    it("does NOT fire on a small prompt that happens to land on num_ctx/2", async () => {
+        // The guard requires the ESTIMATE to be far above the window too, so a
+        // legitimate half-window prompt is not mistaken for a truncated one.
+        const r = await runInfer({ prompt: "short question", mode: "code", escalation: "report" }, deps({
+            callLocal: async () => ({ ok: true as const, text: "fine", doneReason: "stop", promptTokens: 16_386 }),
+        }));
+        expect(r.output).toContain("fine");
+    });
+});
