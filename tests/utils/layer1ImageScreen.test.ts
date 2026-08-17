@@ -173,12 +173,23 @@ describe("the picture overrules the words", () => {
         // was rejecting benign 8-image requests 5/5. Every image answers
         // correctly, just slowly — 4s each, inside the measured 2.5-5.9s live
         // range — so the verdict must come from the answers, not from a clock.
+        // The stub HONOURS init.signal. Without that it cannot be aborted, so a
+        // wall-clock budget has nothing to cut and this passed on the very
+        // commit it was written to refute — it excluded only budgets under
+        // ~28s, not the 30s one that was refusing real work. A slow stub that
+        // ignores cancellation is not a slow server.
         const many = DISTINCT.slice(0, 8);
         const slow = (async (_u: unknown, init?: RequestInit) => {
             const body = String(init?.body ?? "");
             if (isScreenBody(body)) {
-                await new Promise(r => setTimeout(r, 4_000));
-                return new Response(JSON.stringify({ message: { content: "NO" } }), { status: 200 });
+                const sig = (init as RequestInit & { signal?: AbortSignal }).signal;
+                return await new Promise<Response>((resolve, reject) => {
+                    const t = setTimeout(
+                        () => resolve(new Response(JSON.stringify({ message: { content: "NO" } }), { status: 200 })),
+                        4_000,
+                    );
+                    sig?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("TimeoutError")); });
+                });
             }
             return new Response(JSON.stringify({ message: { content: "OBVIOUS_NOT_RESERVED" } }), { status: 200 });
         }) as unknown as typeof fetch;

@@ -269,16 +269,6 @@ const LAYER1_TIMEOUT_MS = 1_500;
  *  1.5s text budget would time out every call and make the gate useless —
  *  a gate that always errors is a gate that never gates. */
 export const LAYER1_IMAGE_TIMEOUT_MS = 10_000;
-/** Consecutive-failure bound for the content screen, in place of a wall clock.
- *
- *  A total time budget was tried and reverted: at the advertised maximum of 8
- *  images the legitimate work (24.6-29.8s measured) does not fit under any cap
- *  that also bounds a hang, and a 30s budget refused benign 8-image requests
- *  5/5. The screen now stops at the first image that stays unreadable after
- *  its retry, so a stalled Ollama costs ~2 x LAYER1_IMAGE_TIMEOUT_MS however
- *  many images are attached, while slow-but-answering work runs to completion.
- */
-export const SCREEN_MAX_UNREADABLE_IMAGES = 1;
 const LAYER1_RETRY_TIMEOUT_MS = 5_000;
 
 // Deterministic reserved-vocabulary backstop for the ERROR path.
