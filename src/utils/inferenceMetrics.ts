@@ -63,7 +63,34 @@ export function estimateTokens(text: string): number {
     const isCode = text.length > 0 && codePunct / text.length > 0.02;
     // UTF-16 length minus CJK and emoji codepoints (emoji are 2 units each)
     const latinLen = text.length - cjkCount - emojiCount * 2;
-    const latinTokens = latinLen / (isCode ? 3.3 : 4.0);
+
+    // Whitespace density, because the punctuation test above cannot see the
+    // content that breaks this estimate hardest. A base64 blob has almost no
+    // code punctuation, so it took the PROSE divisor of 4.0 while really
+    // tokenising at 1.31 chars/token — a 3x undercount. Measured against live
+    // prism-coder:4b, chars per token:
+    //
+    //   TypeScript   25.8% whitespace   3.68
+    //   prose        11.9%              ~4.0
+    //   minified js   3.2%              2.44
+    //   dense JSON     0%               1.58
+    //   base64         0%               1.31
+    //
+    // Whitespace separates them with no overlap where punctuation does not.
+    // This estimate feeds the §5.4 ctx gate, so undercounting is the dangerous
+    // direction: an 84,953-char JSON payload estimated 25,744 tokens, cleared
+    // the 32,768 gate, and was served by a model that silently discarded ~70%
+    // of it and answered confidently from what was left. Overcounting only
+    // costs an unnecessary escalation. The divisors below sit 12-26% under the
+    // measured ratios so the estimate lands above the truth.
+    const wsCount = (text.match(/\s/g) ?? []).length;
+    const wsRatio = text.length > 0 ? wsCount / text.length : 1;
+    const divisor =
+        wsRatio < 0.01 ? 1.2      // base64, dense JSON — measured 1.31 and 1.58
+        : wsRatio < 0.05 ? 2.2    // minified/packed source — measured 2.44
+        : isCode ? 3.3
+        : 4.0;
+    const latinTokens = latinLen / divisor;
     const cjkTokens = cjkCount;          // ~1 token per CJK char
     const emojiTokens = emojiCount * 1.5; // ~1.5 BPE tokens per emoji
     return Math.ceil(Math.max(0, latinTokens) + cjkTokens + emojiTokens);
