@@ -941,3 +941,79 @@ describe.skipIf(!python)('screenshot cap is viewport-bound, not viewport-normali
     expect(source).not.toMatch(/_enforce_max_edge\(path,\s*1900\)/);
   });
 });
+
+// ── Stale singleton locks ──────────────────────────────────────────────────
+//
+// Chrome guards a user-data-dir with SingletonLock -> "<hostname>-<pid>". A clean
+// exit removes it; a crash does not. The leftover fails every LATER launch against
+// that profile, so one crash locks out every process sharing it. Measured
+// 2026-08-16: a crashed run left "Dmitris-MBP-25638" behind and each subsequent
+// run inherited the failure until the file was removed by hand.
+//
+// These assert on islink(), not exists(): the lock points at a name that is not a
+// real file, so exists() follows the dangling link and reports false for a lock
+// that is very much present. That is the same trap the implementation avoids by
+// reading the link rather than stat-ing it.
+describe('stale singleton lock cleanup', () => {
+  function lockState(dir: string, body: string[]) {
+    const r = runPython(['import os, socket', `d = ${JSON.stringify(dir)}`, ...body].join('\n'));
+    rmSync(dir, { recursive: true, force: true });
+    return r;
+  }
+
+  it('clears a lock whose owner pid is dead, and its companion files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prism-lock-dead-'));
+    const r = lockState(dir, [
+      // 4194303 is above the platform pid maximum, so it cannot be running.
+      'os.symlink(socket.gethostname() + "-4194303", os.path.join(d, "SingletonLock"))',
+      'open(os.path.join(d, "SingletonCookie"), "w").close()',
+      'open(os.path.join(d, "SingletonSocket"), "w").close()',
+      'cleared = browse.clear_stale_singleton_locks(d)',
+      'print(cleared, os.path.islink(os.path.join(d, "SingletonLock")),'
+        + ' os.path.exists(os.path.join(d, "SingletonCookie")),'
+        + ' os.path.exists(os.path.join(d, "SingletonSocket")))',
+    ]);
+    expect(r.status).toBe(0);
+    expect((r.stdout || '').trim()).toBe('True False False False');
+  });
+
+  it('leaves a LIVE lock alone — stealing it would corrupt a running session', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prism-lock-live-'));
+    const r = lockState(dir, [
+      'os.symlink(socket.gethostname() + "-" + str(os.getpid()), os.path.join(d, "SingletonLock"))',
+      'cleared = browse.clear_stale_singleton_locks(d)',
+      'print(cleared, os.path.islink(os.path.join(d, "SingletonLock")))',
+    ]);
+    expect(r.status).toBe(0);
+    expect((r.stdout || '').trim()).toBe('False True');
+  });
+
+  it('ignores a lock from a different host, where a pid proves nothing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prism-lock-host-'));
+    const r = lockState(dir, [
+      'os.symlink("some-other-machine-4194303", os.path.join(d, "SingletonLock"))',
+      'cleared = browse.clear_stale_singleton_locks(d)',
+      'print(cleared, os.path.islink(os.path.join(d, "SingletonLock")))',
+    ]);
+    expect(r.status).toBe(0);
+    expect((r.stdout || '').trim()).toBe('False True');
+  });
+
+  it('is a no-op on a profile with no lock at all', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prism-lock-none-'));
+    const r = lockState(dir, ['print(browse.clear_stale_singleton_locks(d))']);
+    expect(r.status).toBe(0);
+    expect((r.stdout || '').trim()).toBe('False');
+  });
+
+  it('runs the cleanup BEFORE launching, not after', () => {
+    // Order is the whole point: clearing after launch_persistent_context would run
+    // only once the launch had already succeeded, i.e. never when it matters.
+    const source = readFileSync(scriptPath, 'utf8');
+    const cleanup = source.indexOf('clear_stale_singleton_locks(self.profile_dir)');
+    const launch = source.indexOf('launch_persistent_context(**launch_kwargs)');
+    expect(cleanup).toBeGreaterThan(-1);
+    expect(launch).toBeGreaterThan(-1);
+    expect(cleanup).toBeLessThan(launch);
+  });
+});
