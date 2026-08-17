@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { runInfer, ReservedRefusalError, type InferDeps, type PrismInferArgs } from "../../src/tools/prismInferHandler.js";
-import { reservedCategory } from "../../src/utils/layer1.js";
+import { reservedCategory, classifyDeterministicLayer1 } from "../../src/utils/layer1.js";
 import { _setCacheForTest, _resetEntitlementsForTest, type PrismEntitlements } from "../../src/utils/entitlements.js";
 
 /**
@@ -114,5 +114,33 @@ describe("a reserved refusal names the category and the way forward", () => {
 
     it("returns null for prompts no reserved rule matches", () => {
         expect(reservedCategory("rename this variable and update its callers")).toBeNull();
+    });
+});
+
+describe("the label never contradicts the verdict", () => {
+    // reservedCategory walks the rule arrays directly, so it has to mirror the
+    // order AND the exemptions classifyDeterministicLayer1 applies. It first did
+    // not: the artifact exemption sits between the clinical and operational
+    // groups, so a prompt classified OBVIOUS_NOT_RESERVED still reported an
+    // operational category. Only reachable on paths that skip the deterministic
+    // fast path — long prompts, image requests — which is exactly where a
+    // misattributed label would be hardest to notice.
+    it.each([
+        ["add numeric validation fields to the auth token verification handler", false],
+        ["add auth_bypass as a test fixture label in the middleware test", false],
+        ["remove old comments from the deploy docs", false],
+        ["rename this variable and update its callers", false],
+        ["write the JWT session validation middleware", true],
+        ["should we ship this to production despite the open findings", true],
+        ["draft a safety plan for a client with suicidal ideation", true],
+    ])("agrees on %s", (prompt, expectReserved) => {
+        const verdict = classifyDeterministicLayer1(prompt);
+        const category = reservedCategory(prompt);
+        if (expectReserved) {
+            expect(verdict).toBe("OBVIOUS_RESERVED");
+            expect(category, "reserved, but no category to name").not.toBeNull();
+        } else {
+            expect(category, `labelled "${category}" while the classifier let it through`).toBeNull();
+        }
     });
 });

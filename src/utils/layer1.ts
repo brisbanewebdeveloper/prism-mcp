@@ -233,6 +233,20 @@ export function reservedCategory(prompt: string): string | null {
     for (let i = 0; i < CLINICAL_RESERVED_RULES.length; i++) {
         if (CLINICAL_RESERVED_RULES[i](prompt)) return CLINICAL_RESERVED_LABELS[i];
     }
+    // The artifact exemption sits BETWEEN the two groups in
+    // classifyDeterministicLayer1, and omitting it here made the label disagree
+    // with the verdict: "add numeric validation fields to the auth token
+    // verification handler" classifies OBVIOUS_NOT_RESERVED, while this reported
+    // "auth / session / token code". Harmless when the deterministic verdict is
+    // used directly, but the label is also read on paths that skip that fast
+    // path — prompts over MAX_CLASSIFIER_PROMPT_LENGTH, and image requests — so
+    // it could name a rule that did not fire.
+    if (
+        NON_OPERATIONAL_ARTIFACT_CONTEXT.test(prompt) &&
+        NON_OPERATIONAL_ARTIFACT_ACTION.test(prompt)
+    ) {
+        return null;
+    }
     for (let i = 0; i < OPERATIONAL_RESERVED_RULES.length; i++) {
         if (OPERATIONAL_RESERVED_RULES[i](prompt)) return OPERATIONAL_RESERVED_LABELS[i];
     }
