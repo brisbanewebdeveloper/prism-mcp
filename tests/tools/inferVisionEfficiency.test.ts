@@ -187,6 +187,22 @@ describe("a paid caller is never handed an answer about an image the cloud never
         expect(localCalls, "served an image locally that nothing had screened").toBe(0);
     });
 
+    it("refuses an IMAGE request on ERROR with NO cloud at all — the free-tier half", async () => {
+        // The guard is deliberately not conditioned on allowCloud, and that half
+        // had no test: re-adding `allowCloud &&` to it left the full suite green.
+        // The case named in review is exactly this one — no cloud, ERROR verdict,
+        // images, clean keyword floor — where the backstop would previously have
+        // served it locally from an image nothing had screened.
+        _setCacheForTest(ENT, 60_000);          // cloud_fallback: false
+        let localCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "ERROR" as const,
+            callLocal: async () => { localCalls++; return { ok: true as const, text: "local", doneReason: "stop" }; },
+        });
+        await expect(runInfer(imageArgs(), deps)).rejects.toThrow(/refused/);
+        expect(localCalls, "served an unscreened image locally via the keyword backstop").toBe(0);
+    });
+
     it("still escalates a TEXT request to cloud — the guard is about images only", async () => {
         _setCacheForTest(PAID, 60_000);
         let cloudCalls = 0;

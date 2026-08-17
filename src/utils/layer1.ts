@@ -269,18 +269,16 @@ const LAYER1_TIMEOUT_MS = 1_500;
  *  1.5s text budget would time out every call and make the gate useless —
  *  a gate that always errors is a gate that never gates. */
 export const LAYER1_IMAGE_TIMEOUT_MS = 10_000;
-/** Total wall-clock the content screen may spend, across every attached image.
+/** Consecutive-failure bound for the content screen, in place of a wall clock.
  *
- *  Bounds a stalled Ollama, which otherwise reached 180s on 8 images — nothing
- *  else caps it, since no caller passes a timeout to callLayer1 and the server
- *  has no dispatch timeout. With the classifier's own 20s worst case this keeps
- *  Layer 1 under 50s, inside a typical 60s host tool timeout.
- *
- *  Sized against real work rather than guessed: an 8-image batch at production
- *  2000px measures ~20s cold now that a multi-image batch takes one attempt per
- *  image instead of two. Running out of budget counts as unknown, which
- *  escalates — so the failure direction is a refusal, never a hang. */
-export const SCREEN_TOTAL_BUDGET_MS = 30_000;
+ *  A total time budget was tried and reverted: at the advertised maximum of 8
+ *  images the legitimate work (24.6-29.8s measured) does not fit under any cap
+ *  that also bounds a hang, and a 30s budget refused benign 8-image requests
+ *  5/5. The screen now stops at the first image that stays unreadable after
+ *  its retry, so a stalled Ollama costs ~2 x LAYER1_IMAGE_TIMEOUT_MS however
+ *  many images are attached, while slow-but-answering work runs to completion.
+ */
+export const SCREEN_MAX_UNREADABLE_IMAGES = 1;
 const LAYER1_RETRY_TIMEOUT_MS = 5_000;
 
 // Deterministic reserved-vocabulary backstop for the ERROR path.
@@ -469,39 +467,44 @@ export async function callLayer1(
         // Costs a call per image on an all-benign batch, and returns on the
         // first YES. Single-image requests, which are nearly all of them, are
         // unchanged.
-        // ONE wall-clock budget for the whole screen, however many images. Per
-        // image, an unbounded 2 attempts x 10s made a hung Ollama into a
-        // 180,035ms stall on 8 images, against 20,009ms before this loop
-        // existed — the /api/tags and /api/show probes answer instantly even
-        // while /api/chat is queued behind a big model load, so the block is
-        // entered and then sits there. No caller applies a timeout to
-        // callLayer1 and the server has no dispatch timeout, so nothing else
-        // bounds it.
+        // Bounded by CONSECUTIVE TIMEOUTS, not by a wall clock.
         //
-        // Running out of budget counts as unknown, which escalates. Slow is
-        // allowed to become "escalate"; it is not allowed to become "hang".
-        const deadline = Date.now() + SCREEN_TOTAL_BUDGET_MS;
-        // The retry is for a transient blip on a single image. Across a batch
-        // the other images already provide that signal, and retrying each one
-        // is what turns a stalled server into minutes.
-        const attempts = (images?.length ?? 0) > 1 ? 1 : 2;
+        // A wall-clock budget was tried and reverted. It cannot tell a stalled
+        // server from a slow one, and at the advertised maximum of 8 images the
+        // legitimate work does not fit under any cap that also bounds a hang:
+        // screening one image measures 2.5-2.9s quiet, 3.4-4.2s with normal
+        // background activity and 4.1-5.9s beside a concurrent 9b generation,
+        // so eight of them take 24.6-29.8s. A 30s budget refused benign
+        // 8-image requests 5/5 where the previous commit served 4/5, and n=7
+        // refused 2/3. The gate was rejecting ordinary screenshots.
+        //
+        // The distinction that actually separates the two cases is whether calls
+        // ANSWER. A hung server fails every attempt; a loaded one answers
+        // slowly. So give each image the full per-call timeout, retry a blip as
+        // before, and stop at the FIRST image that stays unreadable — by then
+        // the server has already failed twice on it, and the verdict is unknown
+        // whatever the remaining images say, so screening them buys nothing.
+        //
+        // A hang therefore costs ~2 x 10s no matter how many images are
+        // attached, and slow-but-working work is never cut off part way.
         let sawUnknown = false;
         for (const image of images ?? []) {
-            if (Date.now() >= deadline) { sawUnknown = true; break; }
-            const answer = await screenWithRetry([image], deadline, attempts);
+            const answer = await screenWithRetry([image], 2);
             if (answer === "yes") return "yes";
-            if (answer === "unknown") sawUnknown = true;
+            if (answer === "unknown") { sawUnknown = true; break; }
         }
         return sawUnknown ? "unknown" : "no";
     }
 
     async function screenWithRetry(
-        batch: string[], deadline: number, attempts: number,
+        batch: string[], attempts: number,
     ): Promise<"yes" | "no" | "unknown"> {
+        // The retry is restored for every image, not just single-image
+        // requests. Dropping it for batches made one transient blip fatal to
+        // the whole request: a single 10s abort on image 1 of 8, with the other
+        // seven clean, refused where a retry recovered.
         for (let attempt = 0; attempt < attempts; attempt++) {
-            const remaining = deadline - Date.now();
-            if (remaining <= 0) return "unknown";
-            const answer = await screenOnce(batch, Math.min(remaining, LAYER1_IMAGE_TIMEOUT_MS));
+            const answer = await screenOnce(batch, LAYER1_IMAGE_TIMEOUT_MS);
             if (answer !== "unknown") return answer;
         }
         return "unknown";
