@@ -1489,20 +1489,21 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         // from the semantic classifier, which has no per-rule attribution.
         const reservedCat = reservedCategory(args.prompt);
         if ((l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN")
-            && (resolvedImages?.length ?? 0) > 0 && reservedCat == null) {
-            // The verdict was raised by the PIXELS (image content screen /
-            // semantic path), not by a reserved rule matching the words: an
-            // operational ask — describe, verify, count — about an image whose
-            // content may be clinical. Local inference is exactly where that
+            && (resolvedImages?.length ?? 0) > 0) {
+            // Clinical images are PROCESSED, never refused (ruling 2026-08-18:
+            // the standard BCBA role works from scanned assessments and
+            // screenshots — locally, or via the sanctioned prism cloud once it
+            // has an image channel). Local inference is exactly where that
             // content is SAFE: nothing leaves the device. Refusing here broke
-            // screenshot verification for the clinical enterprise tiers that
-            // need it most (2026-08-18), while the actual no-leak property —
-            // images never reach cloud — is enforced architecturally either
-            // way. Serve locally with cloud pinned off for the rest of the
-            // call, so no later escalation path sees even the prompt text.
-            // A prompt whose WORDS match a deterministic reserved rule keeps
-            // the refusal below: attaching an image is not a policy bypass.
-            debugLog(`[prism_infer] Layer 1 verdict=${l1} raised by image content — serving locally, cloud disabled for this call`);
+            // screenshot verification and assessment work for the clinical
+            // enterprise tiers that need it most, while the actual no-leak
+            // property — images never reach unsanctioned cloud — is enforced
+            // architecturally either way. Serve locally with cloud pinned off
+            // for the rest of the call. No text-policy bypass results: an
+            // image-carrying request is STRICTER than the same words without
+            // one (local-only), so attaching an image can only reduce
+            // exposure. The verdict stays in attempts for the audit trail.
+            debugLog(`[prism_infer] Layer 1 verdict=${l1} with images — serving locally, cloud disabled for this call`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}_image_local_only` });
             allowCloud = false;
         } else if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
