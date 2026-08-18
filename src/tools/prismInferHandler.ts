@@ -727,6 +727,61 @@ export async function tiersSupportingVision(
  * Adopting scripts/prism-coder-9b.Modelfile therefore unlocks the 9b on its own,
  * with no code change and no second edit to remember.
  */
+/** Per (model, hasSystem) prompt overhead, measured once per process.
+ *  Negative results are cached too: an unreachable endpoint must cost one
+ *  timeout per model, not one per request. */
+const templateOverheadCache = new Map<string, number | null>();
+
+/**
+ * What the chat template costs before the user's prompt begins.
+ *
+ * This was a literal 64. Measured on prism-coder:4b and :2b, a ONE-CHARACTER
+ * prompt with no system message evaluates to 1,111 tokens — the Modelfile bakes
+ * a ~4.4 KB SYSTEM block that applies only when the caller supplies none. With a
+ * system message it is 22.
+ *
+ * So on the common path the ctx gate was short by 1,047 tokens, content
+ * independently — 27% of a 4,096-token window consumed before anything the user
+ * wrote. That is a larger systematic error than any of the density work above,
+ * and it is a constant, not a guess: one tiny call per model per shape measures
+ * it exactly.
+ *
+ * Returns null when unprobeable, and the caller keeps the old literal — an
+ * unmeasurable overhead must not become a zero.
+ */
+export async function probeTemplateOverhead(
+    url: string, model: string, hasSystem: boolean,
+): Promise<number | null> {
+    const key = `${model}::${hasSystem}`;
+    if (templateOverheadCache.has(key)) return templateOverheadCache.get(key) ?? null;
+    try {
+        const messages = hasSystem
+            ? [{ role: "system", content: "s" }, { role: "user", content: "x" }]
+            : [{ role: "user", content: "x" }];
+        const res = await fetch(`${url}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model, messages, stream: false, think: false,
+                options: { num_predict: 1, temperature: 0 },
+            }),
+            // Short, because this must never gate a request: a live ollama
+            // answers a one-character prompt in milliseconds, and anything
+            // slower is better served by the literal fallback than by waiting.
+            signal: AbortSignal.timeout(1_500),
+        });
+        if (!res.ok) { templateOverheadCache.set(key, null); return null; }
+        const data = (await res.json()) as { prompt_eval_count?: number };
+        const n = data.prompt_eval_count;
+        if (!Number.isFinite(n) || (n as number) <= 0) { templateOverheadCache.set(key, null); return null; }
+        templateOverheadCache.set(key, n as number);
+        return n as number;
+    } catch {
+        templateOverheadCache.set(key, null);
+        return null;
+    }
+}
+
 export async function probeNumCtx(url: string, model: string): Promise<number | null> {
     try {
         const res = await fetch(`${url}/api/show`, {
@@ -1115,6 +1170,8 @@ export interface InferDeps {
     probeVision?: (url: string, model: string) => Promise<boolean>;
     /** Injectable context probe for testing. Defaults to probeNumCtx (/api/show). */
     probeNumCtx?: (url: string, model: string) => Promise<number | null>;
+    /** Injectable template-overhead probe; defaults to probeTemplateOverhead. */
+    probeTemplateOverhead?: typeof probeTemplateOverhead;
     /** Injectable Layer 1 classifier for testing. Defaults to callLayer1 from layer1.ts. */
     callLayer1?: (userPrompt: string, ollamaUrl: string, model: string, fetchImpl?: typeof fetch, images?: string[]) => Promise<Layer1Verdict>;
 }
@@ -1728,18 +1785,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // prompt+output ≤ ctx would make a max_tokens=4096 request
             // unroutable to the 4096-ctx tiers even for tiny prompts.
             // ctxTokens mirrors the live Modelfile values (see MODEL_TIERS).
-            const CTX_TEMPLATE_MARGIN = 64;
             // effectiveSystem, not args.system: the default vision prompt is 46
-            // estimated tokens and the model is charged for them, so an estimate
-            // built from args.system spends most of the 64-token margin without
-            // knowing. This narrows the usable prompt on the 4096-ctx tiers from
-            // 1032 to 986 tokens — about 184 characters — so a request near that
-            // edge now degrades to a 32k-ctx tier it previously squeaked past.
-            // That is the honest number, not a new class of failure: the same
-            // cliff already existed 184 characters further along.
-            const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
-                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
-                + CTX_TEMPLATE_MARGIN;
+            // estimated tokens and the model is charged for them.
+            const promptBodyEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
+                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0);
             // Prefer what the model reports over what the table remembers. A
             // tag with a pinned num_ctx is authoritative; one without keeps the
             // table's conservative value, so an unpinned tier can only LOSE work,
@@ -1757,6 +1806,28 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 liveCtx = null;
             }
             const effectiveCtx = liveCtx ?? tier.ctxTokens;
+
+            // The chat template overhead. 64 was budgeted for what is really
+            // ~1,111 tokens on 4b/2b when no system message is supplied (the
+            // Modelfile's baked SYSTEM block). But that precision only matters
+            // near the ceiling: a prompt with room to spare fits whether the
+            // margin is 64 or 1,200, so probing then would be a network call
+            // that cannot change the decision — and it timed out the Windows CI
+            // when unit tests reached this path without stubbing it.
+            //
+            // So probe ONLY when the worst-case overhead could flip the gate,
+            // and use the safe literal otherwise. The probe is per (model,
+            // shape) and cached, including negatives.
+            const MAX_TEMPLATE_OVERHEAD = 1_300;
+            let CTX_TEMPLATE_MARGIN = 64;
+            if (promptBodyEst + MAX_TEMPLATE_OVERHEAD > effectiveCtx) {
+                const probed = await (deps.probeTemplateOverhead ?? probeTemplateOverhead)(
+                    deps.ollamaUrl, ollamaName, effectiveSystem != null,
+                );
+                if (probed != null) CTX_TEMPLATE_MARGIN = probed;
+            }
+            const promptTokensEst = promptBodyEst + CTX_TEMPLATE_MARGIN;
+
             if (promptTokensEst > effectiveCtx) {
                 attempts.push({
                     tier: tier.tag,
@@ -1793,6 +1864,75 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 );
             }
             if (result.ok) {
+                // Did ollama silently drop part of the prompt?
+                //
+                // The ctx gate above is an ESTIMATE, and an estimate can be
+                // wrong for content nobody has measured yet. When it is wrong in
+                // the unsafe direction the request is accepted, ollama discards
+                // whatever does not fit, and the answer comes back confident and
+                // wrong with a normal done_reason.
+                //
+                // My first attempt at detecting this looked for prompt_eval_count
+                // SATURATING near num_ctx, found it did not, and concluded the
+                // response carried no signal. That was wrong: it does not
+                // saturate, it COLLAPSES to num_ctx/2 — ollama's context shift
+                // keeps half the window. Measured on prism-coder:4b (num_ctx
+                // 32768), evaluated tokens for four unrelated content types:
+                //
+                //   prose 432,000 chars -> 16386      base64 300,000 -> 16386
+                //   JSON  159,392       -> 16386      code   390,000 -> 16386
+                //
+                // Exactly 16386 every time, against 28,310 for a 195,200-char
+                // prompt that genuinely fit. The collapse IS the signal.
+                //
+                // Guarded on EXACTNESS, not on size. The first version of this
+                // check required the estimate to exceed num_ctx — which the ctx
+                // gate above already refuses, so it could never fire. Dead code
+                // that reads like a safety net is worse than none; its own test
+                // is what caught it.
+                //
+                // The reachable case is precisely the one the gate cannot see:
+                // the estimate came in UNDER the window while the truth was over
+                // it. So the trigger is the arithmetic signature — evaluated
+                // landing within a few tokens of exactly num_ctx/2 — plus a floor
+                // saying we sent at least half a window, so a short prompt is
+                // never a candidate. Landing on that exact value by coincidence
+                // is a ~0.05% event for any single call.
+                // The floor is CHARACTERS, not the estimate. Gating this on
+                // promptTokensEst made the detector a consumer of the very
+                // number it exists to backstop, and capped its reach at a 2x
+                // undercount: past 2x the estimate falls below num_ctx/2 and the
+                // check declines to fire. The bug that started this was a 3.05x
+                // undercount, so the detector would never have caught it.
+                //
+                // Measured on this branch before the change — a tab-separated
+                // table (17.9% whitespace, no code punctuation, so it takes the
+                // PROSE divisor while really tokenising near 1.0 chars/token):
+                //
+                //   27,222 chars  est  6,806  -> served "kestrel"   correct
+                //   36,993 chars  est  9,249  -> served "kestrel"   correct
+                //   46,993 chars  est 11,749  -> served "ok"        WRONG
+                //
+                // The last one is the original failure exactly: marker on line 1,
+                // truncated away, answered confidently from what survived, and
+                // no input_truncated in attempts.
+                //
+                // No tokenizer emits more than one token per character, so a
+                // prompt with fewer than num_ctx/2 characters cannot possibly
+                // have num_ctx/2 tokens. Flooring on length is therefore sound
+                // and strictly more permissive — it keeps short prompts out
+                // without inheriting the estimate's blind spots.
+                const halfCtx = liveCtx != null ? Math.floor(liveCtx / 2) : null;
+                const looksTruncated = halfCtx != null
+                    && result.promptTokens != null
+                    && Math.abs(result.promptTokens - halfCtx) <= 8
+                    && args.prompt.length >= halfCtx;
+                if (looksTruncated) {
+                    debugLog(`[prism_infer] ${tier.tag} evaluated ${result.promptTokens} tokens ≈ num_ctx/2 on a ${promptTokensEst}-token estimate — prompt was truncated`);
+                    attempts.push({ tier: tier.tag, reason: `input_truncated:${result.promptTokens}_of_${liveCtx}` });
+                    continue;   // abandon this tier rather than answer from a fragment
+                }
+
                 let { stripped, thinkOnly } = stripThink(result.text);
                 let output = stripped;
 
