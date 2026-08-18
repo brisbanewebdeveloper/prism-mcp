@@ -29,7 +29,10 @@ const B64 = "iVBORw0KGgoAAAANSUhEUg==";
  *  load-bearing — on free tiers the old code never tried cloud anyway. */
 const ENTERPRISE: any = {
     plan: "enterprise", model_ceiling: "27b", daily_infer_limit: 1e5, max_tokens: 4096, max_seats: 25,
-    features: { cloud_fallback: true, grounding_verifier: false, route_guard: false,
+    // ALL paid features ON — a fixture with route_guard/verifier off makes the
+    // leak tests below pass vacuously (gatedArgs pins local for unentitled
+    // plans anyway, so the spies never fire and prove nothing).
+    features: { cloud_fallback: true, grounding_verifier: true, route_guard: true,
                 knowledge_search_unlimited: true, session_memory_unlimited: true, analytics_dashboard: true },
     upgrade_url: "https://synalux.ai/pricing",
 };
@@ -95,6 +98,66 @@ describe("clinical pixels serve locally; cloud stays pinned off", () => {
                 { prompt, images: [B64], mode: "chat", task_complexity: 5, cloud_fallback: true },
                 d as any)).rejects.toThrow(/reserved/i);
             expect(cloudCalls, "a reserved image request reached cloud").toHaveLength(0);
+        } finally { _resetEntitlementsForTest(); }
+    });
+
+    it("images pin the ROUTE GUARD local — no prompt/draft POST to Synalux (R1 finding)", async () => {
+        _setCacheForTest(ENTERPRISE, 60_000);
+        // Adversarial review R1: serving locally is not enough. In route mode
+        // a tool-call-shaped draft goes to the Synalux route guard with the
+        // PROMPT AND DRAFT attached — content derived from the pixels leaves
+        // the device through a side door while callCloud sits pinned. The pin
+        // must cover derivatives, and for ALL images: the screen is FN-porous
+        // by design, so "screened benign" is not a leak clearance.
+        let guardCalls = 0;
+        const { d } = deps({
+            callLayer1: async () => "OBVIOUS_NOT_RESERVED", // even a CLEAN screen must pin
+            callLocal: async () => ({ ok: true as const,
+                text: '<|tool_call|>{"name":"knowledge_search","arguments":{"query":"x"}}', doneReason: "stop" }),
+            callRouteGuard: async () => { guardCalls++; return { output: "", action: "preserved" as const, source: "portal" as const }; },
+        });
+        try {
+            await runInfer(
+                { prompt: "route this screenshot", images: [B64], mode: "route", task_complexity: 3 },
+                d as any);
+            expect(guardCalls, "an image request's prompt+draft reached the Synalux route guard").toBe(0);
+        } finally { _resetEntitlementsForTest(); }
+    });
+
+    it("images skip the Synalux VERIFIER — no draft/evidence POST off-device (R1 finding)", async () => {
+        _setCacheForTest(ENTERPRISE, 60_000);
+        // Same review: production wiring makes callVerifier the SYNALUX
+        // verifier whenever the portal is configured — verification is
+        // cloud-side. A verified image request posts the draft + evidence.
+        let verifierCalls = 0;
+        const { d } = deps({
+            callLayer1: async () => "OBVIOUS_NOT_RESERVED",
+            callVerifier: async () => { verifierCalls++; return { action: "pass" as const, finalText: "y", verifierChain: [] }; },
+        });
+        try {
+            const r: any = await runInfer(
+                { prompt: "How many lines are in this image?", images: [B64], mode: "chat", task_complexity: 3,
+                  verify: true, evidence: [{ source: "s", content: "c" }] },
+                d as any);
+            expect(verifierCalls, "an image request's draft reached the Synalux verifier").toBe(0);
+            expect(r.attempts?.some((a: any) => a.reason === "verifier_skipped_images_stay_local"),
+                   `attempts=${JSON.stringify(r.attempts)}`).toBe(true);
+        } finally { _resetEntitlementsForTest(); }
+    });
+
+    it("text-only requests still use route guard and verifier — the pin is scoped to images", async () => {
+        _setCacheForTest(ENTERPRISE, 60_000);
+        // Over-pinning would silently strip paid features from every call.
+        let guardCalls = 0;
+        const { d } = deps({
+            callLayer1: async () => "OBVIOUS_NOT_RESERVED",
+            callLocal: async () => ({ ok: true as const,
+                text: '<|tool_call|>{"name":"knowledge_search","arguments":{"query":"x"}}', doneReason: "stop" }),
+            callRouteGuard: async (o: any) => { guardCalls++; return { output: o.draft, action: "preserved" as const, source: "portal" as const }; },
+        });
+        try {
+            await runInfer({ prompt: "route this", mode: "route", task_complexity: 3 }, d as any);
+            expect(guardCalls, "text route guard was over-pinned").toBe(1);
         } finally { _resetEntitlementsForTest(); }
     });
 

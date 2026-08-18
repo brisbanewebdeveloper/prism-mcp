@@ -1348,7 +1348,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const verificationGatedArgs = canVerify
         ? args
         : { ...args, verify: false, evidence: undefined };
-    const gatedArgs = canUsePrivateRouteGuard
+    // let, not const: re-pinned below once images are resolved — an image
+    // request must not leave the device through ANY channel, including the
+    // paid ones this gate would otherwise leave enabled.
+    let gatedArgs = canUsePrivateRouteGuard
         ? verificationGatedArgs
         : { ...verificationGatedArgs, route_guard: "local" as const };
 
@@ -1438,6 +1441,20 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         } catch {
             // fail open: the original images are still in resolvedImages
         }
+    }
+    if (resolvedImages?.length) {
+        // Adversarial review R1 (2026-08-18): serving image requests locally is
+        // not enough — two paid side doors still carried content DERIVED from
+        // the pixels off-device. The Synalux route guard POSTs the prompt and
+        // the draft; the Synalux grounding verifier POSTs the draft and the
+        // evidence. A draft written by a model that just read a clinical
+        // screenshot can quote it. Pin both local for EVERY image request, not
+        // just reserved-flagged ones: the content screen is FN-porous by
+        // design, so a clean screen is not a leak clearance. Text-only
+        // requests keep both features.
+        const wouldVerify = gatedArgs.verify ?? ((gatedArgs.evidence?.length ?? 0) > 0);
+        if (wouldVerify) attempts.push({ tier: "verifier", reason: "verifier_skipped_images_stay_local" });
+        gatedArgs = { ...gatedArgs, route_guard: "local" as const, verify: false };
     }
     if (installed && !layer1RecursionGuard) {
         const l1fn = deps.callLayer1 ?? defaultCallLayer1;
