@@ -1327,7 +1327,9 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const maxTokens = cloudMaxTokens;
 
     // Cloud fallback only for paid plans
-    const allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
+    // let, not const: the reserved-image branch pins this off mid-call so no
+    // later escalation path can carry even the prompt text off-device.
+    let allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
 
     // Verification only for paid plans (free users skip L3 grounding)
     const canVerify = ent.features.grounding_verifier;
@@ -1469,7 +1471,24 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         // Null when the deterministic floor did not fire — the verdict then came
         // from the semantic classifier, which has no per-rule attribution.
         const reservedCat = reservedCategory(args.prompt);
-        if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
+        if ((l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN")
+            && (resolvedImages?.length ?? 0) > 0 && reservedCat == null) {
+            // The verdict was raised by the PIXELS (image content screen /
+            // semantic path), not by a reserved rule matching the words: an
+            // operational ask — describe, verify, count — about an image whose
+            // content may be clinical. Local inference is exactly where that
+            // content is SAFE: nothing leaves the device. Refusing here broke
+            // screenshot verification for the clinical enterprise tiers that
+            // need it most (2026-08-18), while the actual no-leak property —
+            // images never reach cloud — is enforced architecturally either
+            // way. Serve locally with cloud pinned off for the rest of the
+            // call, so no later escalation path sees even the prompt text.
+            // A prompt whose WORDS match a deterministic reserved rule keeps
+            // the refusal below: attaching an image is not a policy bypass.
+            debugLog(`[prism_infer] Layer 1 verdict=${l1} raised by image content — serving locally, cloud disabled for this call`);
+            attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}_image_local_only` });
+            allowCloud = false;
+        } else if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
             debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
             // Images never leave the device, and callCloud has no image channel
