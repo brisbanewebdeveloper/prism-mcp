@@ -149,7 +149,13 @@ describe("a paid caller is never handed an answer about an image the cloud never
         features: { ...ENT.features, cloud_fallback: true },
     };
 
-    it("refuses rather than escalating an IMAGE request to a text-only cloud", async () => {
+    it("serves an UNCERTAIN image request locally rather than escalating to a text-only cloud", async () => {
+        // Contract updated 2026-08-18: the property this test protects is that
+        // a paid caller is never handed a fabricated answer about an image the
+        // cloud never saw. The old mechanism was a refusal; the new one is
+        // stronger — serve LOCALLY from a model that DID see the image, with
+        // cloud pinned off for the whole call. Clinical pixels are safe
+        // on-device; the leak was only ever the cloud path.
         _setCacheForTest(PAID, 60_000);
         let cloudCalls = 0;
         const deps = makeDeps([], {
@@ -159,9 +165,10 @@ describe("a paid caller is never handed an answer about an image the cloud never
                 return { ok: true as const, output: "The image contains 42 lines.", backend: "anthropic" };
             }) as InferDeps["callCloud"],
         });
-        await expect(
-            runInfer({ ...imageArgs(), cloud_fallback: true }, deps),
-        ).rejects.toThrow(/reserved content refused/);
+        const r = await runInfer({ ...imageArgs(), cloud_fallback: true }, deps);
+        expect(r.used_cloud, "an image answer claimed a cloud that has no image channel").toBe(false);
+        expect(r.attempts?.some(a => a.reason === "layer1_uncertain_image_local_only"),
+               `attempts=${JSON.stringify(r.attempts)}`).toBe(true);
         expect(cloudCalls, "sent an image request to a cloud path with no image channel").toBe(0);
     });
 

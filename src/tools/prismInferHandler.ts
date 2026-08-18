@@ -1327,7 +1327,9 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const maxTokens = cloudMaxTokens;
 
     // Cloud fallback only for paid plans
-    const allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
+    // let, not const: the reserved-image branch pins this off mid-call so no
+    // later escalation path can carry even the prompt text off-device.
+    let allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
 
     // Verification only for paid plans (free users skip L3 grounding)
     const canVerify = ent.features.grounding_verifier;
@@ -1346,7 +1348,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const verificationGatedArgs = canVerify
         ? args
         : { ...args, verify: false, evidence: undefined };
-    const gatedArgs = canUsePrivateRouteGuard
+    // let, not const: re-pinned below once images are resolved — an image
+    // request must not leave the device through ANY channel, including the
+    // paid ones this gate would otherwise leave enabled.
+    let gatedArgs = canUsePrivateRouteGuard
         ? verificationGatedArgs
         : { ...verificationGatedArgs, route_guard: "local" as const };
 
@@ -1437,6 +1442,20 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // fail open: the original images are still in resolvedImages
         }
     }
+    if (resolvedImages?.length) {
+        // Adversarial review R1 (2026-08-18): serving image requests locally is
+        // not enough — two paid side doors still carried content DERIVED from
+        // the pixels off-device. The Synalux route guard POSTs the prompt and
+        // the draft; the Synalux grounding verifier POSTs the draft and the
+        // evidence. A draft written by a model that just read a clinical
+        // screenshot can quote it. Pin both local for EVERY image request, not
+        // just reserved-flagged ones: the content screen is FN-porous by
+        // design, so a clean screen is not a leak clearance. Text-only
+        // requests keep both features.
+        const wouldVerify = gatedArgs.verify ?? ((gatedArgs.evidence?.length ?? 0) > 0);
+        if (wouldVerify) attempts.push({ tier: "verifier", reason: "verifier_skipped_images_stay_local" });
+        gatedArgs = { ...gatedArgs, route_guard: "local" as const, verify: false };
+    }
     if (installed && !layer1RecursionGuard) {
         const l1fn = deps.callLayer1 ?? defaultCallLayer1;
         const l1Model = resolveOllamaName("prism-coder:4b", installed);
@@ -1469,7 +1488,25 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         // Null when the deterministic floor did not fire — the verdict then came
         // from the semantic classifier, which has no per-rule attribution.
         const reservedCat = reservedCategory(args.prompt);
-        if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
+        if ((l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN")
+            && (resolvedImages?.length ?? 0) > 0) {
+            // Clinical images are PROCESSED, never refused (ruling 2026-08-18:
+            // the standard BCBA role works from scanned assessments and
+            // screenshots — locally, or via the sanctioned prism cloud once it
+            // has an image channel). Local inference is exactly where that
+            // content is SAFE: nothing leaves the device. Refusing here broke
+            // screenshot verification and assessment work for the clinical
+            // enterprise tiers that need it most, while the actual no-leak
+            // property — images never reach unsanctioned cloud — is enforced
+            // architecturally either way. Serve locally with cloud pinned off
+            // for the rest of the call. No text-policy bypass results: an
+            // image-carrying request is STRICTER than the same words without
+            // one (local-only), so attaching an image can only reduce
+            // exposure. The verdict stays in attempts for the audit trail.
+            debugLog(`[prism_infer] Layer 1 verdict=${l1} with images — serving locally, cloud disabled for this call`);
+            attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}_image_local_only` });
+            allowCloud = false;
+        } else if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
             debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
             // Images never leave the device, and callCloud has no image channel
