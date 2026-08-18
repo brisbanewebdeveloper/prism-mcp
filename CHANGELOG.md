@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.14.0 — 2026-08-18
+
+### Model convergence — `prism connect` now updates your models
+
+- **Added: `prism connect` converges local models against the registry, and
+  `prism update-models` does it standalone.** connect already self-updated
+  the npm package and reconverged configuration; models were the missing
+  half — a machine kept vision-less models for four days after the registry
+  carried the fix, and every image request refused with
+  `layer1_classifier_no_vision`. Convergence pulls each *installed*
+  `prism-coder` tier (it never decides a 16 GB model belongs on your
+  laptop) and then repairs the local alias: `ollama cp` aliases are
+  snapshots that silently detach from their source on every re-pull, so
+  `prism-coder:<tier>` is re-aliased whenever its bytes differ from
+  `dcostenco/prism-coder:<tier>`. Freshness is delegated to `ollama pull`
+  itself — cheap when current, and never a reimplementation of the
+  registry protocol. Model failures never fail connect: each tier reports
+  and the rest continue. Opt out with `--no-models`; preview with
+  `--dry-run`.
+- **Expect a large download the first time if you keep the 27b.** The
+  registry's 27b was updated this week, so the first converge on a machine
+  holding it pulls ~16 GB. The plan (which tiers, and the `--no-models`
+  escape hatch) is printed before any transfer starts.
+- **Caveat: convergence treats `prism-coder:<tier>` names as prism's.** If
+  you maintain a deliberately custom local model under one of those exact
+  names, convergence will re-point it at the registry bytes — keep custom
+  builds under your own names, or use `--no-models`.
+- **Fixed before release (adversarial review): the spawned `ollama` CLI now
+  targets the same daemon tags are read from.** `PRISM_LOCAL_LLM_URL`
+  configured a remote Ollama for reads while `ollama pull`/`cp` acted on
+  the shell's ambient `OLLAMA_HOST` — convergence could read one daemon
+  and mutate another. The spawn env pins `OLLAMA_HOST` to the tags URL.
+
 ## 20.13.1 — 2026-08-18
 
 ### Local inference
