@@ -1785,26 +1785,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // prompt+output ≤ ctx would make a max_tokens=4096 request
             // unroutable to the 4096-ctx tiers even for tiny prompts.
             // ctxTokens mirrors the live Modelfile values (see MODEL_TIERS).
-            // Measured per model and per call shape, falling back to the old
-            // literal when unprobeable. 64 was budgeted for a template overhead
-            // that is really 1,111 tokens on 4b and 2b when no system message is
-            // supplied — the Modelfile's baked SYSTEM block. See
-            // probeTemplateOverhead.
-            const probedOverhead = await (deps.probeTemplateOverhead ?? probeTemplateOverhead)(
-                deps.ollamaUrl, ollamaName, effectiveSystem != null,
-            );
-            const CTX_TEMPLATE_MARGIN = probedOverhead ?? 64;
             // effectiveSystem, not args.system: the default vision prompt is 46
-            // estimated tokens and the model is charged for them, so an estimate
-            // built from args.system spends most of the 64-token margin without
-            // knowing. This narrows the usable prompt on the 4096-ctx tiers from
-            // 1032 to 986 tokens — about 184 characters — so a request near that
-            // edge now degrades to a 32k-ctx tier it previously squeaked past.
-            // That is the honest number, not a new class of failure: the same
-            // cliff already existed 184 characters further along.
-            const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
-                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
-                + CTX_TEMPLATE_MARGIN;
+            // estimated tokens and the model is charged for them.
+            const promptBodyEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
+                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0);
             // Prefer what the model reports over what the table remembers. A
             // tag with a pinned num_ctx is authoritative; one without keeps the
             // table's conservative value, so an unpinned tier can only LOSE work,
@@ -1822,6 +1806,28 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 liveCtx = null;
             }
             const effectiveCtx = liveCtx ?? tier.ctxTokens;
+
+            // The chat template overhead. 64 was budgeted for what is really
+            // ~1,111 tokens on 4b/2b when no system message is supplied (the
+            // Modelfile's baked SYSTEM block). But that precision only matters
+            // near the ceiling: a prompt with room to spare fits whether the
+            // margin is 64 or 1,200, so probing then would be a network call
+            // that cannot change the decision — and it timed out the Windows CI
+            // when unit tests reached this path without stubbing it.
+            //
+            // So probe ONLY when the worst-case overhead could flip the gate,
+            // and use the safe literal otherwise. The probe is per (model,
+            // shape) and cached, including negatives.
+            const MAX_TEMPLATE_OVERHEAD = 1_300;
+            let CTX_TEMPLATE_MARGIN = 64;
+            if (promptBodyEst + MAX_TEMPLATE_OVERHEAD > effectiveCtx) {
+                const probed = await (deps.probeTemplateOverhead ?? probeTemplateOverhead)(
+                    deps.ollamaUrl, ollamaName, effectiveSystem != null,
+                );
+                if (probed != null) CTX_TEMPLATE_MARGIN = probed;
+            }
+            const promptTokensEst = promptBodyEst + CTX_TEMPLATE_MARGIN;
+
             if (promptTokensEst > effectiveCtx) {
                 attempts.push({
                     tier: tier.tag,
