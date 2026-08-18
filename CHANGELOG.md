@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.13.1 — 2026-08-18
+
+### Local inference
+
+- **Changed: image requests are processed locally — never refused for content,
+  never escalated.** 20.13.0 refused any image whose Layer 1 verdict was raised
+  by the picture. That conflated two properties: leak-prevention (images never
+  reach cloud — architectural, unchanged) and refusal. On-device inference is
+  exactly where sensitive material is safe, and the refusal broke screenshot
+  and document verification hardest on the paid tiers where cloud escalation
+  was permitted. Every image-carrying request now serves locally with cloud
+  pinned off for the whole call — including the route guard and the grounding
+  verifier, which could previously carry a prompt or a draft derived from the
+  pixels off-device. The verdict stays in `attempts` as an audit marker. An
+  image-carrying request is now strictly more private than the same words
+  without one. A prompt whose *words* match a reserved rule keeps its existing
+  text-path behavior.
+
+### Session memory (portal-backed installs)
+
+- **Fixed: `session_export_memory` and project listing were dead on
+  portal-backed installs.** Both portal endpoints existed; the client never
+  called them and fell through to a storage path those installs don't
+  configure. Exports and project inventory now route through the portal.
+- **Fixed: exports no longer include erased entries.** On direct/local
+  backends, rows deleted with `session_forget_memory` still shipped in every
+  export. All backends now exclude them, matching the portal path.
+- **Hardened: an export refuses rather than writing an empty or silently
+  truncated backup** when the server response doesn't match the expected
+  contract. A backup that reports success must be complete.
+
+### Tooling
+
+- **Fixed: the test suite parses on Windows again.** A release-staging import
+  broke suite-level parsing on windows-latest (runtime code unaffected);
+  extracted via subprocess with a Windows-safe file URL.
+
 ## 20.13.0 — 2026-08-17
 
 - **Added: `prism_infer` accepts screenshots.** Image inputs route through the
