@@ -7,6 +7,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { VERSIONED_MANIFESTS } from "../scripts/check-publish-clean.mjs";
 
 const SCRIPT = resolve(process.cwd(), "scripts/check-publish-clean.mjs");
 const tempRepos: string[] = [];
@@ -38,6 +39,19 @@ afterEach(() => {
   for (const repo of tempRepos.splice(0)) {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+describe("versioned-manifest coverage", () => {
+  it("guards every manifest that a release bumps in lockstep", () => {
+    // The brand-alias package is published to npm and version-locked with
+    // prism-mcp-server, but was NOT in this list — a review of the 20.13.0
+    // staging caught it left a full release behind while every other manifest
+    // moved, which the guard would not have flagged. Pin it so it cannot fall
+    // out of coverage silently.
+    expect(VERSIONED_MANIFESTS).toContain("packages/prism-coder/package.json");
+    expect(VERSIONED_MANIFESTS).toContain("plugins/prism/.codex-plugin/plugin.json");
+    expect(VERSIONED_MANIFESTS).toContain("plugins/prism/.claude-plugin/plugin.json");
+  });
 });
 
 describe("npm publish cleanliness guard", () => {

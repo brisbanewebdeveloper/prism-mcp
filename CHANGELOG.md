@@ -2,6 +2,111 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.13.0 — 2026-08-17
+
+- **Added: `prism_infer` accepts screenshots.** Image inputs route through the
+  tier ladder with vision-aware tier selection, so a caller can hand a
+  screenshot to local inference. The Layer 1 and latency work below builds on
+  this capability.
+
+### Layer 1 safety gate
+
+- **Added: attached images are screened for content, not just the request text.**
+  Layer 1 classifies a *request*, and images had been passed to it since the fix
+  noting that "a screenshot of clinical material would otherwise pass a gate that
+  only ever read the text prompt" — the plumbing landed, the instruction never
+  did. Holding one clinical incident report constant and varying only the
+  wording, the gate escalated 6 of 28 times: a question answered with a timestamp
+  left nothing firing at either layer. Each attached image now gets its own
+  focused screen before classification, one image per call, and only a clean
+  "no" permits local processing — a timeout, a non-2xx, or a reply with no
+  yes/no token all escalate. Bounded by consecutive failure rather than a clock,
+  so a stalled Ollama costs the same at one image or eight while slow-but-
+  answering work is never cut off. Screens *clinical* content only; widening the
+  question to the other reserved categories was tried and reverted on
+  measurement. Defence in depth, not a guarantee.
+
+- **Fixed: a paid caller could be handed an answer about an image the cloud never
+  saw.** The Layer 1 cloud escalation called an inference path with no image
+  channel, so an image request was answered from the text alone — "how many
+  lines are in this image?" returned "The image contains 42 lines." with
+  `used_cloud=true` and nothing to distinguish it from a real answer. It now
+  refuses.
+
+- **Fixed: the non-operational artifact exemption was unreachable.** The
+  deterministic classifier checked the reserved rules first, so "add auth_bypass
+  as a test fixture label in the middleware test" was refused by regex in 0ms.
+  The exemption now runs first, but only over the *operational* rules — clinical
+  intents fail closed before anything can exempt them.
+
+- **Added: a reserved refusal now names its category.** A refusal that only said
+  "reserved content refused" told the caller nothing actionable; it now reports
+  which of the reserved rules fired.
+
+### Local inference
+
+- **Fixed: oversized screenshots cost far more than they were worth.**
+  Screenshots are now downscaled to a 2000px long edge before inference: seven
+  non-Latin scripts drop from 47.0s to 13.8s and a native Retina screenshot from
+  ~16–28s to roughly ~10–18s depending on its content, all with identical
+  answers. 2000 rather than 1600 because 1600 was measured
+  returning a *confidently wrong* number on a dense table, and because it leaves
+  a 1920-wide desktop capture untouched. `PRISM_MAX_IMAGE_EDGE` overrides the
+  cap; `0`, `off`, or `none` disables downscaling. Shrinking happens only when an
+  image genuinely exceeds the cap.
+
+- **Fixed: the context gate undercounted dense payloads and served a truncated
+  answer.** The token estimate chose its divisor by code-punctuation density,
+  which is blind to base64, dense JSON, and TSV — an 84,953-char payload cleared
+  the 32,768 gate, Ollama silently discarded ~70% of it, and the model answered
+  confidently from the fragment. The estimate now keys on whitespace density, and
+  a truncation detector abandons any tier whose evaluated token count collapses
+  to `num_ctx/2` (Ollama's context-shift signature) rather than serving a partial
+  answer. The chat-template overhead is now measured per model (~1,111 tokens on
+  4b/2b, not the literal 64 it was budgeted) instead of guessed.
+
+- **Fixed: the RAM gate uses the sizes Ollama actually serves.** The vision
+  builds grew every tier (2b 2.3→3.3 GB, 9b 5.8→6.7 GB, 27b 16→17 GB) while the
+  size table lagged, so the picker could admit a model that then ran out of
+  memory. The table now matches the published weights, so a low-RAM machine is
+  gated to a tier that fits rather than one that OOMs.
+
+- **Fixed: `num_ctx` is read from the model rather than a table that goes stale.**
+
+- **Fixed: thinking is a tier capability, not a mode** — image requests take
+  thinking from the tier, and the screenshot vision path no longer pays for
+  reasoning a tier does not need.
+
+### Security & tooling
+
+- **Fixed: ingest no longer reads a provider key from the environment.**
+  Q&A generation POSTed directly to the Anthropic API with a key from
+  `ANTHROPIC_API_KEY` or `~/.anthropic_key`. An ambient credential means any
+  process with the variable set bills the owner — the vector by which a local
+  test run once burned roughly $500 against a key in a shell profile. Ingest now
+  routes through `prism_infer`, so it is local-first and any cloud use is
+  entitlement-gated; PHI redaction still runs before the model sees anything.
+
+- **Fixed: `shell_run` no longer goes through a shell (CodeQL critical
+  command-injection).** The tool passed its command to a shell, so caller-
+  controlled input could be interpreted as shell syntax. It now executes without
+  a shell.
+
+- **Fixed: the entitlement plan gate must fail closed on an unknown tier.** An
+  unrecognised plan value fell through to a permissive default rather than the
+  lowest tier, so paid-plan gating could evaporate on a malformed entitlement.
+
+- **Fixed: the private-content leak guard reported clean on a repo full of
+  leaks.** It handed JavaScript regex source to POSIX `git grep -E`, matching
+  none of it, and a `git grep` that finds nothing exits 1 — indistinguishable
+  from a clean scan. Four of five content rules were dead on arrival. Patterns
+  now run under PCRE, every rule carries a sample it must match, and the guard is
+  wired into `prepublishOnly`.
+
+- **Fixed: MCP annotations are declared so non-interactive hosts can call
+  `prism_infer`**, and a crashed browser run no longer locks every later run out
+  of the profile.
+
 ## 20.12.1 — 2026-08-14
 
 - **Fixed: `prism connect --refresh` converged only one registration per host.**
