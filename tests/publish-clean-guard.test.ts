@@ -7,7 +7,6 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { VERSIONED_MANIFESTS } from "../scripts/check-publish-clean.mjs";
 
 const SCRIPT = resolve(process.cwd(), "scripts/check-publish-clean.mjs");
 const tempRepos: string[] = [];
@@ -48,9 +47,21 @@ describe("versioned-manifest coverage", () => {
     // staging caught it left a full release behind while every other manifest
     // moved, which the guard would not have flagged. Pin it so it cannot fall
     // out of coverage silently.
-    expect(VERSIONED_MANIFESTS).toContain("packages/prism-coder/package.json");
-    expect(VERSIONED_MANIFESTS).toContain("plugins/prism/.codex-plugin/plugin.json");
-    expect(VERSIONED_MANIFESTS).toContain("plugins/prism/.claude-plugin/plugin.json");
+    //
+    // Read via SUBPROCESS, not import(): a top-level import of this .mjs
+    // under vitest fails to parse on Windows — the exact failure mode the
+    // published-version guard below already documents — and the 20.13.0
+    // release reintroduced the import anyway, turning main's Windows CI red.
+    const out = spawnSync(process.execPath, [
+      "-e",
+      "const{pathToFileURL}=require('node:url');import(pathToFileURL(process.argv[1]).href).then(m=>console.log(JSON.stringify(m.VERSIONED_MANIFESTS)))",
+      SCRIPT,
+    ], { encoding: "utf8" });
+    expect(out.status, out.stderr).toBe(0);
+    const manifests: string[] = JSON.parse(out.stdout);
+    expect(manifests).toContain("packages/prism-coder/package.json");
+    expect(manifests).toContain("plugins/prism/.codex-plugin/plugin.json");
+    expect(manifests).toContain("plugins/prism/.claude-plugin/plugin.json");
   });
 });
 
