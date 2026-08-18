@@ -52,11 +52,13 @@ describe("versioned-manifest coverage", () => {
     // under vitest fails to parse on Windows — the exact failure mode the
     // published-version guard below already documents — and the 20.13.0
     // release reintroduced the import anyway, turning main's Windows CI red.
+    // The path travels via env, NOT argv: the script's IS_MAIN guard compares
+    // argv[1] to its own path, so passing it as an argument executes the full
+    // publish check against this repo (exit 1 on any released version).
     const out = spawnSync(process.execPath, [
       "-e",
-      "const{pathToFileURL}=require('node:url');import(pathToFileURL(process.argv[1]).href).then(m=>console.log(JSON.stringify(m.VERSIONED_MANIFESTS)))",
-      SCRIPT,
-    ], { encoding: "utf8" });
+      "const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>console.log(JSON.stringify(m.VERSIONED_MANIFESTS)))",
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT } });
     expect(out.status, out.stderr).toBe(0);
     const manifests: string[] = JSON.parse(out.stdout);
     expect(manifests).toContain("packages/prism-coder/package.json");
