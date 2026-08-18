@@ -81,8 +81,15 @@ export function estimateTokens(text: string): number {
     // direction: an 84,953-char JSON payload estimated 25,744 tokens, cleared
     // the 32,768 gate, and was served by a model that silently discarded ~70%
     // of it and answered confidently from what was left. Overcounting only
-    // costs an unnecessary escalation. The divisors below sit 12-26% under the
-    // measured ratios so the estimate lands above the truth.
+    // costs an unnecessary escalation.
+    //
+    // These divisors do NOT guarantee an overcount, and an earlier version of
+    // this comment claimed they did. Measured against 22 real repo files, real
+    // TypeScript spans 1.57-3.82 chars/token and the estimate lands BELOW the
+    // truth for 12 of them (worst 0.51x). The divisors reduce how often and how
+    // far the estimate undercounts; the truncation detector in
+    // prismInferHandler is what makes a missed estimate safe, and it is floored
+    // on prompt LENGTH so it does not inherit these blind spots.
     const wsCount = (text.match(/\s/g) ?? []).length;
     const wsRatio = text.length > 0 ? wsCount / text.length : 1;
     const divisor =
@@ -102,9 +109,17 @@ export function estimateTokens(text: string): number {
     //
     // That is a deliberate limit, not an oversight. No character-based estimate
     // is safe across a 2x density spread, so the estimate is a ROUTING heuristic
-    // and the truncation detector in prismInferHandler is the actual guarantee:
-    // it keys on ollama collapsing prompt_eval_count to num_ctx/2, which is
-    // content-independent and therefore catches whatever this misjudges.
+    // and the truncation detector in prismInferHandler is what makes a miss safe.
+    //
+    // Precisely what the detector covers, since an earlier version of this
+    // comment overstated it: it fires on prompts of at least num_ctx/2
+    // CHARACTERS whose evaluated count lands on the collapse value. Flooring it
+    // on length rather than on this estimate is what decouples the two — while
+    // it was floored on the estimate its reach was capped at a 2x undercount,
+    // and a tab-separated table (4x undercount) was served a wrong answer from a
+    // truncated context with nothing recorded in attempts. It still cannot see
+    // a prompt shorter than num_ctx/2 characters, which no tokenizer can turn
+    // into num_ctx/2 tokens.
     const latinTokens = latinLen / divisor;
     const cjkTokens = cjkCount;          // ~1 token per CJK char
     const emojiTokens = emojiCount * 1.5; // ~1.5 BPE tokens per emoji
