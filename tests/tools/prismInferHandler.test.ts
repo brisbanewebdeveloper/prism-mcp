@@ -1813,9 +1813,15 @@ describe("a truncated prompt is never answered from the fragment", () => {
     // all evaluated at exactly 16386, against 28,310 for a 195,200-char prompt
     // that genuinely fit.
     const GB2 = 1024 ** 3;
-    // 80,000 chars of prose estimates ~20,000 tokens: it CLEARS the 32,768
-    // gate, which is the only situation where truncation can happen at all.
-    const big = "The quarterly reconciliation report was adjusted. ".repeat(1_600);
+    // 40,000 chars of prose estimates ~10,000 tokens. That number is chosen to
+    // land IN THE BLIND BAND the fix exists for: below num_ctx/2 (16,384) so the
+    // reverted `promptTokensEst >= halfCtx` guard would opt out, yet at least
+    // 16,384 CHARACTERS so the shipped `args.prompt.length >= halfCtx` guard
+    // fires. An earlier version of this test used 80,000 chars / ~20,000 est,
+    // which cleared BOTH conditions — so reverting the fix left the whole suite
+    // green, and the killer bug was reintroducible with no test red. Keep this
+    // under halfCtx tokens and over halfCtx chars or the mutation stops failing.
+    const big = "The quarterly reconciliation report was adjusted. ".repeat(800);
 
     function deps(overrides: Partial<InferDeps> = {}): InferDeps {
         return {
@@ -1860,8 +1866,10 @@ describe("a truncated prompt is never answered from the fragment", () => {
     });
 
     it("does NOT fire on a small prompt that happens to land on num_ctx/2", async () => {
-        // The guard requires the ESTIMATE to be far above the window too, so a
-        // legitimate half-window prompt is not mistaken for a truncated one.
+        // The guard requires at least num_ctx/2 CHARACTERS, so a short prompt
+        // that coincidentally evaluates near the collapse value is not mistaken
+        // for a truncated one — no tokenizer turns 14 characters into 16,386
+        // tokens.
         const r = await runInfer({ prompt: "short question", mode: "code", escalation: "report" }, deps({
             callLocal: async () => ({ ok: true as const, text: "fine", doneReason: "stop", promptTokens: 16_386 }),
         }));
