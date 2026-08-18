@@ -267,7 +267,8 @@ program
   .option('--dry-run', 'Preview configuration changes without writing files')
   .option('--refresh', 'Refresh only entries previously created by Prism; custom entries stay untouched')
   .option('--no-self-update', 'Skip the npm self-update check; configure with the currently installed version')
-  .action(async (options: { host?: string; all?: boolean; dryRun?: boolean; refresh?: boolean; selfUpdate?: boolean }) => {
+  .option('--no-models', 'Skip model convergence; keep whatever model versions are installed')
+  .action(async (options: { host?: string; all?: boolean; dryRun?: boolean; refresh?: boolean; selfUpdate?: boolean; models?: boolean }) => {
     try {
       // ── Converge the PACKAGE first, then the configs ──────────────
       // connect is the one command the operator runs to make a machine
@@ -489,6 +490,17 @@ program
       }
       if (!summary.usedApiKey) {
         console.log('PRISM_SYNALUX_API_KEY is not set; no Synalux subscription key was copied into new registrations.');
+      }
+      // ── Converge the MODELS last ────────────────────────────────
+      // selfUpdate above is the package half of convergence; without this
+      // half a machine kept vision-less models for four days after the
+      // registry carried the fix (2026-08-18), and `ollama cp` aliases are
+      // snapshots that silently detach from their source on every re-pull.
+      // Failures here never fail connect — runOllamaConverge reports and
+      // returns.
+      if (options.models !== false) {
+        const { runOllamaConverge } = await import('./modelConvergeRunner.js');
+        await runOllamaConverge({ dryRun: options.dryRun === true });
       }
     } catch (err) {
       console.error(`Connect failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1114,6 +1126,20 @@ scmCmd
       console.error(`DORA failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
+  });
+
+// ─── prism update-models ──────────────────────────────────────
+// Standalone model convergence: pull each installed prism-coder tier from
+// the registry and repair its local alias. connect runs this automatically;
+// this command is for updating models without touching host configuration.
+program
+  .command('update-models')
+  .description('Pull installed prism-coder models from the registry and repair stale local aliases')
+  .option('--dry-run', 'Print what would be pulled/re-aliased without executing')
+  .action(async (options: { dryRun?: boolean }) => {
+    const { runOllamaConverge } = await import('./modelConvergeRunner.js');
+    const outcomes = await runOllamaConverge({ dryRun: options.dryRun === true });
+    if (outcomes.every(o => o.action === 'failed')) process.exitCode = 1;
   });
 
 // ─── prism register-models ────────────────────────────────────
