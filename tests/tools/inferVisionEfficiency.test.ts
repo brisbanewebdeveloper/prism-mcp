@@ -149,7 +149,13 @@ describe("a paid caller is never handed an answer about an image the cloud never
         features: { ...ENT.features, cloud_fallback: true },
     };
 
-    it("refuses rather than escalating an IMAGE request to a text-only cloud", async () => {
+    it("serves an UNCERTAIN image request locally rather than escalating to a text-only cloud", async () => {
+        // Contract updated 2026-08-18: the property this test protects is that
+        // a paid caller is never handed a fabricated answer about an image the
+        // cloud never saw. The old mechanism was a refusal; the new one is
+        // stronger — serve LOCALLY from a model that DID see the image, with
+        // cloud pinned off for the whole call. Clinical pixels are safe
+        // on-device; the leak was only ever the cloud path.
         _setCacheForTest(PAID, 60_000);
         let cloudCalls = 0;
         const deps = makeDeps([], {
@@ -159,10 +165,49 @@ describe("a paid caller is never handed an answer about an image the cloud never
                 return { ok: true as const, output: "The image contains 42 lines.", backend: "anthropic" };
             }) as InferDeps["callCloud"],
         });
+        const r = await runInfer({ ...imageArgs(), cloud_fallback: true }, deps);
+        expect(r.used_cloud, "an image answer claimed a cloud that has no image channel").toBe(false);
+        expect(r.attempts?.some(a => a.reason === "layer1_uncertain_image_local_only"),
+               `attempts=${JSON.stringify(r.attempts)}`).toBe(true);
+        expect(cloudCalls, "sent an image request to a cloud path with no image channel").toBe(0);
+    });
+
+    it("refuses an IMAGE request when the classifier itself errored", async () => {
+        // callLayer1 maps ERROR to UNCERTAIN whenever images are present, so
+        // this branch is unreachable through the real classifier — which is
+        // exactly why it went untested and why reverting its guard left all
+        // 4126 tests green. If a caller injects a classifier that returns ERROR,
+        // nothing has looked at the image, so the answer is a refusal, not a
+        // fallthrough to the keyword backstop and a local answer.
+        _setCacheForTest(PAID, 60_000);
+        let cloudCalls = 0;
+        let localCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "ERROR" as const,
+            callCloud: (async () => { cloudCalls++; return { ok: true as const, output: "x", backend: "anthropic" }; }) as InferDeps["callCloud"],
+            callLocal: async () => { localCalls++; return { ok: true as const, text: "local", doneReason: "stop" }; },
+        });
         await expect(
             runInfer({ ...imageArgs(), cloud_fallback: true }, deps),
-        ).rejects.toThrow(/reserved content refused/);
-        expect(cloudCalls, "sent an image request to a cloud path with no image channel").toBe(0);
+        ).rejects.toThrow(/refused/);
+        expect(cloudCalls, "escalated an image to a text-only cloud").toBe(0);
+        expect(localCalls, "served an image locally that nothing had screened").toBe(0);
+    });
+
+    it("refuses an IMAGE request on ERROR with NO cloud at all — the free-tier half", async () => {
+        // The guard is deliberately not conditioned on allowCloud, and that half
+        // had no test: re-adding `allowCloud &&` to it left the full suite green.
+        // The case named in review is exactly this one — no cloud, ERROR verdict,
+        // images, clean keyword floor — where the backstop would previously have
+        // served it locally from an image nothing had screened.
+        _setCacheForTest(ENT, 60_000);          // cloud_fallback: false
+        let localCalls = 0;
+        const deps = makeDeps([], {
+            callLayer1: async () => "ERROR" as const,
+            callLocal: async () => { localCalls++; return { ok: true as const, text: "local", doneReason: "stop" }; },
+        });
+        await expect(runInfer(imageArgs(), deps)).rejects.toThrow(/refused/);
+        expect(localCalls, "served an unscreened image locally via the keyword backstop").toBe(0);
     });
 
     it("still escalates a TEXT request to cloud — the guard is about images only", async () => {

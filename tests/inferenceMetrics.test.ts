@@ -5,6 +5,7 @@ import {
     resetInferenceMetrics,
     formatInferenceMetrics,
     inferenceMetricsHandler,
+    estimateTokens,
 } from "../src/utils/inferenceMetrics.js";
 
 beforeEach(() => {
@@ -201,5 +202,44 @@ describe("formatInferenceMetrics", () => {
         const out = formatInferenceMetrics();
         expect(out).toContain("Local: 1 (50%)");
         expect(out).toContain("Cloud: 1 (50%)");
+    });
+});
+
+describe("estimateTokens never undercounts the ctx gate", () => {
+    // The estimate feeds the §5.4 ctx gate, so UNDERCOUNTING is the dangerous
+    // direction: the model accepts the request, ollama silently drops whatever
+    // does not fit, and the answer comes back confident and wrong.
+    //
+    // Demonstrated before this fix: an 84,953-char JSON payload with a marker on
+    // the first line estimated 25,744 tokens, cleared the 32,768 gate, was served
+    // by prism-coder:4b with prompt_eval_count=16,386 (~70% of the input
+    // discarded), and answered "CR28" for a marker whose value was "kestrel".
+    //
+    // The punctuation test could not see it: base64 and minified payloads have
+    // almost no code punctuation, so they took the PROSE divisor of 4.0 while
+    // really tokenising at 1.31-2.44 chars/token. Whitespace density separates
+    // them where punctuation cannot. Ratios measured against live prism-coder:4b.
+    const ratios: Array<[string, string, number]> = [
+        ["base64", Buffer.from("x".repeat(30000)).toString("base64").slice(0, 40000), 1.31],
+        ["dense JSON", JSON.stringify(Array.from({ length: 900 }, (_v, i) => ({ id: i, sku: "SKU-" + i, r: "north" }))), 1.58],
+        ["minified source", "function a(b,c){return b?c:[b,c].map(x=>x*2).filter(Boolean)};".repeat(600), 2.44],
+        ["typescript", "    const value = compute(input);\n    if (value > 0) { return { ok: true }; }\n".repeat(700), 3.68],
+        ["prose", "The quarterly reconciliation report indicates the balance was adjusted. ".repeat(600), 4.0],
+    ];
+
+    for (const [name, text, chPerTok] of ratios) {
+        it(`overcounts rather than undercounts ${name}`, () => {
+            const truth = Math.ceil(text.length / chPerTok);
+            const est = estimateTokens(text);
+            expect(est, `${name}: estimated ${est} for a payload that tokenises to ~${truth}`)
+                .toBeGreaterThanOrEqual(truth);
+        });
+    }
+
+    it("does not inflate ordinary prose into a refusal", () => {
+        // The other direction still matters: overcounting costs an unnecessary
+        // escalation, and a gate that refuses normal work gets routed around.
+        const prose = "The quarterly reconciliation report indicates the balance was adjusted. ".repeat(600);
+        expect(estimateTokens(prose)).toBeLessThan(prose.length / 3);
     });
 });

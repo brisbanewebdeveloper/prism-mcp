@@ -21,7 +21,7 @@ The canonical one-line description (keep every surface consistent with this):
 | mcp.so / PulseMCP | unverified | Check; submit only if registry syndication hasn't carried it |
 | `.well-known/mcp.json` | **not a real discovery spec** — verified against MCP docs | No action; do not invent the file |
 | Codex | no third-party directory exists (`openai/plugins` = examples only) | Hand out the two-liner (README/npm/site):<br>`codex plugin marketplace add dcostenco/prism-coder`<br>`codex plugin add synalux-prism@prism` |
-| Claude community marketplace | submitted, pending review; published listing snapshots the **form text** (measured: 4/5 approved plugins differ from repo at pinned SHA) | If listing shows old copy post-approval, amend via plugin review out-of-band |
+| Claude community marketplace | submitted 2026-08-06, **verified still pending 2026-08-18** in the Console status view (see below); the pending entry snapshots the pre-#128 form text as predicted | If listing shows old copy post-approval, amend via plugin review out-of-band |
 
 ## Paste-ready: `punkpeye/awesome-mcp-servers` (UPDATE the existing line)
 
@@ -37,6 +37,30 @@ badge pointed at a different server (dcostenco/BCBA)."
 ## Paste-ready: mcpservers.org/submit (covers wong2's list)
 
 Use the canonical description above; repo URL `https://github.com/dcostenco/prism-coder`.
+
+## Claude community submission — status mechanics (verified 2026-08-18)
+
+Walked end-to-end so nobody re-derives this:
+
+- **Status view for individual authors EXISTS**: Claude Console → your org →
+  **Plugin submissions**. Shows `synalux-prism — Submitted and pending review —
+  Aug 6`. (Reached from the Console UI; `platform.claude.com/plugins` as a
+  bare URL 404s — only `/plugins/submit` resolves directly, so navigate from
+  the Console, not by URL.)
+- **No confirmation email is sent** for individual submissions — an empty
+  inbox does NOT mean the submission was lost. The Console entry is the
+  receipt. (Two weeks were nearly written off as a lost submission on this
+  wrong assumption.)
+- The claude.ai path (`admin-settings/directory/submissions`) is
+  Team/Enterprise-only and rejects individual accounts.
+- Approved plugins land SHA-pinned in `anthropics/claude-plugins-community`
+  (nightly catalog sync, browsable at claude.com/plugins); the repo accepts
+  no direct PRs. `synalux-prism` is name-free there; bare `prism` is taken
+  by an unrelated plugin — irrelevant, but don't ever rename onto it.
+- Pre-flight for any resubmission: `claude plugin validate ./plugins/prism
+  --strict` (the pipeline runs the same check) — passed clean at 20.14.0.
+- **Do not submit a duplicate while one is pending** — the queue entry is
+  live; amend or wait instead.
 
 ## Paste-ready: amendment to Claude plugin review (submission shows old copy)
 

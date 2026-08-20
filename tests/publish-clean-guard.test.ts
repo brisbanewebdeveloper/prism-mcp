@@ -40,6 +40,33 @@ afterEach(() => {
   }
 });
 
+describe("versioned-manifest coverage", () => {
+  it("guards every manifest that a release bumps in lockstep", () => {
+    // The brand-alias package is published to npm and version-locked with
+    // prism-mcp-server, but was NOT in this list — a review of the 20.13.0
+    // staging caught it left a full release behind while every other manifest
+    // moved, which the guard would not have flagged. Pin it so it cannot fall
+    // out of coverage silently.
+    //
+    // Read via SUBPROCESS, not import(): a top-level import of this .mjs
+    // under vitest fails to parse on Windows — the exact failure mode the
+    // published-version guard below already documents — and the 20.13.0
+    // release reintroduced the import anyway, turning main's Windows CI red.
+    // The path travels via env, NOT argv: the script's IS_MAIN guard compares
+    // argv[1] to its own path, so passing it as an argument executes the full
+    // publish check against this repo (exit 1 on any released version).
+    const out = spawnSync(process.execPath, [
+      "-e",
+      "const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>console.log(JSON.stringify(m.VERSIONED_MANIFESTS)))",
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT } });
+    expect(out.status, out.stderr).toBe(0);
+    const manifests: string[] = JSON.parse(out.stdout);
+    expect(manifests).toContain("packages/prism-coder/package.json");
+    expect(manifests).toContain("plugins/prism/.codex-plugin/plugin.json");
+    expect(manifests).toContain("plugins/prism/.claude-plugin/plugin.json");
+  });
+});
+
 describe("npm publish cleanliness guard", () => {
   it("allows a release only when its artifact is reproducible from Git", () => {
     const result = runGuard(createCommittedRepo());
@@ -81,6 +108,7 @@ describe("private identifiers must not appear in tracked files", () => {
     "synalux" + "-private",
     "dcostencos" + "-projects",
     "bcba" + "-private",
+    "prism-aac" + "-internal",
     "/Users/" + "admin",
   ];
   const IGNORE = /package-lock\.json|\.github\/workflows\/ci\.yml|tests\/publish-clean-guard\.test\.ts/;

@@ -37,9 +37,17 @@ export function serverManifestVersionMismatches(packageJson, serverJson) {
  * — server.json was guarded, this was not. Any file listed here is held to
  * the same rule: if it declares a version, it must be package.json's.
  */
-const VERSIONED_MANIFESTS = [
+export const VERSIONED_MANIFESTS = [
   "plugins/prism/.codex-plugin/plugin.json",
   "plugins/prism/.claude-plugin/plugin.json",
+  // The brand-alias package, published to npm as `prism-coder` and version-
+  // locked in lockstep with prism-mcp-server. Every release commit bumps it, but
+  // nothing enforced that — a review of the 20.13.0 staging caught it still at
+  // 20.12.1 while every other manifest had moved, which would have shipped the
+  // `prism-coder` npm listing a full release behind (publish-prism-coder.yml
+  // reads its version and skips an already-published one). This is the exact
+  // drift this guard exists to stop, one file wider than it previously reached.
+  "packages/prism-coder/package.json",
 ];
 
 /**

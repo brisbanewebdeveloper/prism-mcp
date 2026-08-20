@@ -29,6 +29,8 @@
  *     - getHistory        → POST /api/v1/prism/memory  action=memory_history
  *     - patchLedger       → POST /api/v1/prism/memory  action=save_embedding
  *     - getEntriesMissingEmbeddings → POST /api/v1/prism/memory  action=list_missing_embeddings
+ *     - listProjects      → POST /api/v1/prism/memory  action=list_projects
+ *     - exportLedger      → POST /api/v1/prism/memory  action=export_memory (paginated)
  *
  *   Methods still falling through to SupabaseStorage (Phase 3 Tier B+):
  *   save_experience direct entrypoint, compactLedger, image ops,
@@ -546,6 +548,60 @@ export class SynaluxStorage extends SupabaseStorage {
     });
     const entries = Array.isArray(result.entries) ? result.entries : [];
     return entries as Array<{ id: string; summary: string; decisions?: string[]; project: string }>;
+  }
+
+  // ─── Project inventory + export ──────────────────────────────
+  // Both portal actions shipped in Phase 3 but the client was never
+  // wired: listProjects and the export path fell through to
+  // SupabaseStorage and threw "Supabase not configured" on every
+  // paid-tier install (2026-08-18 audit).
+
+  async listProjects(): Promise<string[]> {
+    const result = await this.portalPost("/api/v1/prism/memory", {
+      action: "list_projects",
+    });
+    // Strict on drift: a 200 without a projects ARRAY is a contract change,
+    // not "no projects" — the portal returns projects:[] for genuinely none.
+    // Coercing drift to [] would make callers report empty inventories while
+    // claiming success. (R1 adversarial review 2026-08-18.)
+    if (!Array.isArray(result.projects)) {
+      throw new Error("[SynaluxStorage] list_projects: portal response missing projects[] — contract drift");
+    }
+    return result.projects
+      .map((p: any) => (typeof p === "string" ? p : p?.project))
+      .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+  }
+
+  async exportLedger(project: string): Promise<unknown[]> {
+    // action=export_memory is paginated (EXPORT_PAGE_SIZE=1000). Follow
+    // next_offset until has_more is false, capped at 10 pages to match the
+    // local path's 10k-row OOM guard.
+    //
+    // Strict on drift (R1 adversarial review 2026-08-18): this feeds a
+    // BACKUP. A 200 missing ledger[] or page{} must throw, not degrade —
+    // coercing either would write an empty or silently-truncated export
+    // file that reports ✅ success, which is worse than any error.
+    const rows: unknown[] = [];
+    let offset = 0;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.portalPost("/api/v1/prism/memory", {
+        action: "export_memory",
+        project,
+        offset,
+        limit: 1000,
+      });
+      if (!Array.isArray(result.ledger)) {
+        throw new Error("[SynaluxStorage] export_memory: portal response missing ledger[] — contract drift");
+      }
+      const pageInfo = result.page as { has_more?: boolean; next_offset?: number | null } | undefined;
+      if (typeof pageInfo?.has_more !== "boolean") {
+        throw new Error("[SynaluxStorage] export_memory: portal response missing page.has_more — refusing a possibly-truncated export");
+      }
+      rows.push(...result.ledger);
+      if (!pageInfo.has_more || typeof pageInfo.next_offset !== "number") break;
+      offset = pageInfo.next_offset;
+    }
+    return rows;
   }
 
   // ─── Time Travel ─────────────────────────────────────────────

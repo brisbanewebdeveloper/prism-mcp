@@ -3093,12 +3093,24 @@ export async function sessionExportMemoryHandler(args: unknown) {
         [key: string]: unknown;
       } | null;
 
-      // Fetch full ledger (all non-deleted entries, capped at 10k as OOM guard)
-      const ledger = await storage.getLedgerEntries({
-        project: `eq.${project}`,
-        order: "created_at.asc",
-        limit: "10000",
-      }) as Array<{
+      // Fetch full ledger (all non-deleted entries, capped at 10k as OOM guard).
+      // Portal-backed installs export via action=export_memory (exportLedger);
+      // local/direct backends keep the getLedgerEntries assembly. Without this
+      // branch, paid thin-client installs threw "Supabase not configured" here.
+      const ledger = (typeof storage.exportLedger === "function"
+        ? await storage.exportLedger(project)
+        : await storage.getLedgerEntries({
+            project: `eq.${project}`,
+            // R1 adversarial review 2026-08-18: without this filter the
+            // direct/local paths exported TOMBSTONED rows — content the user
+            // had asked session_forget_memory to erase shipped in every
+            // backup (GDPR Art. 17 leak; the portal export always excluded
+            // them, so the two paths also disagreed). Both PostgREST and the
+            // sqlite filter parser support is.null.
+            deleted_at: "is.null",
+            order: "created_at.asc",
+            limit: "10000",
+          })) as Array<{
         id?: string;
         created_at?: string;
         event_type?: string;

@@ -80,7 +80,10 @@ type IntentRule = (prompt: string) => boolean;
 const has = (pattern: RegExp): IntentRule => (prompt) => pattern.test(prompt);
 const all = (...rules: IntentRule[]): IntentRule => (prompt) => rules.every((rule) => rule(prompt));
 
-const RESERVED_INTENT_RULES: readonly IntentRule[] = [
+/** Clinical intents. These fail closed FIRST and no exemption may override
+ *  them — a naming or schema edit must never be able to talk its way past
+ *  restraint, self-harm, suicide, medication or diagnosis. */
+const CLINICAL_RESERVED_RULES: readonly IntentRule[] = [
     all(
         has(/\b(?:de[- ]?escalat\w*|meltdown\w*|rage\s+episode|violent\w*)\b/i),
         has(/\b(?:draft|write|plan|procedure|protocol|manag\w*|what\s+(?:do|should)\b|respond\w*)\b/i),
@@ -101,6 +104,20 @@ const RESERVED_INTENT_RULES: readonly IntentRule[] = [
     ),
     has(/\b(?:suicid\w*|homicid\w*)\b/i),
     all(
+        has(/\b(?:medicat\w*|prescrib\w*|dos(?:e|age|ing))\b/i),
+        has(/\b(?:choose|recommend\w*|select|schedule|mg|how\s+much)\b/i),
+    ),
+    all(
+        has(/\b(?:diagnos\w*|icd[- ]?\d*)\b/i),
+        has(/\b(?:assign|choose|sign[- ]?off|approve|determine)\b/i),
+    ),
+];
+
+/** Operational intents — auth code, auth bypass, ship/deploy decisions, PHI
+ *  assessment. Reserved, but a documented non-operational artifact edit may
+ *  exempt them (see classifyDeterministicLayer1). */
+const OPERATIONAL_RESERVED_RULES: readonly IntentRule[] = [
+    all(
         has(/\b(?:write|implement|create|build|add|modify|update|fix|refactor)\b/i),
         has(/\b(?:auth\w*|login|jwt|tokens?|sessions?|api\s+keys?)\b/i),
         has(/\b(?:verify|verification|validat\w*|check\w*|middleware|handler)\b/i),
@@ -118,14 +135,11 @@ const RESERVED_INTENT_RULES: readonly IntentRule[] = [
         has(/\b(?:expos\w*|intercept\w*|leak\w*|access\w*)\b/i),
         has(/\b(?:phi|patient\s+(?:records?|data)|health\s+(?:records?|data))\b/i),
     ),
-    all(
-        has(/\b(?:medicat\w*|prescrib\w*|dos(?:e|age|ing))\b/i),
-        has(/\b(?:choose|recommend\w*|select|schedule|mg|how\s+much)\b/i),
-    ),
-    all(
-        has(/\b(?:diagnos\w*|icd[- ]?\d*)\b/i),
-        has(/\b(?:assign|choose|sign[- ]?off|approve|determine)\b/i),
-    ),
+];
+
+const RESERVED_INTENT_RULES: readonly IntentRule[] = [
+    ...CLINICAL_RESERVED_RULES,
+    ...OPERATIONAL_RESERVED_RULES,
 ];
 
 const ROUTINE_BCBA_INTENT_RULES: readonly IntentRule[] = [
@@ -171,6 +185,74 @@ function matchesAny(prompt: string, rules: readonly IntentRule[]): boolean {
     return rules.some((rule) => rule(prompt));
 }
 
+/**
+ * Human-readable name for each reserved rule, positionally aligned with the
+ * arrays above. Kept as a parallel list rather than folded into the rules so the
+ * rule definitions — which are the safety-critical part and are covered by the
+ * private Layer 1 evaluation gate — are not touched to add a label.
+ *
+ * A refusal that only says "reserved content refused" tells the caller nothing
+ * they can act on: not which of eleven rules fired, not whether it was clinical
+ * or operational, not what would let the request through. Naming the category
+ * costs nothing and turns a dead end into a decision.
+ */
+const CLINICAL_RESERVED_LABELS: readonly string[] = [
+    "behavioral crisis / de-escalation",
+    "physical restraint or containment",
+    "self-harm with injury indicators",
+    "aggression with prior-injury history",
+    "suicide or homicide",
+    "medication choice or dosing",
+    "diagnosis assignment or sign-off",
+];
+const OPERATIONAL_RESERVED_LABELS: readonly string[] = [
+    "auth / session / token code",
+    "auth-bypass assessment",
+    "ship, deploy or release decision",
+    "PHI exposure assessment",
+];
+
+// Positional alignment is load-bearing — a rule added without a label would
+// silently report the wrong category, which is worse than reporting none.
+if (CLINICAL_RESERVED_LABELS.length !== CLINICAL_RESERVED_RULES.length
+    || OPERATIONAL_RESERVED_LABELS.length !== OPERATIONAL_RESERVED_RULES.length) {
+    throw new Error(
+        "layer1: reserved rule/label arrays are out of sync — every rule needs a label",
+    );
+}
+
+/**
+ * Which reserved category a prompt trips, or null if none do.
+ *
+ * Reports the FIRST match in the same order classifyDeterministicLayer1 checks,
+ * so the label always names the rule that actually caused the refusal. Returns
+ * null for prompts the deterministic floor lets through — a refusal can still
+ * come from the semantic classifier, which has no per-rule attribution.
+ */
+export function reservedCategory(prompt: string): string | null {
+    for (let i = 0; i < CLINICAL_RESERVED_RULES.length; i++) {
+        if (CLINICAL_RESERVED_RULES[i](prompt)) return CLINICAL_RESERVED_LABELS[i];
+    }
+    // The artifact exemption sits BETWEEN the two groups in
+    // classifyDeterministicLayer1, and omitting it here made the label disagree
+    // with the verdict: "add numeric validation fields to the auth token
+    // verification handler" classifies OBVIOUS_NOT_RESERVED, while this reported
+    // "auth / session / token code". Harmless when the deterministic verdict is
+    // used directly, but the label is also read on paths that skip that fast
+    // path — prompts over MAX_CLASSIFIER_PROMPT_LENGTH, and image requests — so
+    // it could name a rule that did not fire.
+    if (
+        NON_OPERATIONAL_ARTIFACT_CONTEXT.test(prompt) &&
+        NON_OPERATIONAL_ARTIFACT_ACTION.test(prompt)
+    ) {
+        return null;
+    }
+    for (let i = 0; i < OPERATIONAL_RESERVED_RULES.length; i++) {
+        if (OPERATIONAL_RESERVED_RULES[i](prompt)) return OPERATIONAL_RESERVED_LABELS[i];
+    }
+    return null;
+}
+
 const NON_OPERATIONAL_ARTIFACT_CONTEXT =
     /(?:\b(?:test\s+fixture|fixture\s+label|unit\s+test|old\s+comment|fields?|columns?|labels?|filename|file\s+name|docs?|legal\s+(?:label|phrase|clause)|hook\s+order|dead\s+exports?|type\s+annotation|table\s+scan|add\s+index)\b|\/docs\/|\.[cm]?[jt]sx?\b)/i;
 const NON_OPERATIONAL_ARTIFACT_ACTION =
@@ -184,13 +266,29 @@ const NON_OPERATIONAL_ARTIFACT_ACTION =
  * null and continue to the semantic classifier below.
  */
 export function classifyDeterministicLayer1(userPrompt: string): Layer1Verdict | null {
-    if (matchesAny(userPrompt, RESERVED_INTENT_RULES)) return "OBVIOUS_RESERVED";
+    // The artifact exemption is checked BEFORE the reserved rules, and only for
+    // the non-clinical ones.
+    //
+    // Order was the bug: reserved-first meant "add auth_bypass as a test fixture
+    // label in the middleware test" matched the auth-bypass rule and returned
+    // OBVIOUS_RESERVED in 0ms, without the exemption ever being consulted. That
+    // is eval fixture C07, and it is the shape LAYER1_PROMPT itself describes as
+    // non-operational artifact work.
+    //
+    // Scoped to non-clinical rules deliberately. Letting a naming or schema edit
+    // override the CLINICAL rules would mean "add a restraint_duration field to
+    // the crisis form" escaping the restraint rule, and a wrong answer there
+    // costs more than an unnecessary escalation. Clinical intent still fails
+    // closed first, before anything can exempt it.
+    const clinicalReserved = matchesAny(userPrompt, CLINICAL_RESERVED_RULES);
+    if (clinicalReserved) return "OBVIOUS_RESERVED";
     if (
         NON_OPERATIONAL_ARTIFACT_CONTEXT.test(userPrompt) &&
         NON_OPERATIONAL_ARTIFACT_ACTION.test(userPrompt)
     ) {
         return "OBVIOUS_NOT_RESERVED";
     }
+    if (matchesAny(userPrompt, RESERVED_INTENT_RULES)) return "OBVIOUS_RESERVED";
     if (matchesAny(userPrompt, ROUTINE_BCBA_INTENT_RULES)) return "OBVIOUS_NOT_RESERVED";
     return null;
 }
@@ -413,11 +511,13 @@ export async function callLayer1(
     // question ("what is the last timestamp?") otherwise carries clinical
     // content past a classifier that only ever weighed the words.
     //
-    // Fails OPEN deliberately: a screen that errors or times out falls through
-    // to the classification below, which is exactly today's behaviour. Failing
-    // closed here would refuse every image request whenever Ollama hiccups, and
-    // an unusable gate gets disabled — but it does mean this adds protection
-    // only when the screen answers.
+    // Fails CLOSED. This comment used to say the opposite — that a screen which
+    // errors or times out falls through to the classification — and that was
+    // true of the first version. It is not true now: an unreadable screen
+    // escalates (see the "unknown" handling below). The stale sentence sat 20
+    // lines above the block that contradicted it, describing the security
+    // default incorrectly.
+    //
     // Sequential, deliberately. An earlier version started this concurrently
     // with the classification on the theory that two independent questions cost
     // max() rather than sum(). That was wrong: ollama serves vision with
@@ -455,26 +555,50 @@ export async function callLayer1(
         // Costs a call per image on an all-benign batch, and returns on the
         // first YES. Single-image requests, which are nearly all of them, are
         // unchanged.
+        // Bounded by CONSECUTIVE TIMEOUTS, not by a wall clock.
+        //
+        // A wall-clock budget was tried and reverted. It cannot tell a stalled
+        // server from a slow one, and at the advertised maximum of 8 images the
+        // legitimate work does not fit under any cap that also bounds a hang:
+        // screening one image measures 2.5-2.9s quiet, 3.4-4.2s with normal
+        // background activity and 4.1-5.9s beside a concurrent 9b generation,
+        // so eight of them take 24.6-29.8s. A 30s budget refused benign
+        // 8-image requests 5/5 where the previous commit served 4/5, and n=7
+        // refused 2/3. The gate was rejecting ordinary screenshots.
+        //
+        // The distinction that actually separates the two cases is whether calls
+        // ANSWER. A hung server fails every attempt; a loaded one answers
+        // slowly. So give each image the full per-call timeout, retry a blip as
+        // before, and stop at the FIRST image that stays unreadable — by then
+        // the server has already failed twice on it, and the verdict is unknown
+        // whatever the remaining images say, so screening them buys nothing.
+        //
+        // A hang therefore costs ~2 x 10s no matter how many images are
+        // attached, and slow-but-working work is never cut off part way.
         let sawUnknown = false;
         for (const image of images ?? []) {
-            const answer = await screenWithRetry([image]);
+            const answer = await screenWithRetry([image], 2);
             if (answer === "yes") return "yes";
-            if (answer === "unknown") sawUnknown = true;
+            if (answer === "unknown") { sawUnknown = true; break; }
         }
         return sawUnknown ? "unknown" : "no";
     }
 
-    async function screenWithRetry(batch: string[]): Promise<"yes" | "no" | "unknown"> {
-        // Two attempts, matching the classifier's budget. Giving the screen one
-        // attempt and the classifier two is what made "busy machine" a bypass.
-        for (let attempt = 0; attempt < 2; attempt++) {
-            const answer = await screenOnce(batch);
+    async function screenWithRetry(
+        batch: string[], attempts: number,
+    ): Promise<"yes" | "no" | "unknown"> {
+        // The retry is restored for every image, not just single-image
+        // requests. Dropping it for batches made one transient blip fatal to
+        // the whole request: a single 10s abort on image 1 of 8, with the other
+        // seven clean, refused where a retry recovered.
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const answer = await screenOnce(batch, LAYER1_IMAGE_TIMEOUT_MS);
             if (answer !== "unknown") return answer;
         }
         return "unknown";
     }
 
-    async function screenOnce(batch: string[]): Promise<"yes" | "no" | "unknown"> {
+    async function screenOnce(batch: string[], budgetMs: number): Promise<"yes" | "no" | "unknown"> {
         try {
             const res = await fetchImpl(`${ollamaUrl}/api/chat`, {
                 method: "POST",
@@ -486,7 +610,7 @@ export async function callLayer1(
                     think: false,
                     options: { num_predict: 8, temperature: 0 },
                 }),
-                signal: AbortSignal.timeout(LAYER1_IMAGE_TIMEOUT_MS),
+                signal: AbortSignal.timeout(budgetMs),
             });
             if (res.ok) {
                 const data = await res.json() as { message?: { content?: string } };

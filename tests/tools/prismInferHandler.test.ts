@@ -1799,3 +1799,80 @@ describe("runInfer — mode/think parameter", () => {
         expect(capturedUrl).toBe("http://localhost:11434");
     });
 });
+
+describe("a truncated prompt is never answered from the fragment", () => {
+    // The ctx gate is an estimate, and an estimate can be wrong for content
+    // nobody has measured. When it is wrong in the unsafe direction, ollama
+    // discards what does not fit and answers from the rest with a normal
+    // done_reason — the caller cannot tell.
+    //
+    // The response does carry a signal, but not the obvious one. prompt_eval_count
+    // does not saturate near num_ctx; it COLLAPSES to num_ctx/2, because ollama's
+    // context shift keeps half the window. Measured on prism-coder:4b at num_ctx
+    // 32768: prose 432,000 chars, base64 300,000, JSON 159,392 and code 390,000
+    // all evaluated at exactly 16386, against 28,310 for a 195,200-char prompt
+    // that genuinely fit.
+    const GB2 = 1024 ** 3;
+    // 40,000 chars of prose estimates ~10,000 tokens. That number is chosen to
+    // land IN THE BLIND BAND the fix exists for: below num_ctx/2 (16,384) so the
+    // reverted `promptTokensEst >= halfCtx` guard would opt out, yet at least
+    // 16,384 CHARACTERS so the shipped `args.prompt.length >= halfCtx` guard
+    // fires. An earlier version of this test used 80,000 chars / ~20,000 est,
+    // which cleared BOTH conditions — so reverting the fix left the whole suite
+    // green, and the killer bug was reintroducible with no test red. Keep this
+    // under halfCtx tokens and over halfCtx chars or the mutation stops failing.
+    const big = "The quarterly reconciliation report was adjusted. ".repeat(800);
+
+    function deps(overrides: Partial<InferDeps> = {}): InferDeps {
+        return {
+            freemem: () => 40 * GB2,
+            listTags: async () => new Set(["prism-coder:4b"]),
+            listLoaded: async () => new Set<string>(),
+            probeVision: async () => false,
+            probeNumCtx: async () => 32_768,
+            callLocal: async () => ({ ok: true as const, text: "answer from a fragment", doneReason: "stop", promptTokens: 16_386 }),
+            callCloud: async () => ({ ok: false as const, reason: "no_cloud" }),
+            ollamaUrl: "http://x",
+            callLayer1: async () => "OBVIOUS_NOT_RESERVED" as const,
+            ...overrides,
+        } as InferDeps;
+    }
+
+    it("refuses rather than serving an answer built from half the window", async () => {
+        // The tier is abandoned, so with no larger tier available the request
+        // fails loudly instead of returning "answer from a fragment".
+        await expect(
+            runInfer({ prompt: big, mode: "code" }, deps()),
+        ).rejects.toThrow(/no backend produced output/);
+    });
+
+    it("records WHY it was abandoned, so the refusal is diagnosable", async () => {
+        let seen: string[] = [];
+        try {
+            await runInfer({ prompt: big, mode: "code" }, deps());
+        } catch (e) {
+            seen = ((e as { attempts?: Array<{ reason: string }> }).attempts ?? []).map(a => a.reason);
+        }
+        expect(seen.some(r => r.startsWith("input_truncated:")),
+            `attempts were ${JSON.stringify(seen)}`).toBe(true);
+    });
+
+    it("does NOT fire when the evaluated count is nowhere near half", async () => {
+        // A prompt that genuinely fits must still be served.
+        const r = await runInfer({ prompt: big, mode: "code", escalation: "report" }, deps({
+            callLocal: async () => ({ ok: true as const, text: "real answer", doneReason: "stop", promptTokens: 28_310 }),
+        }));
+        expect(r.output).toContain("real answer");
+    });
+
+    it("does NOT fire on a small prompt that happens to land on num_ctx/2", async () => {
+        // The guard requires at least num_ctx/2 CHARACTERS, so a short prompt
+        // that coincidentally evaluates near the collapse value is not mistaken
+        // for a truncated one — no tokenizer turns 14 characters into 16,386
+        // tokens.
+        const r = await runInfer({ prompt: "short question", mode: "code", escalation: "report" }, deps({
+            callLocal: async () => ({ ok: true as const, text: "fine", doneReason: "stop", promptTokens: 16_386 }),
+        }));
+        expect(r.output).toContain("fine");
+    });
+});

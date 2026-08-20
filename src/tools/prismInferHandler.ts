@@ -45,7 +45,7 @@ import {
     passesCodingQualityGate,
 } from "../utils/codingQualityPolicy.js";
 import { checkInputSafety, checkOutputSafety } from "../utils/safetyGate.js";
-import { callLayer1 as defaultCallLayer1, keywordBackstop, type Layer1Verdict } from "../utils/layer1.js";
+import { callLayer1 as defaultCallLayer1, keywordBackstop, reservedCategory, type Layer1Verdict } from "../utils/layer1.js";
 import { recordInference, recordThinkOnlyRetry, formatInferenceMetrics, estimateTokens } from "../utils/inferenceMetrics.js";
 import { appendInferMetric } from "../storage/inferMetricsLedger.js";
 import { getStorage } from "../storage/index.js";
@@ -695,6 +695,111 @@ export async function tiersSupportingVision(
     return keep;
 }
 
+/**
+ * Effective context window for a tag, read from the model itself.
+ *
+ * MODEL_TIERS.ctxTokens is a MIRROR of each Modelfile's `num_ctx`, and a mirror
+ * goes stale silently. It did: the 2026-08-14 vision push republished
+ * prism-coder:9b with no PARAMETER lines at all, so the table kept declaring
+ * 4_096 while Ollama granted its own larger default. The §5.4 gate then refused
+ * that tier — and the 27b above it — for prompts it demonstrably serves,
+ * measured at 18,575 tokens answered rather than truncated, and fell through to
+ * 4b/2b instead.
+ *
+ * `/api/show` returns the pinned value under `parameters` when the Modelfile
+ * declares one. Measured across the fleet:
+ *
+ *   prism-coder:4b   num_ctx 32768   pinned
+ *   prism-coder:2b   num_ctx 32768   pinned
+ *   prism-coder:27b  num_ctx  4096   pinned
+ *   prism-coder:9b   ABSENT          <- exactly the tag whose packaging broke
+ *
+ * So the live read is authoritative wherever packaging is intact, and reports
+ * nothing precisely where it is not. Returning null on absence lets the caller
+ * keep the conservative table value, which keeps the failure mode fail-SAFE: an
+ * unpinned tier is under-declared and merely loses work, instead of being
+ * over-declared and silently truncating a prompt.
+ *
+ * `model_info["<arch>.context_length"]` is deliberately NOT used as a fallback.
+ * That is the architecture's maximum — 262144 for qwen35 — not what the runtime
+ * grants, and trusting it would turn every unpinned tier fail-open.
+ *
+ * Adopting scripts/prism-coder-9b.Modelfile therefore unlocks the 9b on its own,
+ * with no code change and no second edit to remember.
+ */
+/** Per (model, hasSystem) prompt overhead, measured once per process.
+ *  Negative results are cached too: an unreachable endpoint must cost one
+ *  timeout per model, not one per request. */
+const templateOverheadCache = new Map<string, number | null>();
+
+/**
+ * What the chat template costs before the user's prompt begins.
+ *
+ * This was a literal 64. Measured on prism-coder:4b and :2b, a ONE-CHARACTER
+ * prompt with no system message evaluates to 1,111 tokens — the Modelfile bakes
+ * a ~4.4 KB SYSTEM block that applies only when the caller supplies none. With a
+ * system message it is 22.
+ *
+ * So on the common path the ctx gate was short by 1,047 tokens, content
+ * independently — 27% of a 4,096-token window consumed before anything the user
+ * wrote. That is a larger systematic error than any of the density work above,
+ * and it is a constant, not a guess: one tiny call per model per shape measures
+ * it exactly.
+ *
+ * Returns null when unprobeable, and the caller keeps the old literal — an
+ * unmeasurable overhead must not become a zero.
+ */
+export async function probeTemplateOverhead(
+    url: string, model: string, hasSystem: boolean,
+): Promise<number | null> {
+    const key = `${model}::${hasSystem}`;
+    if (templateOverheadCache.has(key)) return templateOverheadCache.get(key) ?? null;
+    try {
+        const messages = hasSystem
+            ? [{ role: "system", content: "s" }, { role: "user", content: "x" }]
+            : [{ role: "user", content: "x" }];
+        const res = await fetch(`${url}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model, messages, stream: false, think: false,
+                options: { num_predict: 1, temperature: 0 },
+            }),
+            // Short, because this must never gate a request: a live ollama
+            // answers a one-character prompt in milliseconds, and anything
+            // slower is better served by the literal fallback than by waiting.
+            signal: AbortSignal.timeout(1_500),
+        });
+        if (!res.ok) { templateOverheadCache.set(key, null); return null; }
+        const data = (await res.json()) as { prompt_eval_count?: number };
+        const n = data.prompt_eval_count;
+        if (!Number.isFinite(n) || (n as number) <= 0) { templateOverheadCache.set(key, null); return null; }
+        templateOverheadCache.set(key, n as number);
+        return n as number;
+    } catch {
+        templateOverheadCache.set(key, null);
+        return null;
+    }
+}
+
+export async function probeNumCtx(url: string, model: string): Promise<number | null> {
+    try {
+        const res = await fetch(`${url}/api/show`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model }),
+            signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { parameters?: string };
+        const m = /^\s*num_ctx\s+(\d+)\s*$/m.exec(data.parameters ?? "");
+        const n = m ? Number(m[1]) : NaN;
+        return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+        return null; // unreachable or unparseable -> fall back to the table
+    }
+}
+
 /** Default vision probe: /api/show reports capabilities for the local model. */
 export async function probeVision(url: string, model: string): Promise<boolean> {
     const res = await fetch(`${url}/api/show`, {
@@ -771,13 +876,40 @@ export async function callOllamaGenerate(
  */
 export class ReservedRefusalError extends Error {
     readonly refusal_reason = "layer1_reserved";
-    constructor(verdict: string, public readonly attempts: Array<{ tier: string; reason: string }>) {
-        super(`prism_infer: Layer 1 verdict=${verdict}, reserved content refused. attempts=${JSON.stringify(attempts)}`);
+    constructor(
+        verdict: string,
+        public readonly attempts: Array<{ tier: string; reason: string }>,
+        public readonly category: string | null = null,
+        cloudWasAllowed = false,
+    ) {
+        // Say what tripped and what would change the outcome.
+        //
+        // The old message named the verdict and nothing else, which left a
+        // caller with no way to tell an over-broad keyword match from a genuine
+        // clinical refusal, and no idea that escalation was even an option. That
+        // matters most in the configuration this most often hits: a host told to
+        // pass cloud_fallback: false meets a gate that forbids answering
+        // locally, so reserved content can ONLY refuse — correctly, but with no
+        // stated way forward.
+        const what = category ? `category="${category}"` : "matched the semantic classifier";
+        const remedy = cloudWasAllowed
+            ? "Cloud escalation was permitted and did not produce an answer; see attempts."
+            : "Reserved content is never answered by a local model. Pass cloud_fallback: true "
+              + "to escalate to a stronger model, or answer it in the host thread instead.";
+        super(
+            `prism_infer: Layer 1 verdict=${verdict}, ${what} — reserved content refused. `
+            + `${remedy} attempts=${JSON.stringify(attempts)}`,
+        );
         this.name = "ReservedRefusalError";
     }
 }
 
-function makeReservedRefusal(verdict: string, attempts: Array<{ tier: string; reason: string }>): ReservedRefusalError {
+function makeReservedRefusal(
+    verdict: string,
+    attempts: Array<{ tier: string; reason: string }>,
+    category: string | null = null,
+    cloudWasAllowed = false,
+): ReservedRefusalError {
     // Ledger the refusal (fire-and-forget). No prompt content is persisted —
     // same HIPAA posture as the safety_gate exclusion. gate_outcome mirrors
     // the §5.2 report-mode row so refusal queries see both modes.
@@ -786,7 +918,7 @@ function makeReservedRefusal(verdict: string, attempts: Array<{ tier: string; re
         gate_outcome: "refused",
         refusal_reason: "layer1_reserved",
     });
-    return new ReservedRefusalError(verdict, attempts);
+    return new ReservedRefusalError(verdict, attempts, category, cloudWasAllowed);
 }
 
 interface CloudResult {
@@ -1036,6 +1168,10 @@ export interface InferDeps {
     entitlements?: PrismEntitlements;
     /** Injectable vision probe for testing. Defaults to probeVision (/api/show). */
     probeVision?: (url: string, model: string) => Promise<boolean>;
+    /** Injectable context probe for testing. Defaults to probeNumCtx (/api/show). */
+    probeNumCtx?: (url: string, model: string) => Promise<number | null>;
+    /** Injectable template-overhead probe; defaults to probeTemplateOverhead. */
+    probeTemplateOverhead?: typeof probeTemplateOverhead;
     /** Injectable Layer 1 classifier for testing. Defaults to callLayer1 from layer1.ts. */
     callLayer1?: (userPrompt: string, ollamaUrl: string, model: string, fetchImpl?: typeof fetch, images?: string[]) => Promise<Layer1Verdict>;
 }
@@ -1191,7 +1327,9 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const maxTokens = cloudMaxTokens;
 
     // Cloud fallback only for paid plans
-    const allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
+    // let, not const: the reserved-image branch pins this off mid-call so no
+    // later escalation path can carry even the prompt text off-device.
+    let allowCloud = args.cloud_fallback === true && ent.features.cloud_fallback;
 
     // Verification only for paid plans (free users skip L3 grounding)
     const canVerify = ent.features.grounding_verifier;
@@ -1210,7 +1348,10 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
     const verificationGatedArgs = canVerify
         ? args
         : { ...args, verify: false, evidence: undefined };
-    const gatedArgs = canUsePrivateRouteGuard
+    // let, not const: re-pinned below once images are resolved — an image
+    // request must not leave the device through ANY channel, including the
+    // paid ones this gate would otherwise leave enabled.
+    let gatedArgs = canUsePrivateRouteGuard
         ? verificationGatedArgs
         : { ...verificationGatedArgs, route_guard: "local" as const };
 
@@ -1301,6 +1442,20 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // fail open: the original images are still in resolvedImages
         }
     }
+    if (resolvedImages?.length) {
+        // Adversarial review R1 (2026-08-18): serving image requests locally is
+        // not enough — two paid side doors still carried content DERIVED from
+        // the pixels off-device. The Synalux route guard POSTs the prompt and
+        // the draft; the Synalux grounding verifier POSTs the draft and the
+        // evidence. A draft written by a model that just read a clinical
+        // screenshot can quote it. Pin both local for EVERY image request, not
+        // just reserved-flagged ones: the content screen is FN-porous by
+        // design, so a clean screen is not a leak clearance. Text-only
+        // requests keep both features.
+        const wouldVerify = gatedArgs.verify ?? ((gatedArgs.evidence?.length ?? 0) > 0);
+        if (wouldVerify) attempts.push({ tier: "verifier", reason: "verifier_skipped_images_stay_local" });
+        gatedArgs = { ...gatedArgs, route_guard: "local" as const, verify: false };
+    }
     if (installed && !layer1RecursionGuard) {
         const l1fn = deps.callLayer1 ?? defaultCallLayer1;
         const l1Model = resolveOllamaName("prism-coder:4b", installed);
@@ -1330,7 +1485,28 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
         }
         // 4th arg is fetchImpl (default), 5th is the images the classifier must see.
         const l1 = await l1fn(args.prompt, deps.ollamaUrl, l1Model, undefined, resolvedImages);
-        if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
+        // Null when the deterministic floor did not fire — the verdict then came
+        // from the semantic classifier, which has no per-rule attribution.
+        const reservedCat = reservedCategory(args.prompt);
+        if ((l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN")
+            && (resolvedImages?.length ?? 0) > 0) {
+            // Clinical images are PROCESSED, never refused (ruling 2026-08-18:
+            // the standard BCBA role works from scanned assessments and
+            // screenshots — locally, or via the sanctioned prism cloud once it
+            // has an image channel). Local inference is exactly where that
+            // content is SAFE: nothing leaves the device. Refusing here broke
+            // screenshot verification and assessment work for the clinical
+            // enterprise tiers that need it most, while the actual no-leak
+            // property — images never reach unsanctioned cloud — is enforced
+            // architecturally either way. Serve locally with cloud pinned off
+            // for the rest of the call. No text-policy bypass results: an
+            // image-carrying request is STRICTER than the same words without
+            // one (local-only), so attaching an image can only reduce
+            // exposure. The verdict stays in attempts for the audit trail.
+            debugLog(`[prism_infer] Layer 1 verdict=${l1} with images — serving locally, cloud disabled for this call`);
+            attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}_image_local_only` });
+            allowCloud = false;
+        } else if (l1 === "OBVIOUS_RESERVED" || l1 === "UNCERTAIN") {
             debugLog(`[prism_infer] Layer 1 verdict=${l1} — reserved content detected`);
             attempts.push({ tier: "layer1", reason: `layer1_${l1.toLowerCase()}` });
             // Images never leave the device, and callCloud has no image channel
@@ -1347,7 +1523,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
                 attempts.push({ tier: "synalux", reason: "reserved_escalation_refused_images_stay_local" });
                 if (wantReport) return refusedResult("layer1_reserved");
-                throw makeReservedRefusal(l1, attempts);
+                throw makeReservedRefusal(l1, attempts, reservedCat, true);
             }
             if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
@@ -1362,7 +1538,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                     if (weakBackend) {
                         attempts.push({ tier: "synalux", reason: `reserved_weak_backend:${cloud.backend}` });
                         if (wantReport) return refusedResult("layer1_reserved");
-                        throw makeReservedRefusal(l1, attempts);
+                        throw makeReservedRefusal(l1, attempts, reservedCat, true);
                     }
                     return await applyVerification(cloud.output, gatedArgs, deps, {
                         backend: cloud.backend ?? "synalux",
@@ -1379,7 +1555,7 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 attempts.push({ tier: "synalux", reason: cloud.reason ?? "unknown" });
             }
             if (wantReport) return refusedResult("layer1_reserved");
-            throw makeReservedRefusal(l1, attempts);
+            throw makeReservedRefusal(l1, attempts, reservedCat, allowCloud);
         }
         if (l1 === "UNCERTAIN_LENGTH") {
             // §5.3: prompt too long to classify in full, but the full-text
@@ -1399,9 +1575,19 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // cloud never saw. callLayer1 maps ERROR to UNCERTAIN when images are
             // present, so this should be unreachable in production — it is here
             // so the invariant holds for every caller, including injected ones.
-            if (allowCloud && (resolvedImages?.length ?? 0) > 0) {
+            // Refuses rather than annotating and falling through. The first
+            // version pushed this attempt and then continued to the keyword
+            // backstop, so a clean prompt went on to be served locally from an
+            // image nothing had screened — an audit trail that recorded a
+            // refusal for a request that was answered. If the classifier failed
+            // AND we cannot escalate an image, there is nothing left that has
+            // looked at the picture.
+            if ((resolvedImages?.length ?? 0) > 0) {
                 attempts.push({ tier: "synalux", reason: "error_escalation_refused_images_stay_local" });
-            } else if (allowCloud) {
+                if (wantReport) return refusedResult("layer1_error");
+                throw makeReservedRefusal(l1, attempts);
+            }
+            if (allowCloud) {
                 const cloudTimeout = args.timeout_ms ?? 90_000;
                 const cloud = await deps.callCloud(args.prompt, maxTokens, cloudTimeout);
                 if (cloud.ok && cloud.output) {
@@ -1636,20 +1822,56 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
             // prompt+output ≤ ctx would make a max_tokens=4096 request
             // unroutable to the 4096-ctx tiers even for tiny prompts.
             // ctxTokens mirrors the live Modelfile values (see MODEL_TIERS).
-            const CTX_TEMPLATE_MARGIN = 64;
             // effectiveSystem, not args.system: the default vision prompt is 46
-            // estimated tokens and the model is charged for them, so an estimate
-            // built from args.system spends most of the 64-token margin without
-            // knowing. This narrows the usable prompt on the 4096-ctx tiers from
-            // 1032 to 986 tokens — about 184 characters — so a request near that
-            // edge now degrades to a 32k-ctx tier it previously squeaked past.
-            // That is the honest number, not a new class of failure: the same
-            // cliff already existed 184 characters further along.
-            const promptTokensEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
-                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0)
-                + CTX_TEMPLATE_MARGIN;
-            if (promptTokensEst > tier.ctxTokens) {
-                attempts.push({ tier: tier.tag, reason: "ctx_insufficient" });
+            // estimated tokens and the model is charged for them.
+            const promptBodyEst = estimateImageTokens(resolvedImages?.length ?? 0) + estimateTokens(args.prompt)
+                + (effectiveSystem ? estimateTokens(effectiveSystem) : 0);
+            // Prefer what the model reports over what the table remembers. A
+            // tag with a pinned num_ctx is authoritative; one without keeps the
+            // table's conservative value, so an unpinned tier can only LOSE work,
+            // never silently truncate. See probeNumCtx.
+            // Wrapped, not just trusted. The default probeNumCtx catches its own
+            // failures, but an INJECTED probe (tests, or a future variant) may
+            // throw — and an exception here would abort the whole tier walk on a
+            // diagnostic lookup, turning "could not read num_ctx" into a failed
+            // request. Same fail-safe the eviction and vision probe sites use:
+            // unprobeable means fall back to the table, never unlock.
+            let liveCtx: number | null = null;
+            try {
+                liveCtx = await (deps.probeNumCtx ?? probeNumCtx)(deps.ollamaUrl, ollamaName);
+            } catch {
+                liveCtx = null;
+            }
+            const effectiveCtx = liveCtx ?? tier.ctxTokens;
+
+            // The chat template overhead. 64 was budgeted for what is really
+            // ~1,111 tokens on 4b/2b when no system message is supplied (the
+            // Modelfile's baked SYSTEM block). But that precision only matters
+            // near the ceiling: a prompt with room to spare fits whether the
+            // margin is 64 or 1,200, so probing then would be a network call
+            // that cannot change the decision — and it timed out the Windows CI
+            // when unit tests reached this path without stubbing it.
+            //
+            // So probe ONLY when the worst-case overhead could flip the gate,
+            // and use the safe literal otherwise. The probe is per (model,
+            // shape) and cached, including negatives.
+            const MAX_TEMPLATE_OVERHEAD = 1_300;
+            let CTX_TEMPLATE_MARGIN = 64;
+            if (promptBodyEst + MAX_TEMPLATE_OVERHEAD > effectiveCtx) {
+                const probed = await (deps.probeTemplateOverhead ?? probeTemplateOverhead)(
+                    deps.ollamaUrl, ollamaName, effectiveSystem != null,
+                );
+                if (probed != null) CTX_TEMPLATE_MARGIN = probed;
+            }
+            const promptTokensEst = promptBodyEst + CTX_TEMPLATE_MARGIN;
+
+            if (promptTokensEst > effectiveCtx) {
+                attempts.push({
+                    tier: tier.tag,
+                    reason: liveCtx && liveCtx !== tier.ctxTokens
+                        ? `ctx_insufficient:live_${liveCtx}`
+                        : "ctx_insufficient",
+                });
                 continue;
             }
             if (visionOk && !visionOk.has(ollamaName)) {
@@ -1679,6 +1901,75 @@ export async function runInfer(args: PrismInferArgs, deps: InferDeps): Promise<P
                 );
             }
             if (result.ok) {
+                // Did ollama silently drop part of the prompt?
+                //
+                // The ctx gate above is an ESTIMATE, and an estimate can be
+                // wrong for content nobody has measured yet. When it is wrong in
+                // the unsafe direction the request is accepted, ollama discards
+                // whatever does not fit, and the answer comes back confident and
+                // wrong with a normal done_reason.
+                //
+                // My first attempt at detecting this looked for prompt_eval_count
+                // SATURATING near num_ctx, found it did not, and concluded the
+                // response carried no signal. That was wrong: it does not
+                // saturate, it COLLAPSES to num_ctx/2 — ollama's context shift
+                // keeps half the window. Measured on prism-coder:4b (num_ctx
+                // 32768), evaluated tokens for four unrelated content types:
+                //
+                //   prose 432,000 chars -> 16386      base64 300,000 -> 16386
+                //   JSON  159,392       -> 16386      code   390,000 -> 16386
+                //
+                // Exactly 16386 every time, against 28,310 for a 195,200-char
+                // prompt that genuinely fit. The collapse IS the signal.
+                //
+                // Guarded on EXACTNESS, not on size. The first version of this
+                // check required the estimate to exceed num_ctx — which the ctx
+                // gate above already refuses, so it could never fire. Dead code
+                // that reads like a safety net is worse than none; its own test
+                // is what caught it.
+                //
+                // The reachable case is precisely the one the gate cannot see:
+                // the estimate came in UNDER the window while the truth was over
+                // it. So the trigger is the arithmetic signature — evaluated
+                // landing within a few tokens of exactly num_ctx/2 — plus a floor
+                // saying we sent at least half a window, so a short prompt is
+                // never a candidate. Landing on that exact value by coincidence
+                // is a ~0.05% event for any single call.
+                // The floor is CHARACTERS, not the estimate. Gating this on
+                // promptTokensEst made the detector a consumer of the very
+                // number it exists to backstop, and capped its reach at a 2x
+                // undercount: past 2x the estimate falls below num_ctx/2 and the
+                // check declines to fire. The bug that started this was a 3.05x
+                // undercount, so the detector would never have caught it.
+                //
+                // Measured on this branch before the change — a tab-separated
+                // table (17.9% whitespace, no code punctuation, so it takes the
+                // PROSE divisor while really tokenising near 1.0 chars/token):
+                //
+                //   27,222 chars  est  6,806  -> served "kestrel"   correct
+                //   36,993 chars  est  9,249  -> served "kestrel"   correct
+                //   46,993 chars  est 11,749  -> served "ok"        WRONG
+                //
+                // The last one is the original failure exactly: marker on line 1,
+                // truncated away, answered confidently from what survived, and
+                // no input_truncated in attempts.
+                //
+                // No tokenizer emits more than one token per character, so a
+                // prompt with fewer than num_ctx/2 characters cannot possibly
+                // have num_ctx/2 tokens. Flooring on length is therefore sound
+                // and strictly more permissive — it keeps short prompts out
+                // without inheriting the estimate's blind spots.
+                const halfCtx = liveCtx != null ? Math.floor(liveCtx / 2) : null;
+                const looksTruncated = halfCtx != null
+                    && result.promptTokens != null
+                    && Math.abs(result.promptTokens - halfCtx) <= 8
+                    && args.prompt.length >= halfCtx;
+                if (looksTruncated) {
+                    debugLog(`[prism_infer] ${tier.tag} evaluated ${result.promptTokens} tokens ≈ num_ctx/2 on a ${promptTokensEst}-token estimate — prompt was truncated`);
+                    attempts.push({ tier: tier.tag, reason: `input_truncated:${result.promptTokens}_of_${liveCtx}` });
+                    continue;   // abandon this tier rather than answer from a fragment
+                }
+
                 let { stripped, thinkOnly } = stripThink(result.text);
                 let output = stripped;
 
