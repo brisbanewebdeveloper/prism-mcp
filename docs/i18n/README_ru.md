@@ -724,6 +724,12 @@ Every conversation feeds a persistent store. The next session loads the right co
 
 The dashboard shows your current project state, pending TODOs, intent health, and a neural knowledge graph — all built automatically from your agent sessions.
 
+It runs on loopback and is gated by a per-startup token by default — open the
+tokenized URL printed in the startup log (`http://localhost:3000/?token=…`).
+Requests with an untrusted `Host`/`Origin` are refused, closing the DNS-rebinding
+exposure fixed in GHSA-9cvx-7x8q-3g6m. See [docs/IDE_SETUP.md](../IDE_SETUP.md#securing-the-dashboard)
+to pin the token, disable it, or configure Basic Auth / JWKS.
+
 ### Export — read the record outside the agent
 
 `session_export_memory` writes your memory out as plain files you can read,
