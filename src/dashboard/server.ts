@@ -35,6 +35,7 @@ import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { redactSettings } from "../tools/commonHelpers.js";
 import { handleGraphRoutes } from "./graphRouter.js";
 import { isDashboardSettingKeyAllowed, isDashboardSettingValueAllowed } from "./settingsPolicy.js";
+import { isTrustedRequest, isRebindGuardedPath } from "./hostGuard.js";
 import {
   safeCompare,
   generateToken,
@@ -222,6 +223,26 @@ return false;}
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       return res.end();
+    }
+
+    // ─── SECURITY: Host / Origin allow-list (GHSA-9cvx-7x8q-3g6m) ───
+    // Reject DNS-rebinding requests before any sensitive route runs, independent
+    // of AUTH_ENABLED. A rebound browser reaches this loopback server carrying an
+    // attacker-controlled Host/Origin; only a trusted local name or the operator-
+    // configured PRISM_DASHBOARD_ORIGIN may be served the memory API / MCP
+    // transport. The public Smithery manifest (/.well-known/...) is intentionally
+    // left out of scope — it exposes no session data.
+    if (
+      isRebindGuardedPath(req.url) &&
+      !isTrustedRequest(
+        { host: req.headers.host, origin: req.headers.origin },
+        { configuredOrigin: process.env.PRISM_DASHBOARD_ORIGIN },
+      )
+    ) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({ error: "Forbidden: untrusted Host or Origin (possible DNS rebinding)" }),
+      );
     }
 
     // ─── v5.1: Auth login endpoint (always accessible) ───
