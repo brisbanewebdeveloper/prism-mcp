@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -119,7 +119,7 @@ describe("the leak guard blocks what it claims to block", () => {
         // \b and \s match nothing. The guard must refuse to run, not report clean.
         const repo = repoWith({ "docs/models.md": "fine-tuned with LoRA (r" + "=128)\n" });
         const script = resolve(repo, "scripts/check-no-private-content.mjs");
-        const src = execFileSync("cat", [script], { encoding: "utf8" });
+        const src = readFileSync(script, "utf8");
         writeFileSync(script, src.replaceAll('"-lIiP"', '"-lIiE"'));
 
         const r = run(repo);
