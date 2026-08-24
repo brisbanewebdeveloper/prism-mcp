@@ -436,10 +436,16 @@ The Mind Palace dashboard launches automatically alongside the MCP server.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Port | `3000` | Override with `PRISM_DASHBOARD_PORT` |
-| URL | `http://localhost:3000` | |
-| Auth | Disabled | See below for auth options |
+| URL | `http://localhost:3000/?token=…` | Tokenized URL printed to the startup log |
+| Access | Loopback-only + per-startup token | Host/Origin-validated; see below |
 
-Open `http://localhost:3000` (or your configured port) in a browser.
+**Open the tokenized URL printed in the Prism startup log**, e.g.
+`http://localhost:3000/?token=<random>`. Opening it once stores a `SameSite`
+cookie, so later visits to `http://localhost:3000` work for the rest of the
+session. The data API (`/api/*`) rejects requests without the token, and rejects
+any request whose `Host`/`Origin` is not loopback or your configured
+`PRISM_DASHBOARD_ORIGIN` — this closes the DNS-rebinding exposure fixed in
+GHSA-9cvx-7x8q-3g6m.
 
 The startup display reads Agent Name, Default Role, Context Depth, and Auto-Load
 Projects from this dashboard. Do not hardcode a project or depth in host rules;
@@ -447,6 +453,22 @@ use `session_bootstrap({})` (or `prism bootstrap`) so dashboard changes apply to
 every connected agent on its next conversation.
 
 ### Securing the dashboard
+
+**Default token (no config needed)** — with no auth configured, the dashboard
+mints a random token each startup and gates `/api/*` with it. Open the tokenized
+URL from the startup log. To control it:
+
+```json
+"env": {
+  "PRISM_DASHBOARD_TOKEN": "pin-a-stable-token",   // optional: reuse one URL
+  "PRISM_DASHBOARD_NO_TOKEN": "1",                  // optional: disable the token
+  "PRISM_DASHBOARD_ORIGIN": "https://prism.team.internal"  // trust a remote origin
+}
+```
+
+The `Host`/`Origin` allow-list runs in every mode (even with `PRISM_DASHBOARD_NO_TOKEN=1`),
+so a DNS-rebound browser is refused regardless. Configuring Basic Auth or JWKS
+below replaces the token with that stronger gate.
 
 **Basic Auth** — add to your MCP config env:
 

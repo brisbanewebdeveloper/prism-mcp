@@ -21,7 +21,7 @@ cd examples/vercel-ai-sdk-prism
 cp .env.example .env.local        # add your OPENAI_API_KEY
 npm install
 npm run dev
-# → open http://localhost:3000
+# → open the tokenized dashboard URL from the startup log (http://localhost:3000/?token=…)
 ```
 
 The Prism Coder server is auto-spawned via `npx -y prism-mcp-server` (see `lib/prism-client.ts`). No separate process to manage.
