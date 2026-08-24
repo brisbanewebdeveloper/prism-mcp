@@ -129,7 +129,8 @@ On session end:
 
 ## Dashboard View
 
-Open `http://localhost:3000` to see the **Hivemind Radar** panel:
+Open the tokenized dashboard URL from the Prism startup log (e.g.
+`http://localhost:3000/?token=<random>`) to see the **Hivemind Radar** panel:
 - Active agent roster with roles, tasks, and heartbeat timestamps
 - Color-coded health indicators: 🟢 Active, 🟡 Stale, 🔴 Frozen, ⏰ Overdue, 🔄 Looping
 - Loop detection badges (if an agent repeats the same task 5+ times)

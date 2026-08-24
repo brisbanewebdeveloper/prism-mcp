@@ -35,6 +35,12 @@ import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { redactSettings } from "../tools/commonHelpers.js";
 import { handleGraphRoutes } from "./graphRouter.js";
 import { isDashboardSettingKeyAllowed, isDashboardSettingValueAllowed } from "./settingsPolicy.js";
+import { isTrustedRequest, isRebindGuardedPath } from "./hostGuard.js";
+import {
+  resolveDashboardToken,
+  requestHasToken,
+  buildTokenCookie,
+} from "./dashboardToken.js";
 import {
   safeCompare,
   generateToken,
@@ -112,6 +118,18 @@ export async function startDashboardServer(): Promise<void> {
 
   const SESSION_TTL_MS = parseInt(process.env.PRISM_SESSION_TTL_MS ?? String(24 * 60 * 60 * 1000), 10);
   const activeSessions = new Map<string, number>();
+
+  // ─── SECURITY: default-on dashboard token (GHSA-9cvx-7x8q-3g6m, remediation #2) ───
+  // Null when real auth is configured (that is the gate) or explicitly opted
+  // out; otherwise a random per-startup secret gates the data API as a second
+  // layer beneath the Host guard. Surfaced only in the startup log below.
+  const DASHBOARD_TOKEN = resolveDashboardToken({
+    authEnabled: AUTH_ENABLED,
+    pinnedToken: process.env.PRISM_DASHBOARD_TOKEN,
+    optOut: process.env.PRISM_DASHBOARD_NO_TOKEN,
+  });
+  const COOKIE_SECURE =
+    !!process.env.PRISM_DASHBOARD_ORIGIN?.startsWith("https://") || !!process.env.PRISM_DASHBOARD_SECURE;
 
   // Auth config object — injectable for testing via authUtils.ts
   const authConfig: AuthConfig = {
@@ -224,8 +242,70 @@ return false;}
       return res.end();
     }
 
+    // ─── SECURITY: Host / Origin allow-list (GHSA-9cvx-7x8q-3g6m) ───
+    // Reject DNS-rebinding requests before any sensitive route runs, independent
+    // of AUTH_ENABLED. A rebound browser reaches this loopback server carrying an
+    // attacker-controlled Host/Origin; only a trusted local name or the operator-
+    // configured PRISM_DASHBOARD_ORIGIN may be served the memory API / MCP
+    // transport. The public Smithery manifest (/.well-known/...) is intentionally
+    // left out of scope — it exposes no session data.
+    if (
+      isRebindGuardedPath(req.url) &&
+      !isTrustedRequest(
+        { host: req.headers.host, origin: req.headers.origin },
+        { configuredOrigin: process.env.PRISM_DASHBOARD_ORIGIN },
+      )
+    ) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({ error: "Forbidden: untrusted Host or Origin (possible DNS rebinding)" }),
+      );
+    }
+
     // ─── v5.1: Auth login endpoint (always accessible) ───
     const reqUrl = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    // ─── SECURITY: dashboard token gate (GHSA-9cvx-7x8q-3g6m, remediation #2) ───
+    // Second layer beneath the Host guard. Inert when DASHBOARD_TOKEN is null
+    // (real auth configured, or opted out). A page load carrying a valid ?token=
+    // is bootstrapped into a SameSite cookie so the SPA's later same-origin
+    // fetches authenticate transparently; the data API otherwise requires the
+    // token via cookie, X-Prism-Dashboard-Token header, or ?token= query.
+    if (DASHBOARD_TOKEN) {
+      const qToken = reqUrl.searchParams.get("token");
+      const isApiPath = reqUrl.pathname.startsWith("/api/");
+
+      if (!isApiPath && qToken && safeCompare(qToken, DASHBOARD_TOKEN)) {
+        reqUrl.searchParams.delete("token");
+        const cleanTarget = reqUrl.pathname + (reqUrl.search ? reqUrl.search : "");
+        res.writeHead(302, {
+          "Set-Cookie": buildTokenCookie(DASHBOARD_TOKEN, SESSION_TTL_MS, COOKIE_SECURE),
+          Location: cleanTarget,
+        });
+        return res.end();
+      }
+
+      if (
+        isApiPath &&
+        !requestHasToken(
+          {
+            cookie: req.headers.cookie,
+            headerToken: (req.headers["x-prism-dashboard-token"] as string) || null,
+          },
+          qToken,
+          DASHBOARD_TOKEN,
+        )
+      ) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        return res.end(
+          JSON.stringify({
+            error:
+              "Dashboard token required — open the tokenized URL printed in the Prism startup log.",
+          }),
+        );
+      }
+    }
+
     if (AUTH_ENABLED && reqUrl.pathname === "/api/auth/login" && req.method === "POST") {
       // v6.5.1: Rate limiting — prevent brute-force attacks
       const clientIP = (req.socket?.remoteAddress || "unknown").replace(/^::ffff:/, "");
@@ -289,7 +369,8 @@ return false;}
             version: SERVER_CONFIG.version,
           },
           authentication: {
-            required: AUTH_ENABLED
+            // True when either configured auth or the default token gate is active.
+            required: AUTH_ENABLED || !!DASHBOARD_TOKEN
           },
           configSchema: {
             type: "object",
@@ -1475,7 +1556,17 @@ self.addEventListener('message', (e) => {
     // Non-fatal — just means the user has to know the port
   }
 
-  console.error(`[Prism] 🧠 Mind Palace Dashboard → http://localhost:${boundPort}`);
+  if (DASHBOARD_TOKEN) {
+    console.error(
+      `[Prism] 🔐 Mind Palace Dashboard → http://localhost:${boundPort}/?token=${DASHBOARD_TOKEN}`
+    );
+    console.error(
+      `[Prism]    Data API is token-gated by default (GHSA-9cvx-7x8q-3g6m). Open the URL above once; ` +
+      `pin it with PRISM_DASHBOARD_TOKEN, or disable with PRISM_DASHBOARD_NO_TOKEN=1.`
+    );
+  } else {
+    console.error(`[Prism] 🧠 Mind Palace Dashboard → http://localhost:${boundPort}`);
+  }
 
   // ─── v3.1: TTL Sweep — runs at startup + every 12 hours ───────────
   // NOTE (v5.4): The Background Scheduler in server.ts now also handles
