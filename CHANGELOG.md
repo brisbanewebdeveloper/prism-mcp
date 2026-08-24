@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 20.15.0 — 2026-08-24
 
 ### Security — dashboard DNS-rebinding fix (GHSA-9cvx-7x8q-3g6m)
 
