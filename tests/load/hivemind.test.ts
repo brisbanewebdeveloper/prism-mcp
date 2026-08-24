@@ -69,7 +69,7 @@ beforeAll(async () => {
   const testDb = await createTestDb("load-test");
   storage = testDb.storage;
   cleanup = testDb.cleanup;
-}, 15_000); // Extended timeout for DB creation
+}, 60_000); // Extended timeout for DB creation
 
 afterAll(() => {
   cleanup();

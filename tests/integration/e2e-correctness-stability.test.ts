@@ -749,7 +749,7 @@ describe("Behavioral Memory: Experience & Voting", () => {
     const testDb = await createTestDb("e2e-behavioral");
     storage = testDb.storage;
     cleanup = testDb.cleanup;
-  }, 15_000);
+  }, 60_000);
 
   afterAll(() => {
     cleanup();
@@ -960,7 +960,7 @@ describe("Advanced Stability: Handoff OCC Conflict", () => {
     const testDb = await createTestDb("e2e-occ-conflict");
     storage = testDb.storage;
     cleanup = testDb.cleanup;
-  }, 15_000);
+  }, 60_000);
 
   afterAll(() => {
     cleanup();
@@ -1028,7 +1028,7 @@ describe("Advanced Stability: Role-Scoped Isolation", () => {
     const testDb = await createTestDb("e2e-role-isolation");
     storage = testDb.storage;
     cleanup = testDb.cleanup;
-  }, 15_000);
+  }, 60_000);
 
   afterAll(() => {
     cleanup();
@@ -1102,7 +1102,7 @@ describe("Advanced Stability: Unicode & Special Characters", () => {
     const testDb = await createTestDb("e2e-unicode");
     storage = testDb.storage;
     cleanup = testDb.cleanup;
-  }, 15_000);
+  }, 60_000);
 
   afterAll(() => {
     cleanup();

@@ -45,7 +45,8 @@ beforeAll(async () => {
   const testDb = await createTestDb("sqlite-storage");
   storage = testDb.storage;
   cleanup = testDb.cleanup;
-}, 15_000);
+}, 60_000); // was 15s — too tight for Windows/Node-22 SQLite test-db creation
+// under CI load (the exact case the global hookTimeout=60s note describes).
 
 afterAll(() => {
   cleanup();

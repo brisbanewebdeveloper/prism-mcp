@@ -839,7 +839,7 @@ describe("Stability: Session Restore After Crash", () => {
     crashStorage = testDb.storage;
     crashDbPath = testDb.dbPath;
     crashCleanup = testDb.cleanup;
-  }, 15_000);
+  }, 60_000);
 
   afterAll(() => {
     crashCleanup();

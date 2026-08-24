@@ -37,7 +37,7 @@ beforeAll(async () => {
   const testDb = await createTestDb("gdpr-soft-delete-coverage");
   storage = testDb.storage;
   cleanup = testDb.cleanup;
-}, 15_000);
+}, 60_000);
 
 afterAll(() => {
   cleanup();
