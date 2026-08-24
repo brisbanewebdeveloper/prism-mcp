@@ -30,7 +30,12 @@ export default defineConfig({
     // ─── Timeouts ─────────────────────────────────────────────────
     // Default timeout per test: 10 seconds
     // Load tests may need more — they override individually
-    testTimeout: 10_000,
+    // 20s (not 10s): the suite includes many subprocess-spawning integration
+    // tests (the prism CLI, grep-based content guards) that legitimately exceed
+    // 10s on slow Windows/macOS CI runners — the same runner slowness the
+    // hookTimeout note below describes. Heavy benchmarks set their own
+    // per-describe timeout; a genuine hang is still caught at 20s.
+    testTimeout: 20_000,
     // hookTimeout default is 10s — Windows + Node 22.x SQLite test-db
     // creation in beforeEach can exceed that under CI load (we measured
     // tests/storage/isolation.test.ts at ~8s for the same operation,
