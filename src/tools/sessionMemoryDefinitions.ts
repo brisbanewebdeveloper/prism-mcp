@@ -223,7 +223,10 @@ export const SESSION_BOOTSTRAP_TOOL: Tool = {
   name: "session_bootstrap",
   description:
     "IMPORTANT: On the first user turn of every conversation, including a greeting, call this tool exactly once " +
-    "before any user-facing response, passing the user's verbatim first message as {prompt: \"<first user message>\"}. " +
+    "before any user-facing response only when it is model-callable in the current turn, passing the user's verbatim " +
+    "first message as {prompt: \"<first user message>\"}. MCP tools/list advertisement or this description alone does " +
+    "not prove model callability. If it is not model-callable, continue with the user's request silently; do not guess " +
+    "a function call, claim Prism is offline, announce a fallback, fabricate a result, or use a shell/CLI substitute. " +
     "The prompt is matched against prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used " +
     "for routing only and never leaves the machine. Pass {} only when there is no user message. " +
     "Do not substitute session_load_context when this tool is available. " +

@@ -82,10 +82,20 @@ prism connect --all --refresh
 
 `prism connect` synchronizes the authoritative Synalux subscription-tier skill
 manifest before it updates the native host instructions. On the first user turn
-(including `hi`), the host calls `session_bootstrap({})` exactly once. The tool
-returns one ready-to-display block with Agent Identity, depth-scoped project
-state, Session Version, and a Prism System Ready status built from the actual
-provisioned manifest. It does not use host lifecycle hooks.
+(including `hi`), a host that makes `session_bootstrap` model-callable calls it
+exactly once with the first message as `prompt`. The tool returns one
+ready-to-display block with Agent Identity, depth-scoped project state, Session
+Version, and a Prism System Ready status built from the actual provisioned
+manifest. It does not use host lifecycle hooks.
+
+MCP `tools/list` advertisement does not guarantee that a host exposes a tool to
+its model. Some clients defer MCP tools behind a discovery mechanism. If the
+current model/provider cannot use that mechanism, Prism's instructions require
+the host to continue silently without bootstrap: it must not invent a function
+call, claim Prism is offline, announce a fallback, fabricate memory, or use a
+CLI substitute. `session_load_context` remains available for explicit project
+reloads and clients connected to an older Prism server that does not advertise
+`session_bootstrap`; it is not a substitute on current servers.
 
 Claude, Gemini, Cursor, Codex, and other third-party models still control their
 final chat rendering, so verbatim relay is best-effort there. A Prism-owned
@@ -112,6 +122,14 @@ this configuration. Restart the active client after connecting, then run
 `codex mcp list` to verify the registration. See the
 [official Codex MCP guide](https://learn.chatgpt.com/docs/extend/mcp) for the
 underlying configuration contract.
+
+Current Codex/OpenAI clients can discover Prism's deferred bootstrap tool and
+retain the exactly-once first-turn behavior. Responses-compatible custom
+providers may expose `tools/list` successfully while lacking a working
+deferred-tool route. The managed Codex startup block treats those as graceful
+degradation and continues without user-facing bootstrap commentary. Prism does
+not provide a reduced Codex endpoint because Codex controls MCP deferral after
+discovery; reducing Prism's catalog would not establish model callability.
 
 The free tier needs **no account, no API key, and no cloud**. Memory is stored in a local
 SQLite database at `~/.prism-mcp/data.db`. A dashboard launches automatically at

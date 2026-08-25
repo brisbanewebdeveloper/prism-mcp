@@ -143,19 +143,27 @@ const GEMINI_STARTUP_MANAGED_START = "<!-- >>> prism connect managed: native sta
 const GEMINI_STARTUP_MANAGED_END = "<!-- <<< prism connect managed: native startup -->";
 const CODEX_STARTUP_MANAGED_START = "<!-- >>> prism connect managed: codex native startup -->";
 const CODEX_STARTUP_MANAGED_END = "<!-- <<< prism connect managed: codex native startup -->";
+// Codex may defer every MCP tool after discovery. Custom Responses-compatible
+// providers do not necessarily support that route, so this contract must not
+// turn tools/list presence into a guessed model call.
 const CODEX_STARTUP_BODY = [
   "## Prism session startup",
-  "On the first user turn of every conversation, including a greeting, your first action must be",
-  "`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once — the prompt is what makes",
+  "On the first user turn of every conversation, including a greeting, call",
+  "`session_bootstrap({prompt: \"<verbatim first user message>\"})` exactly once before responding only when",
+  "that tool is model-callable in the current turn. It is model-callable when it is already in the callable tool",
+  "registry, or when Codex exposes deferred-tool discovery that works with the current model and provider.",
+  "MCP `tools/list` advertisement or this instruction alone does not prove model callability. The prompt makes",
   "prompt-keyword skill routing fire on turn one (matched on-device; the prompt is never transmitted).",
   "Pass `{}` only when there is no user message. Emit no",
   "preamble. Print the complete tool result verbatim as the",
   "entire first-turn startup display, before any optional answer. Do not summarize, paraphrase, rename headings,",
   "reformat, or omit any returned section. Preserve its order and line content. For a greeting-only prompt, stop",
-  "after the verbatim startup display. If `session_bootstrap` is deferred, use native tool discovery to load that",
-  "exact tool, then invoke it. Do not use shell commands, file reads, subagents, or unrelated tool inspection as",
-  "a substitute. Do not call `session_load_context`. If discovery or invocation fails, report",
-  "`Prism startup failure` and stop. Reuse the `conversation_id` returned on the `<prism_session />` line for every",
+  "after the verbatim startup display. If `session_bootstrap` is not model-callable, or deferred discovery or",
+  "invocation is unsupported or rejected, continue with the user's request silently. Do not invent or guess a",
+  "function call. Do not tell the user that bootstrap is unavailable or Prism is offline, and do not announce a",
+  "fallback. Do not fabricate a result or use shell commands, file reads, subagents, unrelated tool inspection,",
+  "`session_load_context`, or a Prism CLI command as a substitute. Reuse the `conversation_id` returned on the",
+  "`<prism_session />` line for every",
   "session_save_ledger, session_save_handoff, and session_detect_drift call in this conversation. This hook-free",
   "block is managed by `prism connect`; do not edit it manually.",
   "",

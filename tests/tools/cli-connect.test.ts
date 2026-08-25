@@ -646,8 +646,15 @@ describe("prism connect", () => {
     const configured = readFileSync(instructionPath, "utf8");
     expect(configured.startsWith(`${original}\r\n`)).toBe(true);
     expect(configured).toContain("<!-- >>> prism connect managed: codex native startup -->");
-    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
-    expect(configured).toContain("Do not call `session_load_context`");
+    expect(configured).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})` exactly once");
+    expect(configured).toContain("only when");
+    expect(configured).toContain("model-callable in the current turn");
+    expect(configured).toContain("tools/list` advertisement or this instruction alone does not prove model callability");
+    expect(configured).toContain("continue with the user's request silently");
+    expect(configured).toContain("Do not tell the user that bootstrap is unavailable or Prism is offline");
+    expect(configured).toContain("do not announce a");
+    expect(configured).toContain("`session_load_context`, or a Prism CLI command as a substitute");
+    expect(configured).not.toContain("`Prism startup failure` and stop");
     expect(configured.replaceAll("\r\n", "")).not.toContain("\n");
     expectPosixMode(instructionPath, 0o640);
     expectVerbatimStartupContract(configured);
@@ -659,7 +666,7 @@ describe("prism connect", () => {
     const userSuffix = "# User suffix after Prism\r\n";
     writeFileSync(
       instructionPath,
-      configured.replace("your first action must be", "your first action may be") + userSuffix,
+      configured.replace("model-callable in the current turn", "possibly callable in the current turn") + userSuffix,
     );
     expect(configureCodexNativeStartup(homeDir, true, undefined, env))
       .toMatchObject({ status: "would-refresh" });
@@ -1980,7 +1987,9 @@ it("reports the Claude project migration on default and refresh dry runs only af
       const configuredCodexInstructions = readFileSync(codexInstructions, "utf8");
       expect(configuredCodexInstructions.startsWith(`${codexInstructionsSentinel}\n`)).toBe(true);
       expect(configuredCodexInstructions).toContain("prism connect managed: codex native startup");
-      expect(configuredCodexInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})`, exactly once");
+      expect(configuredCodexInstructions).toContain("`session_bootstrap({prompt: \"<verbatim first user message>\"})` exactly once");
+      expect(configuredCodexInstructions).toContain("continue with the user's request silently");
+      expect(configuredCodexInstructions).not.toContain("`Prism startup failure` and stop");
       expectVerbatimStartupContract(configuredCodexInstructions);
       expectLocalFirstPolicy(configuredCodexInstructions);
       expectEvidenceWorkflowPolicy(configuredCodexInstructions);

@@ -804,9 +804,16 @@ export function getAvailableTools(): Tool[] {
   ];
 }
 
+// MCP initialization identifies the host but does not report whether its
+// selected model/provider can route deferred tools. Keep the first-turn rule
+// self-gating: tools/list presence is not the same as model callability.
 export const PRISM_SERVER_INSTRUCTIONS =
   `Prism MCP — The Mind Palace for AI Agents. On the first user turn of every conversation, ` +
-  `including greetings, call session_bootstrap exactly once BEFORE any user-facing response, passing the ` +
+  `including greetings, call session_bootstrap exactly once BEFORE any user-facing response only when that ` +
+  `tool is model-callable in the current turn. It is model-callable when it is already in the model's callable ` +
+  `tool registry, or when the client exposes a deferred-tool discovery route that works with the current model ` +
+  `and provider. MCP tools/list advertisement or this instruction alone does not prove model callability. ` +
+  `When callable, pass the ` +
   `user's verbatim first message as {prompt: "<first user message>"}. The prompt is matched against ` +
   `prompt_keywords ON-DEVICE to load symptom-triggered skills on turn one; it is used for routing ` +
   `only and never leaves the machine. Pass {} only when there is no user message. ` +
@@ -818,6 +825,10 @@ export const PRISM_SERVER_INSTRUCTIONS =
   `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
   `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
   `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +
+  `If session_bootstrap is not model-callable, or deferred discovery or invocation is unsupported or rejected, ` +
+  `continue with the user's request silently. Do not invent or guess a function call. Do not tell the user that ` +
+  `bootstrap is unavailable or that Prism is offline, and do not announce a fallback. Do not fabricate a ` +
+  `bootstrap result or use a shell/CLI workaround. ` +
   `Do not substitute session_load_context while session_bootstrap is available; use session_load_context ` +
   `only for an explicit project reload or as an older-server fallback. ` +
   `Use session_save_ledger to log completed work and session_save_handoff to preserve state for the next session. ` +

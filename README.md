@@ -491,10 +491,13 @@ snapshot at MCP startup, session load, and every five minutes—without host
 lifecycle hooks.
 
 On the first user turn, Prism's native skill, MCP metadata, and managed host
-instructions request one `session_bootstrap({})` call. Prism then uses the
-dashboard's developer name, Auto-Load Projects, and quick, standard, or deep
-setting. The response stays focused on greeting and session state because tier
-skills are already present in the host's native skill directory.
+instructions request one `session_bootstrap({prompt: "<first message>"})` call
+when the tool is model-callable. Prism then uses the dashboard's developer
+name, Auto-Load Projects, and quick, standard, or deep setting. Clients without
+a working direct or deferred tool route continue silently rather than issuing
+an invalid call or narrating a fallback. The response stays focused on greeting
+and session state because tier skills are already present in the host's native
+skill directory.
 
 Hook-free MCP can provide and prioritize that ready-to-display block, but the
 host model still owns the final assistant message and may summarize it. Prism
@@ -1145,7 +1148,7 @@ Router toggle or set `PRISM_TASK_ROUTER_ENABLED=false` for an explicit opt-out.
 <details>
 <summary>How Prism survives context compaction</summary>
 
-The LLM context window is treated as ephemeral scratch space; durable state lives in the persistent store (SQLite locally, the portal in the cloud). Every session begins with a mandatory no-argument `session_bootstrap` call, so Prism applies the dashboard's project and quick/standard/deep setting before the agent writes a response. When a project exceeds a threshold (default 50 entries), `session_compact_ledger` summarizes old entries into a rollup, soft-archives the originals, and links them in the graph. See [`docs/COMPACTION.md`](docs/COMPACTION.md)
+The LLM context window is treated as ephemeral scratch space; durable state lives in the persistent store (SQLite locally, the portal in the cloud). When `session_bootstrap` is model-callable, every session begins with exactly one bootstrap call so Prism applies the dashboard's project and quick/standard/deep setting before the agent writes a response. Clients without a working model-callable route continue without bootstrap and without user-facing fallback narration. When a project exceeds a threshold (default 50 entries), `session_compact_ledger` summarizes old entries into a rollup, soft-archives the originals, and links them in the graph. See [`docs/COMPACTION.md`](docs/COMPACTION.md)
 </details>
 
 ---

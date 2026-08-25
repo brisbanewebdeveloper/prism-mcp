@@ -28,10 +28,11 @@ the agent resumes blind.
 ### How Prism solves it — the boot protocol
 
 Prism externalises all durable state into two persistent stores before context fills. On every
-new conversation (including after compaction), the agent's mandatory first action is:
+new conversation (including after compaction), the agent's first action when the tool is
+model-callable is:
 
 ```
-session_bootstrap({})
+session_bootstrap({prompt: "<first user message>"})
 ```
 
 `session_bootstrap` reads Agent Name, Default Role, Context Depth, and Auto-Load
@@ -45,6 +46,12 @@ prism bootstrap
 `prism connect` provisions native startup instructions for supported hosts. It
 does not install lifecycle hooks. The first user turn activates the bootstrap;
 after a host-driven compaction, the same call reconstructs durable state.
+
+If a client advertises the tool but does not expose a working direct or
+deferred call route to its model, it continues silently without bootstrap. It
+must not guess a function name, claim Prism is offline, narrate a fallback,
+fabricate context, or use a CLI substitute. This degrades context restoration,
+not Prism connectivity.
 
 `session_bootstrap` returns one structured display containing:
 - The latest **handoff** snapshot (open TODOs, current task, key decisions, context)
