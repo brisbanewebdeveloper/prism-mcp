@@ -135,6 +135,21 @@ describe('queryLocalSavings — what counts as displaced', () => {
     expect(month!.local_calls).toBe(1);
   });
 
+  it('discloses the VS Code panel share instead of folding it in silently', async () => {
+    // Review O2: panel-playground rows ARE local serving, but "kept off your
+    // cloud model" is a weaker claim for them, so the renderer must say what
+    // share they are.
+    await appendInferMetricBatch([
+      local(),
+      { ...local({ prompt_tokens: 300, completion_tokens: 100 }), caller: 'panel' },
+    ]);
+    const s = await queryLocalSavings();
+    expect(s!.panel_local_calls).toBe(1);
+    expect(s!.panel_local_tokens).toBe(400);
+    const text = renderSavings(s!, 'all').text;
+    expect(text).toMatch(/1 call\(s\) \(~400 tokens\) came from the VS Code panel playground/);
+  });
+
   it('reports zero rather than throwing on an empty ledger', async () => {
     const s = await queryLocalSavings();
     expect(s!.local_calls).toBe(0);
@@ -169,15 +184,58 @@ describe('undercount honesty counters', () => {
   });
 });
 
+/**
+ * The no-currency contract, shared so every rendered surface can assert it.
+ *
+ * Adversarial review C2 measured that the original two regexes passed
+ * "≈4 dollars", "42 cents saved", "¥300", "0.42 EUR" — i.e. the guard only
+ * killed the literal-$ mutant it was built against. This version covers
+ * symbols, ISO codes, and spelled-out currency words, and the meta-test below
+ * proves it against exactly those leaked shapes.
+ */
+function assertNoCurrency(text: string): void {
+  expect(text).not.toMatch(/[$€£¥₹₩]/u);
+  expect(text).not.toMatch(/\b(USD|EUR|GBP|JPY|CNY|INR|dollars?|euros?|pounds?|cents?|bucks?)\b/i);
+  expect(text).not.toMatch(/\b(price|cost|money|saved you|per\s*Mtok|\d+(\.\d+)?\s*(k?usd|eur))\b/i);
+}
+
+describe('no-currency guard is not vacuous', () => {
+  it('rejects every money-rendering shape the review measured as leaking', () => {
+    for (const leak of [
+      'saved you $4.20', '≈4 dollars', 'roughly 4 euros', '42 cents saved',
+      '0.42 EUR', '0.42 GBP', '¥300', '₹30', 'price: 4.20', 'about 2 bucks',
+      'cost equivalent 3.1', '$3.00/$15.00 per Mtok',
+    ]) {
+      expect(() => assertNoCurrency(`~510K tokens — ${leak}`), leak).toThrow();
+    }
+  });
+
+  it('accepts the legitimate token vocabulary', () => {
+    for (const ok of [
+      '~510K tokens kept off your cloud model',
+      '461,400 prompt + 48,400 completion',
+      '53 call(s) served locally of 58 routed (91%)',
+      'at most this much displacement, of at least this token volume',
+    ]) {
+      expect(() => assertNoCurrency(ok), ok).not.toThrow();
+    }
+  });
+});
+
 describe('rendering', () => {
   const render = async (period: SavingsPeriod = 'all') =>
     renderSavings((await queryLocalSavings())!, period).text;
 
-  it('states the counterfactual the headline rests on', async () => {
+  it('states both axes of the basis without contradicting itself', async () => {
+    // Adversarial review C3: the first cut said "upper bound" three lines above
+    // "the real total is higher" about the same number. The fix names the axes:
+    // measured tokens are a floor; displacement is the upper-bound assumption.
     await appendInferMetricBatch([local()]);
     const text = await render();
-    expect(text).toMatch(/assumes each locally-served call would otherwise have gone to the cloud/i);
-    expect(text).toMatch(/upper bound/i);
+    expect(text).toMatch(/token count is measured — a floor/i);
+    expect(text).toMatch(/prism cannot observe the call your host would have made/i);
+    expect(text).toMatch(/at most this much displacement, of at least this token volume/i);
+    expect(text).not.toMatch(/upper bound on displacement/i); // the old unreconciled phrasing
   });
 
   it('reports tokens and never a currency figure', async () => {
@@ -188,8 +246,7 @@ describe('rendering', () => {
     await appendInferMetricBatch([local({ prompt_tokens: 4_000_000, completion_tokens: 1_000_000 })]);
     const text = await render();
     expect(text).toMatch(/tokens kept off your cloud model/i);
-    expect(text).not.toMatch(/[$€£]/);
-    expect(text).not.toMatch(/\b(USD|saved you|per Mtok|cost)\b/i);
+    assertNoCurrency(text);
   });
 
   it('shows the local share of routed calls', async () => {
@@ -211,6 +268,12 @@ describe('rendering', () => {
     expect(abbreviate(1_500)).toBe('1.5K');
     expect(abbreviate(4_200_000)).toBe('4.2M');
     expect(abbreviate(0)).toBe('0');
+    // Review O1: rounding at a unit boundary must promote, never print "1000K".
+    expect(abbreviate(999_999)).toBe('1.0M');
+    expect(abbreviate(999_499)).toBe('999K');
+    expect(abbreviate(1_000_000)).toBe('1.0M');
+    expect(abbreviate(NaN)).toBe('0');
+    expect(abbreviate(-5)).toBe('0');
   });
 });
 
@@ -243,6 +306,47 @@ describe('session view', () => {
     expect(s.by_model['shared-name']).toEqual({ calls: 1, prompt_tokens: 100, completion_tokens: 10 });
     // The mixed map still holds both, which is why the meter does not read it.
     expect(getInferenceSnapshot().byModel['shared-name']!.calls).toBe(2);
+  });
+
+  it('marks the headline (est.) and discloses divergence when prompt tokens are estimated', () => {
+    // Review C1 (HIGH): a KV-cache hit records prompt_tokens=0 but the session
+    // view estimates the submitted prompt from its text, so the same call can
+    // read >10x higher in 'session' than in 'month'/'all'. The first cut
+    // hardcoded the session caveat counters to zero, so it structurally could
+    // not disclose this. Now it must.
+    recordInference({ backend: 'ollama-9b', model_picked: 'prism-coder:9b', used_cloud: false,
+      latency_ms: 100, prompt_tokens: 0, completion_tokens: 300,
+      prompt_text: 'x'.repeat(11_000) });
+
+    const s = sessionSavings();
+    expect(s.local_calls_with_estimated_prompt).toBe(1);
+    expect(s.local_prompt_tokens).toBeGreaterThan(1_000); // the estimate, not the measured 0
+
+    const text = renderSavings(s, 'session').text;
+    expect(text).toMatch(/\(est\.\) tokens kept off your cloud model/);
+    expect(text).toMatch(/ESTIMATED from prompt text rather than measured/);
+    expect(text).toMatch(/can sit above or below the month\/all views/);
+    // The measured-floor claim must NOT appear when the number is an estimate.
+    expect(text).not.toMatch(/a floor/i);
+    expect(text).toMatch(/of roughly this token volume/);
+  });
+
+  it('keeps the measured-floor wording when no session call was estimated', () => {
+    recordInference({ backend: 'ollama-9b', model_picked: 'prism-coder:9b', used_cloud: false,
+      latency_ms: 100, prompt_tokens: 800, completion_tokens: 200 });
+    const s = sessionSavings();
+    expect(s.local_calls_with_estimated_prompt).toBe(0);
+    const text = renderSavings(s, 'session').text;
+    expect(text).not.toMatch(/\(est\.\)/);
+    expect(text).toMatch(/a floor/i);
+  });
+
+  it('counts session calls that recorded no tokens at all', () => {
+    recordInference({ backend: 'ollama-9b', model_picked: 'prism-coder:9b', used_cloud: false,
+      latency_ms: 100 });
+    const s = sessionSavings();
+    expect(s.local_calls_without_tokens).toBe(1);
+    expect(s.local_total_tokens).toBe(0);
   });
 
   it('excludes refusals from the session accumulators', () => {

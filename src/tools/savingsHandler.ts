@@ -41,12 +41,20 @@ function fmt(n: number): string {
     return n.toLocaleString("en-US");
 }
 
-/** Compact token counts: 1_240_000 → "1.2M". Headline numbers only. */
+/** Compact token counts: 1_240_000 → "1.2M". Headline numbers only.
+ *  Promotes across the unit boundary when rounding lands on it — 999_999 must
+ *  render "1.0M", not "1000K" (adversarial review finding O1). */
 export function abbreviate(n: number): string {
     if (!Number.isFinite(n) || n < 0) return "0";
     if (n < 1_000) return String(Math.round(n));
-    if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}K`;
-    return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+    const inK = n / 1_000;
+    if (inK < 1_000) {
+        const k = inK.toFixed(inK < 10 ? 1 : 0);
+        if (Number(k) < 1_000) return `${k}K`;
+        // rounding reached "1000K" — fall through and render in M instead
+    }
+    const inM = n / 1_000_000;
+    return `${inM.toFixed(inM < 10 ? 1 : 0)}M`;
 }
 
 function spanOf(s: LocalSavings): string {
@@ -66,6 +74,17 @@ function spanOf(s: LocalSavings): string {
  */
 export function caveatsFor(s: LocalSavings): string[] {
     const out: string[] = [];
+    if (s.local_calls_with_estimated_prompt > 0) {
+        out.push(
+            `${fmt(s.local_calls_with_estimated_prompt)} local call(s) hit the KV cache, so their prompt tokens ` +
+            `are ESTIMATED from prompt text rather than measured — this session figure can sit above or below ` +
+            `the month/all views, which count only measured tokens.`);
+    }
+    if (s.panel_local_calls > 0) {
+        out.push(
+            `${fmt(s.panel_local_calls)} call(s) (~${abbreviate(s.panel_local_tokens)} tokens) came from the ` +
+            `VS Code panel playground rather than agent delegation — included in the totals above.`);
+    }
     if (s.local_calls_without_tokens > 0) {
         out.push(
             `${fmt(s.local_calls_without_tokens)} local call(s) recorded no token counts and contribute 0 above — ` +
@@ -83,11 +102,28 @@ export function caveatsFor(s: LocalSavings): string[] {
     return out;
 }
 
-/** The assumption the headline rests on. Always shown; it is the whole basis. */
-const COUNTERFACTUAL =
-    "Counts tokens a local model handled instead of your cloud model. Assumes each " +
-    "locally-served call would otherwise have gone to the cloud — prism cannot observe " +
-    "the call your host would have made, so treat this as an upper bound on displacement.";
+/**
+ * The basis statement under the headline. Two independent cautions apply to the
+ * same number, on different axes, and an adversarial review (C3) showed that
+ * stating them unreconciled reads as a contradiction ("upper bound" three lines
+ * above "the real total is higher"). So the axes are named explicitly:
+ *
+ *   - token axis — measured views are a floor (undercounts listed when
+ *     present); the session view includes estimates and is not a floor.
+ *   - displacement axis — whether every locally-served call would really have
+ *     gone to the cloud is an assumption prism cannot observe, and it bounds
+ *     the claim from above.
+ */
+function basisLine(s: LocalSavings): string {
+    const tokenClause = s.local_calls_with_estimated_prompt > 0
+        ? "the token count includes estimated prompt tokens for KV-cache hits, so it can sit above or below the measured figure"
+        : "the token count is measured — a floor, with known undercounts listed when present";
+    const volumeWord = s.local_calls_with_estimated_prompt > 0 ? "roughly" : "at least";
+    return "Counts tokens a local model handled instead of your cloud model. " +
+        `On the token axis, ${tokenClause}. On the displacement axis, prism cannot observe the call ` +
+        "your host would have made, so whether all of it would have hit the cloud is an assumption. " +
+        `Read it as: at most this much displacement, of ${volumeWord} this token volume.`;
+}
 
 export interface SavingsRender {
     text: string;
@@ -113,8 +149,9 @@ export function renderSavings(s: LocalSavings, period: SavingsPeriod): SavingsRe
     const totalRouted = s.local_calls + s.cloud_calls;
     const localPct = totalRouted > 0 ? Math.round((s.local_calls / totalRouted) * 100) : 0;
 
+    const estMark = s.local_calls_with_estimated_prompt > 0 ? " (est.)" : "";
     lines.push("");
-    lines.push(`  ~${abbreviate(s.local_total_tokens)} tokens kept off your cloud model`);
+    lines.push(`  ~${abbreviate(s.local_total_tokens)}${estMark} tokens kept off your cloud model`);
     lines.push(`  ${fmt(s.local_calls)} call(s) served locally of ${fmt(totalRouted)} routed (${localPct}%)`);
     lines.push(`  Breakdown: ${fmt(s.local_prompt_tokens)} prompt + ${fmt(s.local_completion_tokens)} completion`);
 
@@ -129,12 +166,12 @@ export function renderSavings(s: LocalSavings, period: SavingsPeriod): SavingsRe
     }
 
     lines.push("");
-    lines.push(`  ${COUNTERFACTUAL}`);
+    lines.push(`  ${basisLine(s)}`);
 
     const caveats = caveatsFor(s);
     if (caveats.length > 0) {
         lines.push("");
-        lines.push("  Known undercounts:");
+        lines.push("  Caveats:");
         for (const c of caveats) lines.push(`    · ${c}`);
     }
 
@@ -144,10 +181,18 @@ export function renderSavings(s: LocalSavings, period: SavingsPeriod): SavingsRe
 /**
  * Session view, built from the in-memory accumulators.
  *
- * Shaped into LocalSavings so one renderer serves every period. The session
- * accumulators already exclude refusals and safety-gate calls at record time,
- * hence the zeros for the ledger-only honesty counters — the per-call detail
- * they are derived from is not retained in memory.
+ * Shaped into LocalSavings so one renderer serves every period, but NOT the
+ * same quantity as the ledger views: on a KV-cache hit the session accumulators
+ * carry a character-based ESTIMATE of the submitted prompt (submittedEst) where
+ * the ledger sums the measured 0. The same call can therefore read far higher
+ * here than in month/all — which is why localCallsEstimatedPrompt flows into
+ * local_calls_with_estimated_prompt and the renderer marks the headline
+ * "(est.)" and discloses the divergence (adversarial review finding C1).
+ *
+ * cached_prompt/refusals stay 0: refusals and safety-gate calls are excluded
+ * at record time, and the cache-hit rows are the estimated ones here, not
+ * zero-counted ones. panel counters stay 0: panel rows live only in the
+ * durable ledger, never in this process's accumulators.
  */
 export function sessionSavings(): LocalSavings {
     const snap = getInferenceSnapshot();
@@ -165,8 +210,11 @@ export function sessionSavings(): LocalSavings {
         local_prompt_tokens: snap.localPromptTokensEst,
         local_completion_tokens: snap.localCompletionTokens,
         local_total_tokens: snap.cloudTokensSavedEst,
-        local_calls_without_tokens: 0,
+        local_calls_without_tokens: snap.localCallsUntokened,
         local_calls_with_cached_prompt: 0,
+        local_calls_with_estimated_prompt: snap.localCallsEstimatedPrompt,
+        panel_local_calls: 0,
+        panel_local_tokens: 0,
         excluded_refusals: 0,
         first_ts: null,
         last_ts: null,

@@ -48,6 +48,15 @@ export interface InferenceSnapshot {
      *  fell through to cloud. */
     localPromptTokensEst: number;
     localCompletionTokens: number;
+    /** Local calls where Ollama reported prompt_eval_count=0 (KV-cache hit) and
+     *  the prompt tokens in localPromptTokensEst are therefore ESTIMATED from
+     *  prompt text, not measured. The savings meter must disclose this: the
+     *  ledger views count those calls' prompt tokens as 0 (measured floor),
+     *  so the same call can read >10x higher here than there. */
+    localCallsEstimatedPrompt: number;
+    /** Local calls that recorded no token information at all — they contribute
+     *  0 to every token figure. */
+    localCallsUntokened: number;
     thinkOnlyRetries: number;
     thinkOnlyRetryPct: number;
     /** Total user prompts seen this session (delegated + not delegated).
@@ -148,6 +157,8 @@ let totalLatencyMs = 0;
 let cloudTokensSavedEst = 0;
 let localPromptTokensEst = 0;
 let localCompletionTokens = 0;
+let localCallsEstimatedPrompt = 0;
+let localCallsUntokened = 0;
 let thinkOnlyRetries = 0;
 let totalPrompts = 0;
 let nonDelegatedCount = 0;
@@ -243,6 +254,12 @@ export function recordInference(result: {
         cloudTokensSavedEst += submittedEst + ct;
         localPromptTokensEst += submittedEst;
         localCompletionTokens += ct;
+        // Honesty counters for the savings meter (adversarial review C1): a
+        // KV-cache hit means submittedEst is an ESTIMATE, and a call with no
+        // token data at all contributes 0 — both change how the headline must
+        // be read, so both are tracked rather than left implicit.
+        if (evaluated === 0 && submittedEst > 0) localCallsEstimatedPrompt++;
+        if (submittedEst === 0 && ct === 0) localCallsUntokened++;
     }
 
     const bump = (into: Record<string, ModelStats>) => {
@@ -289,6 +306,8 @@ export function getInferenceSnapshot(): InferenceSnapshot {
         cloudTokensSavedEst,
         localPromptTokensEst,
         localCompletionTokens,
+        localCallsEstimatedPrompt,
+        localCallsUntokened,
         thinkOnlyRetries,
         thinkOnlyRetryPct: localCalls > 0 ? Math.round((thinkOnlyRetries / localCalls) * 100) : 0,
         totalPrompts,
@@ -308,6 +327,8 @@ export function resetInferenceMetrics(): void {
     cloudTokensSavedEst = 0;
     localPromptTokensEst = 0;
     localCompletionTokens = 0;
+    localCallsEstimatedPrompt = 0;
+    localCallsUntokened = 0;
     thinkOnlyRetries = 0;
     totalPrompts = 0;
     nonDelegatedCount = 0;

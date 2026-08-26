@@ -1061,6 +1061,7 @@ Prism exposes 40+ MCP tools. The core memory loop:
 | `knowledge_ingest` | Teach Prism a codebase or document |
 | `prism_infer` | Local-first inference (route/chat/code modes, thinking, cloud escalation) |
 | `inference_metrics` | Session delegation or persisted MCP + VS Code panel local/cloud stats |
+| `local_savings` | Token volume local serving kept off your cloud model, all time / 30 days / session |
 
 ### `query_memory_natural` — memory first, current sources when needed
 
@@ -1117,6 +1118,53 @@ Call `inference_metrics` anytime mid-session to see how many `prism_infer` calls
 The same block also appears automatically in `session_save_ledger` and `session_save_handoff` responses at session end.
 
 **Note:** The default session view tracks this MCP process's `prism_infer` delegation. The all-time view combines persisted MCP calls with Synalux VS Code panel inference. Neither view includes the host agent's own token spend; use that host's native usage reporting when available.
+
+### `local_savings` — what local serving actually displaced
+
+`inference_metrics` reports raw counters. `local_savings` answers the question
+behind them: how much work never reached your cloud model. Call the tool in any
+host, or run `prism savings` from a terminal (`--period month|all|session`,
+`--json` for machine-readable output):
+
+```
+💾 Local serving — LAST 30 DAYS (2026-08-02 → 2026-08-26)
+
+  ~510K tokens kept off your cloud model
+  53 call(s) served locally of 58 routed (91%)
+  Breakdown: 461,400 prompt + 48,400 completion
+
+  By model:
+    prism-coder:9b: 41 call(s), ~505K tokens
+    prism-coder:4b: 12 call(s), ~4.8K tokens
+
+  Counts tokens a local model handled instead of your cloud model. On the token
+  axis, the token count is measured — a floor, with known undercounts listed
+  when present. On the displacement axis, prism cannot observe the call your
+  host would have made, so whether all of it would have hit the cloud is an
+  assumption. Read it as: at most this much displacement, of at least this
+  token volume.
+
+  Caveats:
+    · 12 local call(s) hit the KV cache, so Ollama reported 0 prompt tokens for
+      context that was really submitted — prompt tokens are undercounted.
+    · 3 refused call(s) excluded — nothing was served, so nothing was displaced.
+```
+
+**Why tokens and not money.** Prism reports token volume and never a dollar
+figure, because it cannot honestly produce one: published rates change and a
+bundled price table would be wrong on a timer; prism never observes which model
+your host would have used, and that choice alone is a multiple-fold spread on
+the same tokens; and most users are on flat plans where a currency figure means
+nothing at all. Tokens are the one unit prism measured itself. If you know your
+own effective rate, multiply — the split is printed for exactly that reason.
+
+Refused calls are excluded, the VS Code panel-playground share is disclosed
+separately, and the known sources of undercount are listed inline rather than
+left implicit — so the durable (`month`/`all`) headline is a measured floor
+rather than a number that merely looks precise. The `session` view is the one
+exception: on KV-cache hits it estimates submitted prompt tokens from text
+(the ledger counts the measured 0 instead), so it is marked `(est.)` and says
+so whenever that happens.
 
 ### Local-model delegation (default)
 

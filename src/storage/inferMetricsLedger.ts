@@ -285,6 +285,21 @@ export interface LocalSavings {
      *  uncounted. Another source of understatement, tracked separately because
      *  its cause and fix differ from the row above. */
     local_calls_with_cached_prompt: number;
+    /** Local calls whose prompt tokens are character-based ESTIMATES rather
+     *  than measured counts. Always 0 for ledger views (they sum raw measured
+     *  prompt_tokens); the SESSION view sets it, because there a KV-cache hit
+     *  is estimated from prompt text instead of counted as 0 — which is why
+     *  the same call can read far higher in 'session' than in 'month'/'all'.
+     *  Nonzero ⇒ the headline is an estimate, not a floor, and the renderer
+     *  must say so (adversarial review finding C1). */
+    local_calls_with_estimated_prompt: number;
+    /** Local serves that came from the VS Code panel playground (caller
+     *  'panel') rather than agent delegation, with their token volume. They
+     *  ARE local serving, but "kept off your cloud model" is a weaker claim
+     *  for playground traffic, so the renderer discloses the share instead of
+     *  folding it in silently (adversarial review finding O2). */
+    panel_local_calls: number;
+    panel_local_tokens: number;
     /** Refused/never-served rows excluded from every figure above. */
     excluded_refusals: number;
     first_ts: number | null;
@@ -329,6 +344,9 @@ export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings 
                           AND prompt_tokens IS NULL AND completion_tokens IS NULL
                          THEN 1 ELSE 0 END) AS untokened,
                 SUM(CASE WHEN ${SERVED_LOCAL} AND prompt_tokens = 0 THEN 1 ELSE 0 END) AS cached_prompt,
+                SUM(CASE WHEN ${SERVED_LOCAL} AND COALESCE(caller, 'mcp') = 'panel' THEN 1 ELSE 0 END) AS panel_calls,
+                COALESCE(SUM(CASE WHEN ${SERVED_LOCAL} AND COALESCE(caller, 'mcp') = 'panel'
+                                  THEN COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0) END), 0) AS panel_tokens,
                 SUM(CASE WHEN used_cloud = 0 AND NOT (${SERVED_LOCAL}) THEN 1 ELSE 0 END) AS refusals,
                 MIN(CASE WHEN ${SERVED_LOCAL} THEN ts END) AS first_ts,
                 MAX(CASE WHEN ${SERVED_LOCAL} THEN ts END) AS last_ts
@@ -366,6 +384,9 @@ export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings 
             local_total_tokens: pt + ct,
             local_calls_without_tokens: Number(r.untokened ?? 0),
             local_calls_with_cached_prompt: Number(r.cached_prompt ?? 0),
+            local_calls_with_estimated_prompt: 0,
+            panel_local_calls: Number(r.panel_calls ?? 0),
+            panel_local_tokens: Number(r.panel_tokens ?? 0),
             excluded_refusals: Number(r.refusals ?? 0),
             first_ts: r.first_ts == null ? null : Number(r.first_ts),
             last_ts: r.last_ts == null ? null : Number(r.last_ts),
