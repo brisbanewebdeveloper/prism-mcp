@@ -419,6 +419,7 @@ describe("Health Check: runHealthCheck Engine", () => {
     const report = runHealthCheck(stats);
     expect(report.counts.warnings).toBeGreaterThan(0);
     expect(report.issues.some(i => i.message.toLowerCase().includes("embedding"))).toBe(true);
+    expect(report.issues.find(i => i.check === "missing_embeddings")?.fixable).toBe(true);
   });
 
   it("unhealthy when many embeddings missing", () => {
@@ -449,6 +450,7 @@ describe("Health Check: runHealthCheck Engine", () => {
     };
     const report = runHealthCheck(stats);
     expect(report.issues.some(i => i.message.toLowerCase().includes("orphan"))).toBe(true);
+    expect(report.issues.find(i => i.check === "orphaned_handoffs")?.fixable).toBe(true);
   });
 
   it("detects duplicate entries", () => {
@@ -466,7 +468,28 @@ describe("Health Check: runHealthCheck Engine", () => {
       totalCrdtMerges: 0,
     };
     const report = runHealthCheck(stats);
-    expect(report.issues.some(i => i.message.toLowerCase().includes("duplicate") || i.message.toLowerCase().includes("similar"))).toBe(true);
+    const duplicateIssue = report.issues.find(i => i.check === "duplicate_entries");
+    expect(duplicateIssue).toEqual(expect.objectContaining({
+      fixable: false,
+      suggestion: "Review the duplicate pairs below and merge only confirmed duplicates manually",
+    }));
+    expect(duplicateIssue?.duplicatePairs).toHaveLength(1);
+    expect(duplicateIssue?.duplicatePairs?.[0]).toEqual(expect.objectContaining({
+      idA: "1",
+      idB: "2",
+      project: "p1",
+      similarity: 1,
+    }));
+    expect(duplicateIssue?.duplicateGroups).toEqual([
+      expect.objectContaining({
+        project: "p1",
+        pairCount: 1,
+        entries: expect.arrayContaining([
+          expect.objectContaining({ id: "1", summary: expect.any(String) }),
+          expect.objectContaining({ id: "2", summary: expect.any(String) }),
+        ]),
+      }),
+    ]);
   });
 
   it("timestamp is valid ISO string", () => {

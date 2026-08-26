@@ -271,10 +271,18 @@ export interface HealthStats {
   // embeddable summary/decision text.
   unrepairableEmbeddings: number;
 
-  // All active ledger entries (id + project + summary) — used
-  // for in-memory duplicate detection via JS Jaccard similarity
+  // All active ledger entries (id + project + summary + review metadata) — used
+  // for in-memory duplicate detection via JS Jaccard similarity and review
   // (avoids Levenshtein SQL dependency that SQLite doesn't have)
-  activeLedgerSummaries: Array<{ id: string; project: string; summary: string }>;
+  activeLedgerSummaries: Array<{
+    id: string;
+    project: string;
+    summary: string;
+    createdAt?: string;
+    sessionDate?: string;
+    decisions?: string[];
+    filesChanged?: string[];
+  }>;
 
   // Projects that have handoff state but zero active ledger entries
   orphanedHandoffs: Array<{ project: string }>;

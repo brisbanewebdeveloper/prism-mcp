@@ -136,6 +136,9 @@ export interface HealthIssue {
   message: string;      // human-readable description of the issue
   count: number;        // how many items are affected
   suggestion: string;   // what to do about it
+  fixable?: boolean;    // true when the dashboard cleanup endpoint can act on it
+  duplicatePairs?: DuplicatePair[]; // review details for duplicate_entries only
+  duplicateGroups?: DuplicateGroup[]; // connected duplicate clusters for review/actions
 }
 
 /**
@@ -236,6 +239,20 @@ export interface DuplicatePair {
   summaryB: string;     // second entry's summary text
 }
 
+/** A connected set of duplicate entries that can be reviewed as one cluster. */
+export interface DuplicateGroup {
+  project: string;
+  entries: Array<{
+    id: string;
+    summary: string;
+    createdAt?: string;
+    sessionDate?: string;
+    decisions?: string[];
+    filesChanged?: string[];
+  }>;
+  pairCount: number;
+}
+
 /**
  * Find duplicate entries within the same project.
  *
@@ -317,6 +334,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       message: `${stats.missingEmbeddings} ledger entries have no embedding vector and can be repaired automatically`,
       count: stats.missingEmbeddings,    // how many are affected
       suggestion: "Run session_backfill_embeddings to generate the missing vectors",
+      fixable: true,
     });
   } else if (stats.missingEmbeddings < 0) {
     // -1 = coverage is UNKNOWN (portal unreachable, or a portal that predates
@@ -330,6 +348,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       message: "Embedding coverage could not be verified (portal did not report a count)",
       count: 0,
       suggestion: "Update the Synalux portal, or check connectivity, then re-run session_health_check",
+      fixable: false,
     });
   }
 
@@ -340,6 +359,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       message: `${stats.unrepairableEmbeddings} ledger entries have no embeddable text, so embedding repair will skip them`,
       count: stats.unrepairableEmbeddings,
       suggestion: "Add a non-empty summary or decision to those entries, or delete the invalid rows if they should not exist.",
+      fixable: false,
     });
   }
 
@@ -351,12 +371,57 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
     0.8                                  // 80% threshold
   );
   if (duplicates.length > 0) {           // any duplicates found?
+    const entryById = new Map(stats.activeLedgerSummaries.map(entry => [entry.id, entry]));
+    const parent = new Map<string, string>();
+    const findRoot = (id: string): string => {
+      const current = parent.get(id);
+      if (!current || current === id) return id;
+      const root = findRoot(current);
+      parent.set(id, root);
+      return root;
+    };
+    const union = (left: string, right: string) => {
+      if (!parent.has(left)) parent.set(left, left);
+      if (!parent.has(right)) parent.set(right, right);
+      const leftRoot = findRoot(left);
+      const rightRoot = findRoot(right);
+      if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+    };
+    for (const pair of duplicates) union(pair.idA, pair.idB);
+
+    const groupsByRoot = new Map<string, DuplicateGroup>();
+    for (const pair of duplicates) {
+      const root = findRoot(pair.idA);
+      let group = groupsByRoot.get(root);
+      if (!group) {
+        group = { project: pair.project, entries: [], pairCount: 0 };
+        groupsByRoot.set(root, group);
+      }
+      group.pairCount++;
+    }
+    for (const [id, entry] of entryById) {
+      if (!parent.has(id)) continue;
+      const group = groupsByRoot.get(findRoot(id));
+      if (!group) continue;
+      group.entries.push({
+        id,
+        summary: entry.summary,
+        createdAt: entry.createdAt,
+        sessionDate: entry.sessionDate,
+        decisions: entry.decisions,
+        filesChanged: entry.filesChanged,
+      });
+    }
+
     issues.push({
       check: "duplicate_entries",        // check identifier
       severity: duplicates.length > 5 ? "warning" : "info",  // many dupes = warning
       message: `${duplicates.length} duplicate entry pairs found (≥80% word overlap)`,
       count: duplicates.length,          // how many pairs
-      suggestion: "Consider running session_compact_ledger to merge similar entries",
+      suggestion: "Review the duplicate pairs below and merge only confirmed duplicates manually",
+      fixable: false,
+      duplicatePairs: duplicates,
+      duplicateGroups: [...groupsByRoot.values()],
     });
   }
 
@@ -373,6 +438,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       message: `${stats.orphanedHandoffs.length} handoff(s) exist with no ledger entries: ${projectNames}`,
       count: stats.orphanedHandoffs.length,  // how many orphans
       suggestion: "Use knowledge_forget to clean up, or save a ledger entry for these projects",
+      fixable: true,
     });
   }
 
@@ -386,6 +452,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       message: `${stats.staleRollups} rollup entries have no archived originals`,
       count: stats.staleRollups,         // how many stale
       suggestion: "These rollups are safe but may contain outdated summaries",
+      fixable: false,
     });
   }
 
@@ -401,6 +468,7 @@ export function runHealthCheck(stats: HealthStats): HealthReport {
       suggestion: stats.totalCrdtMerges > 50
         ? "High merge count may indicate excessive concurrent writes. Consider staggering agent schedules."
         : "CRDT merges are working as expected — no action needed.",
+      fixable: false,
     });
   }
 

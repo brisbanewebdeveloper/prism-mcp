@@ -563,6 +563,47 @@ return false;}
         }
       }
 
+      // ─── API: Resolve one duplicate cluster ───
+      // Soft-deletes every member except the explicitly retained entry.
+      if (url.pathname === "/api/health/duplicates/resolve" && req.method === "POST") {
+        try {
+          const parsedBody: unknown = JSON.parse(await readBody(req) || "{}");
+          const body = parsedBody && typeof parsedBody === "object" ? parsedBody as Record<string, unknown> : {};
+          const keepId = typeof body.keepId === "string" ? body.keepId : "";
+          const duplicateIds = Array.isArray(body.duplicateIds) ? body.duplicateIds : [];
+          if (!keepId || duplicateIds.length === 0 || duplicateIds.some((id: unknown) => typeof id !== "string") ||
+              duplicateIds.includes(keepId) || new Set(duplicateIds).size !== duplicateIds.length) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: "keepId and unique duplicateIds are required" }));
+          }
+
+          const s = await getStorageSafe();
+          if (!s) { res.writeHead(503, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "Storage initializing..." })); }
+          const { runHealthCheck } = await import("../utils/healthCheck.js");
+          const report = runHealthCheck(await s.getHealthStats(PRISM_USER_ID));
+          const duplicateIssue = report.issues.find(i => i.check === "duplicate_entries");
+          const group = duplicateIssue?.duplicateGroups?.find(g => g.entries.some(entry => entry.id === keepId));
+          const expectedDeletes = group?.entries.filter(entry => entry.id !== keepId).map(entry => entry.id) || [];
+          const requested = new Set(duplicateIds);
+          if (!group || expectedDeletes.length !== duplicateIds.length || expectedDeletes.some(id => !requested.has(id))) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: "Requested entries are not one complete current duplicate cluster" }));
+          }
+
+          for (const id of expectedDeletes) {
+            await s.softDeleteLedger(id, PRISM_USER_ID, `Confirmed duplicate of ${keepId}`);
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: true, keptId: keepId, deletedIds: expectedDeletes }));
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : "Duplicate resolution failed";
+          console.error("[Dashboard] Duplicate resolution error:", err);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: errMsg }));
+        }
+      }
+
       // ─── API: Brain Health Cleanup (v3.1) ───
       // Deletes orphaned handoffs and backfills missing embeddings.
       if (url.pathname === "/api/health/cleanup" && req.method === "POST") {

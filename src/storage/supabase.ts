@@ -150,6 +150,7 @@ export class SupabaseStorage implements StorageBackend {
     }, {
       id: `eq.${id}`,
       user_id: `eq.${userId}`,
+      deleted_at: "is.null",
     });
     debugLog(`[SupabaseStorage] Soft-deleted ledger entry ${id} (reason: ${reason || "none"})`);
   }
@@ -599,6 +600,7 @@ export class SupabaseStorage implements StorageBackend {
       select: "summary,decisions",
       user_id: `eq.${userId}`,
       archived_at: "is.null",
+      deleted_at: "is.null",
       embedding: "is.null",
     });
     const missingRows = Array.isArray(missingData) ? missingData : [];
@@ -611,15 +613,20 @@ export class SupabaseStorage implements StorageBackend {
     const unrepairableEmbeddings = missingRows.length - missingEmbeddings;
 
     const summData = await supabaseGet("session_ledger", {
-      select: "id,project,summary",
+      select: "id,project,summary,decisions,files_changed,session_date,created_at",
       user_id: `eq.${userId}`,
       archived_at: "is.null",
+      deleted_at: "is.null",
     });
     const activeLedgerSummaries = (Array.isArray(summData) ? summData : []).map(
       (r: any) => ({
         id: r.id as string,
         project: r.project as string,
         summary: r.summary as string,
+        createdAt: typeof r.created_at === "string" ? r.created_at : undefined,
+        sessionDate: typeof r.session_date === "string" ? r.session_date : undefined,
+        decisions: Array.isArray(r.decisions) ? r.decisions as string[] : undefined,
+        filesChanged: Array.isArray(r.files_changed) ? r.files_changed as string[] : undefined,
       })
     );
 
@@ -635,6 +642,7 @@ export class SupabaseStorage implements StorageBackend {
       select: "project",
       user_id: `eq.${userId}`,
       archived_at: "is.null",
+      deleted_at: "is.null",
     });
     const ledgerProjects = new Set(
       (Array.isArray(ledgerData) ? ledgerData : [])
@@ -649,6 +657,7 @@ export class SupabaseStorage implements StorageBackend {
       user_id: `eq.${userId}`,
       is_rollup: "eq.true",
       archived_at: "is.null",
+      deleted_at: "is.null",
     });
     const archivedData = await supabaseGet("session_ledger", {
       select: "project",
@@ -1865,4 +1874,3 @@ export class SupabaseStorage implements StorageBackend {
     });
   }
 }
-

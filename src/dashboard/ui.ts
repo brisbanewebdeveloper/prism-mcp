@@ -2108,6 +2108,75 @@ function loadIdentityChip() {
         });
     });
 })();
+function renderHealthIssues(issues) {
+    if (!issues || issues.length === 0) {
+        return '<div style="color:var(--accent-green);font-size:0.8rem">🎉 No issues found</div>';
+    }
+    var sevIcons = { error: '🔴', warning: '🟡', info: '🔵' };
+    return issues.map(function (i) {
+        var duplicatePairs = Array.isArray(i.duplicatePairs) ? i.duplicatePairs : [];
+        var duplicateGroups = Array.isArray(i.duplicateGroups) ? i.duplicateGroups : [];
+        var duplicateDetails = '';
+        if (duplicateGroups.length > 0) {
+            duplicateDetails = duplicateGroups.map(function (group) {
+                var entries = Array.isArray(group.entries) ? group.entries : [];
+                var entryIds = entries.map(function (entry) { return String(entry.id || ''); });
+                var entryHtml = entries.map(function (entry) {
+                    var date = entry.sessionDate || entry.createdAt || '';
+                    var displayDate = date ? formatDate(date) : 'Date unavailable';
+                    var decisions = Array.isArray(entry.decisions) && entry.decisions.length > 0
+                        ? '<div>Decisions: ' + escapeHtml(entry.decisions.join(', ')) + '</div>' : '';
+                    var files = Array.isArray(entry.filesChanged) && entry.filesChanged.length > 0
+                        ? '<div>Files: ' + escapeHtml(entry.filesChanged.join(', ')) + '</div>' : '';
+                    return '<div style="margin:0.35rem 0;padding:0.45rem 0.5rem;border-left:2px solid var(--accent-cyan);color:var(--text-secondary)">' +
+                        '<div style="color:var(--text-muted)">' + escapeHtml(displayDate) + ' · ' + escapeHtml(String(entry.id || '').slice(0, 8)) + '</div>' +
+                        '<div style="margin-top:0.2rem">' + escapeHtml(String(entry.summary || '')) + '</div>' + decisions + files +
+                        '<button type="button" class="cleanup-btn" style="margin-top:0.35rem;font-size:0.72rem" data-keep-id="' + escapeHtml(String(entry.id || '')) + '" data-duplicate-ids="' + escapeHtml(JSON.stringify(entryIds.filter(function (id) { return id !== String(entry.id || ''); }))) + '" onclick="resolveDuplicateGroup(this.dataset.keepId, JSON.parse(this.dataset.duplicateIds))">Keep this entry</button>' +
+                        '</div>';
+                }).join('');
+                return '<details style="margin-top:0.35rem;padding-left:1.35rem">' +
+                    '<summary style="cursor:pointer;color:var(--accent-cyan)">Review ' + entries.length + ' duplicate entries (' + (group.pairCount || 0) + ' pairs)</summary>' +
+                    '<div style="margin-top:0.35rem">' + entryHtml + '</div></details>';
+            }).join('');
+        } else if (duplicatePairs.length > 0) {
+            duplicateDetails = '<details style="margin-top:0.35rem;padding-left:1.35rem">' +
+                '<summary style="cursor:pointer;color:var(--accent-cyan)">Review ' + duplicatePairs.length + ' duplicate pair' + (duplicatePairs.length === 1 ? '' : 's') + '</summary>' +
+                '<div style="margin-top:0.35rem">' + duplicatePairs.map(function (pair) {
+                    pair = pair || {};
+                    return '<div style="margin:0.35rem 0;padding:0.35rem 0.5rem;border-left:2px solid var(--accent-cyan);color:var(--text-secondary)">' +
+                        '<div>' + escapeHtml(String(pair.project || '?')) + ' · ' + escapeHtml(pair.similarity == null ? '?' : String(pair.similarity)) + ' similarity · ' +
+                        escapeHtml(pair.idA ? String(pair.idA).slice(0, 8) : '?') + ' ↔ ' + escapeHtml(pair.idB ? String(pair.idB).slice(0, 8) : '?') + '</div>' +
+                        '<div style="margin-top:0.2rem">A: ' + escapeHtml(String(pair.summaryA || '')) + '</div>' +
+                        '<div>B: ' + escapeHtml(String(pair.summaryB || '')) + '</div>' +
+                        '</div>';
+                }).join('') + '</div></details>';
+        }
+        return '<div class="issue-row"><span>' + (sevIcons[i.severity] || '❓') + '</span>' +
+            '<span>' + escapeHtml(i.message || '') + duplicateDetails + '</span></div>';
+    }).join('');
+}
+function hasFixableHealthIssue(issues) {
+    return Array.isArray(issues) && issues.some(function (i) { return i && i.fixable === true; });
+}
+function resolveDuplicateGroup(keepId, duplicateIds) {
+    if (!keepId || !Array.isArray(duplicateIds) || duplicateIds.length === 0) return;
+    if (!window.confirm('Soft-delete ' + duplicateIds.length + ' confirmed duplicate entr' + (duplicateIds.length === 1 ? 'y' : 'ies') + ' and keep this entry?')) return;
+    fetch('/api/health/duplicates/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keepId: keepId, duplicateIds: duplicateIds })
+    }).then(function (res) {
+        return res.json().then(function (data) {
+            if (!res.ok) throw new Error(data.error || 'Duplicate resolution failed');
+            return data;
+        });
+    }).then(function (data) {
+        showFixedToast('Kept ' + String(data.keptId || keepId).slice(0, 8) + ' and soft-deleted ' + (data.deletedIds || []).length + ' duplicate entr' + ((data.deletedIds || []).length === 1 ? 'y' : 'ies') + '.', true);
+        loadProject();
+    }).catch(function (err) {
+        showFixedToast(err.message || 'Duplicate resolution failed.', false);
+    });
+}
 function loadProject() {
     return __awaiter(this, void 0, void 0, function () {
         var project, res, data, ctx, todos, todoList, meta, briefingCard, visualCard, visuals, historyEl, ledgerEl, healthRes, healthData, healthCard, healthDot, healthLabel, healthSummary, healthIssues, statusMap, t, issues, cleanupBtn, sevIcons, he_1, e_3;
@@ -2238,22 +2307,9 @@ function loadProject() {
                         (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
                     issues = healthData.issues || [];
                     cleanupBtn = document.getElementById('cleanupBtn');
-                    if (issues.length > 0) {
-                        sevIcons = { error: '🔴', warning: '🟡', info: '🔵' };
-                        healthIssues.innerHTML = issues.map(function (i) {
-                            return '<div class="issue-row">' +
-                                '<span>' + (sevIcons[i.severity] || '❓') + '</span>' +
-                                '<span>' + escapeHtml(i.message) + '</span>' +
-                                '</div>';
-                        }).join('');
-                        if (cleanupBtn)
-                            cleanupBtn.style.display = 'inline-block';
-                    }
-                    else {
-                        healthIssues.innerHTML = '<div style="color:var(--accent-green);font-size:0.8rem">🎉 No issues found</div>';
-                        if (cleanupBtn)
-                            cleanupBtn.style.display = 'none';
-                    }
+                    healthIssues.innerHTML = renderHealthIssues(issues);
+                    if (cleanupBtn)
+                        cleanupBtn.style.display = hasFixableHealthIssue(issues) ? 'inline-block' : 'none';
                     healthCard.style.display = 'block';
                     return [3 /*break*/, 8];
                 case 7:
@@ -4403,21 +4459,11 @@ function cleanupIssues() {
                                         t = healthData.totals || {};
                                         healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' + (t.handoffs || 0) + ' handoffs · ' + (t.rollups || 0) + ' rollups' + (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
                                         issues = healthData.issues || [];
-                                        if (issues.length > 0) {
-                                            sevIcons = { error: '🔴', warning: '🟡', info: '🔵' };
-                                            healthIssues.innerHTML = issues.map(function (i) {
-                                                return '<div class="issue-row"><span>' + (sevIcons[i.severity] || '❓') + '</span><span>' + escapeHtml(i.message) + '</span></div>';
-                                            }).join('');
-                                            if (cleanupBtn) {
-                                                cleanupBtn.disabled = false;
-                                                cleanupBtn.textContent = '🧹 Fix Issues';
-                                                cleanupBtn.style.display = 'inline-block';
-                                            }
-                                        }
-                                        else {
-                                            healthIssues.innerHTML = '<div style="color:var(--accent-green);font-size:0.8rem">🎉 No issues found</div>';
-                                            if (cleanupBtn)
-                                                cleanupBtn.style.display = 'none';
+                                        healthIssues.innerHTML = renderHealthIssues(issues);
+                                        if (cleanupBtn) {
+                                            cleanupBtn.disabled = false;
+                                            cleanupBtn.textContent = '🧹 Fix Issues';
+                                            cleanupBtn.style.display = hasFixableHealthIssue(issues) ? 'inline-block' : 'none';
                                         }
                                         return [3 /*break*/, 4];
                                     case 3:

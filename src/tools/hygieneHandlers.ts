@@ -478,6 +478,15 @@ export async function sessionHealthCheckHandler(args: unknown) {
         }[issue.severity];
         text += `${severityIcon} **[${issue.severity.toUpperCase()}]** ${issue.message}\n`;
         text += `   💡 ${issue.suggestion}\n\n`;
+        if (issue.duplicatePairs && issue.duplicatePairs.length > 0) {
+          text += "   🔎 Duplicate pairs for review:\n";
+          for (const pair of issue.duplicatePairs) {
+            text += `   • ${pair.project} · ${pair.similarity} similarity · ` +
+              `${pair.idA} ↔ ${pair.idB}\n`;
+            text += `     A: ${pair.summaryA}\n     B: ${pair.summaryB}\n`;
+          }
+          text += "\n";
+        }
       }
     } else {
       text += `🎉 No issues found — your brain is in perfect health!\n`;

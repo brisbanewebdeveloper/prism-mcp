@@ -58,4 +58,28 @@ describe("health check embedding classification", () => {
       }),
     ]));
   });
+
+  it("excludes soft-deleted entries from health totals and duplicate candidates", async () => {
+    const result = await storage.saveLedger({
+      project: "deleted-project",
+      conversation_id: "deleted-conv",
+      summary: "This entry is removed from active health checks.",
+      user_id: TEST_USER_ID,
+      decisions: [],
+    });
+    const id = Array.isArray(result)
+      ? result[0]?.id
+      : result && typeof result === "object"
+        ? (result as { id?: unknown }).id
+        : undefined;
+    expect(typeof id).toBe("string");
+
+    await storage.softDeleteLedger(id as string, TEST_USER_ID, "test tombstone");
+    const stats = await storage.getHealthStats(TEST_USER_ID);
+
+    expect(stats.activeLedgerSummaries.some((entry: { id: string }) => entry.id === id)).toBe(false);
+    expect(stats.totalActiveEntries).toBe(
+      stats.activeLedgerSummaries.length,
+    );
+  });
 });

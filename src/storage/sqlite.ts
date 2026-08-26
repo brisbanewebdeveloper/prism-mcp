@@ -1240,7 +1240,7 @@ export class SqliteStorage implements StorageBackend {
     await this.db.execute({
       sql: `UPDATE session_ledger
             SET deleted_at = datetime('now'), deleted_reason = ?
-            WHERE id = ? AND user_id = ?`,
+            WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
       args: [reason || null, id, userId],
     });
     debugLog(`[SqliteStorage] Soft-deleted ledger entry ${id} (reason: ${reason || "none"})`);
@@ -2119,6 +2119,7 @@ export class SqliteStorage implements StorageBackend {
         FROM session_ledger
         WHERE user_id = ?
           AND archived_at IS NULL
+          AND deleted_at IS NULL
           AND embedding IS NULL
       `,
       args: [userId],
@@ -2167,6 +2168,7 @@ export class SqliteStorage implements StorageBackend {
         FROM session_ledger
         WHERE user_id = ?
           AND archived_at IS NULL
+          AND deleted_at IS NULL
           AND embedding IS NULL
       `,
       args: [userId],  // bind user_id to the ? placeholder
@@ -2189,10 +2191,11 @@ export class SqliteStorage implements StorageBackend {
     // The Compactor keeps the active ledger small, so this is safe.
     const summariesResult = await this.db.execute({
       sql: `
-        SELECT id, project, summary
+        SELECT id, project, summary, decisions, files_changed, session_date, created_at
         FROM session_ledger
         WHERE user_id = ?
           AND archived_at IS NULL
+          AND deleted_at IS NULL
       `,
       args: [userId],  // bind user_id to the ? placeholder
     });
@@ -2201,6 +2204,10 @@ export class SqliteStorage implements StorageBackend {
       id: row.id as string,         // unique entry identifier
       project: row.project as string, // project this entry belongs to
       summary: row.summary as string, // text we compare for duplicates
+      createdAt: row.created_at as string | undefined,
+      sessionDate: row.session_date as string | undefined,
+      decisions: this.parseJsonColumn(row.decisions) as string[] | undefined,
+      filesChanged: this.parseJsonColumn(row.files_changed) as string[] | undefined,
     }));
 
     // ── Check 3: Find orphaned handoffs ──────────────────────────
@@ -2215,6 +2222,7 @@ export class SqliteStorage implements StorageBackend {
           ON h.project = l.project
           AND h.user_id = l.user_id
           AND l.archived_at IS NULL
+          AND l.deleted_at IS NULL
         WHERE h.user_id = ?
         GROUP BY h.project
         HAVING COUNT(l.id) = 0
@@ -2241,6 +2249,7 @@ export class SqliteStorage implements StorageBackend {
         WHERE r.user_id = ?
           AND r.is_rollup = 1
           AND r.archived_at IS NULL
+          AND r.deleted_at IS NULL
         GROUP BY r.id
         HAVING COUNT(a.id) = 0
       `,
@@ -2255,12 +2264,12 @@ export class SqliteStorage implements StorageBackend {
       sql: `
         SELECT
           (SELECT COUNT(*) FROM session_ledger
-            WHERE user_id = ? AND archived_at IS NULL) as active,
+            WHERE user_id = ? AND archived_at IS NULL AND deleted_at IS NULL) as active,
           (SELECT COUNT(*) FROM session_handoffs
             WHERE user_id = ?) as handoffs,
           (SELECT COUNT(*) FROM session_ledger
             WHERE user_id = ? AND is_rollup = 1
-            AND archived_at IS NULL) as rollups
+            AND archived_at IS NULL AND deleted_at IS NULL) as rollups
       `,
       args: [userId, userId, userId],  // bind user_id 3x (one per subquery)
     });
