@@ -192,6 +192,15 @@ describe('fetchTeamSavings / renderTeamSavings', () => {
     expect(calledUrl).toContain('workspace_id=ws-1');
   });
 
+  it('discloses shared machines counted once, and tolerates portals that omit the field', () => {
+    // Review F1: a machine used by two members is deduped server-side; the
+    // render must say so rather than leave the member arithmetic mysterious.
+    const withShared = { ...team, shared_devices: 1 };
+    expect(renderTeamSavings(withShared)).toMatch(/1 machine\(s\) reported by more than one member — each counted once/);
+    expect(renderTeamSavings(team)).not.toMatch(/more than one member/);
+    expect(isTeamSavings(withShared)).toBe(true);
+  });
+
   it('isTeamSavings rejects structural garbage', () => {
     expect(isTeamSavings(team)).toBe(true);
     expect(isTeamSavings(null)).toBe(false);

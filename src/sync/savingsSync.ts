@@ -127,6 +127,10 @@ export interface TeamSavings {
     total_local_calls: number;
     total_cloud_calls: number;
     total_local_tokens: number;
+    /** Machines whose rows arrived under more than one member — the portal
+     *  counts each once (latest push wins) and reports how many, so the
+     *  render can disclose it. Optional: older portals omit it. */
+    shared_devices?: number;
 }
 
 export function isTeamSavings(value: unknown): value is TeamSavings {
@@ -200,6 +204,12 @@ export function renderTeamSavings(t: TeamSavings): string {
         for (const m of [...t.members].sort((a, b) => b.local_tokens - a.local_tokens)) {
             lines.push(`    ${m.label}: ${m.local_calls.toLocaleString("en-US")} call(s), ~${abbrev(m.local_tokens)} tokens (${m.devices} device(s))`);
         }
+    }
+    lines.push("");
+    if ((t.shared_devices ?? 0) > 0) {
+        lines.push("");
+        lines.push(`  ${t.shared_devices} machine(s) reported by more than one member — each counted once`);
+        lines.push("  (latest push wins), attributed to the member who pushed last.");
     }
     lines.push("");
     lines.push("  Aggregated from members who opted in to savings sync. Counters only — no prompts,");

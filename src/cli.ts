@@ -1141,7 +1141,7 @@ program
   .option('--workspace <id>', 'Workspace id for --team')
   .option('--sync-enable', 'Opt in to savings sync (paid): daily COUNTERS only, never content')
   .option('--sync-disable', 'Opt out of savings sync')
-  .option('--sync-now', 'Push the trailing window of daily counters immediately')
+  .option('--sync-now', 'Push the trailing window of daily counters now (requires sync enabled first)')
   .option('--json', 'Emit machine-readable JSON output')
   .action(async (options: { period?: string; days?: string; team?: boolean; workspace?: string;
                             syncEnable?: boolean; syncDisable?: boolean; syncNow?: boolean; json?: boolean }) => {
