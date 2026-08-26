@@ -1,6 +1,6 @@
 # Prism Coder
 
-**Give your AI agent memory that lasts.** Persistent sessions, knowledge graphs, and offline tool-routing — fully local and free.
+**Give your AI agent memory that lasts — and see the cloud tokens it never had to spend.** Persistent sessions, knowledge graphs, offline tool-routing, and an auditable savings meter. Fully local and free.
 
 [![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
@@ -11,7 +11,7 @@
   <img src="docs/mind-palace-dashboard-v20.8.png" alt="Prism Mind Palace dashboard v20.8.0 — project state with handoff summary, pending TODOs, intent health, neural graph, and time-travel history" width="700" />
 </p>
 
-Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claude, Cursor, and other AI tools long-term memory that survives across sessions. It ships with the open-weight `prism-coder` model fleet (2B–27B) for fast, offline tool-routing — no cloud required.
+Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claude, Cursor, and other AI tools long-term memory that survives across sessions. It ships with the open-weight `prism-coder` model fleet (2B–27B) for fast, offline tool-routing — no cloud required. And it keeps score: every call served locally is metered, so `prism savings` shows the token volume that never reached your cloud model — [measured honestly, in tokens](#local_savings--what-local-serving-actually-displaced).
 
 **No account needed. No API keys. Runs on your machine.**  
 A paid subscription adds cloud sync, higher model tiers, and team features through the [Synalux portal](https://synalux.ai).
@@ -25,6 +25,11 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
 - **Local-first inference** — bounded work is routed through local Ollama models
   first, with automatic 2B/4B/9B/27B selection based on installed models,
   available RAM, context fit, and subscription entitlements.
+- **A savings meter you can audit** — `prism savings` (or the `local_savings`
+  tool from any host) reports the token volume local serving kept off your
+  cloud model: headline, local share, per-model breakdown. It reports tokens,
+  never an invented dollar figure, and prints its assumptions and known
+  undercounts inline — a number you can check, not marketing.
 - **Route-output enforcement** — route mode returns only well-formed calls to
   tools the host actually advertised. Standard and higher plans can add
   authenticated deterministic correction; `route_guard: "local"` keeps the
@@ -55,6 +60,23 @@ Prism-managed entries after an upgrade. Restart the host after connecting.
 Prism works locally without an account, API key, or cloud subscription. Add a
 Synalux subscription when you want cloud memory, paid-tier skills, or team
 features.
+
+After a few sessions, ask what it's been worth:
+
+```bash
+prism savings --period month
+```
+
+```
+💾 Local serving — LAST 30 DAYS
+  ~510K tokens kept off your cloud model
+  53 call(s) served locally of 58 routed (91%)
+```
+
+Your numbers will differ — that's the point: it reports what *your* machine
+actually served, not a projection. Full report anatomy and the honesty rules
+behind it are in the
+[`local_savings` section](#local_savings--what-local-serving-actually-displaced).
 
 ### Install as a plugin
 
@@ -1123,8 +1145,9 @@ The same block also appears automatically in `session_save_ledger` and `session_
 
 `inference_metrics` reports raw counters. `local_savings` answers the question
 behind them: how much work never reached your cloud model. Call the tool in any
-host, or run `prism savings` from a terminal (`--period month|all|session`,
-`--json` for machine-readable output):
+host, or run `prism savings` from a terminal — `--period all|month|week|session`,
+`--days N` for any custom trailing window (e.g. `--days 90` for a quarter), and
+`--json` for machine-readable output:
 
 ```
 💾 Local serving — LAST 30 DAYS (2026-08-02 → 2026-08-26)
@@ -1160,8 +1183,9 @@ own effective rate, multiply — the split is printed for exactly that reason.
 
 Refused calls are excluded, the VS Code panel-playground share is disclosed
 separately, and the known sources of undercount are listed inline rather than
-left implicit — so the durable (`month`/`all`) headline is a measured floor
-rather than a number that merely looks precise. The `session` view is the one
+left implicit — so the durable (`week`/`month`/`all`/`--days`) headline is a
+measured floor rather than a number that merely looks precise. Figures are
+per-machine: each machine reports its own local ledger. The `session` view is the one
 exception: on KV-cache hits it estimates submitted prompt tokens from text
 (the ledger counts the measured 0 instead), so it is marked `(est.)` and says
 so whenever that happens.

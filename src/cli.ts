@@ -1135,19 +1135,29 @@ scmCmd
 program
   .command('savings')
   .description('Show token volume displaced by local serving (all time by default)')
-  .option('-p, --period <period>', 'Window: all | month | session', 'all')
+  .option('-p, --period <period>', 'Window: all | month | week | session', 'all')
+  .option('-d, --days <n>', 'Custom trailing window in days (overrides --period)')
   .option('--json', 'Emit machine-readable JSON output')
-  .action(async (options: { period?: string; json?: boolean }) => {
+  .action(async (options: { period?: string; days?: string; json?: boolean }) => {
     try {
       const { queryLocalSavings } = await import('./storage/inferMetricsLedger.js');
       const { renderSavings, sessionSavings, windowStart } = await import('./tools/savingsHandler.js');
 
-      const raw = (options.period ?? 'all').toLowerCase();
-      if (!['all', 'month', 'session'].includes(raw)) {
-        console.error(`Unknown period "${raw}" — expected all, month, or session.`);
+      const raw = (options.days !== undefined && options.period === undefined ? 'all' : (options.period ?? 'all')).toLowerCase();
+      if (!['all', 'month', 'week', 'session'].includes(raw)) {
+        console.error(`Unknown period "${raw}" — expected all, month, week, or session.`);
         process.exit(1);
       }
-      const period = raw as 'all' | 'month' | 'session';
+      const period = raw as 'all' | 'month' | 'week' | 'session';
+      let days: number | undefined;
+      if (options.days !== undefined) {
+        days = Number(options.days);
+        if (!Number.isFinite(days) || days <= 0) {
+          console.error(`--days expects a positive number, got "${options.days}".`);
+          process.exit(1);
+        }
+        days = Math.floor(days);
+      }
 
       // A CLI invocation is a fresh process, so the in-memory session
       // accumulators are always empty here. Say so rather than printing a
@@ -1160,14 +1170,14 @@ program
 
       const data = period === 'session'
         ? sessionSavings()
-        : await queryLocalSavings(windowStart(period, Date.now()));
+        : await queryLocalSavings(windowStart(period, Date.now(), days));
 
       if (!data) {
         console.error('Inference ledger unavailable — no durable figure can be reported.');
         process.exit(1);
       }
 
-      const rendered = renderSavings(data, period);
+      const rendered = renderSavings(data, period, days);
       console.log(options.json ? JSON.stringify(rendered.data, null, 2) : rendered.text);
     } catch (err) {
       console.error(`savings failed: ${err instanceof Error ? err.message : String(err)}`);

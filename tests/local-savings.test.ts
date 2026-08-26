@@ -376,10 +376,35 @@ describe('session view', () => {
 });
 
 describe('windowStart', () => {
-  it('bounds month to a trailing 30 days and leaves all/session unbounded', () => {
+  it('bounds week/month to trailing 7/30 days and leaves all/session unbounded', () => {
     const now = 1_800_000_000_000;
+    expect(windowStart('week', now)).toBe(now - 7 * 86_400_000);
     expect(windowStart('month', now)).toBe(now - 30 * 86_400_000);
     expect(windowStart('all', now)).toBeUndefined();
     expect(windowStart('session', now)).toBeUndefined();
+  });
+
+  it('lets a custom day count override the named period', () => {
+    const now = 1_800_000_000_000;
+    expect(windowStart('all', now, 14)).toBe(now - 14 * 86_400_000);
+    expect(windowStart('month', now, 3)).toBe(now - 3 * 86_400_000);
+    // Nonsense day counts fall back to the named period, never a bad window.
+    expect(windowStart('all', now, 0)).toBeUndefined();
+    expect(windowStart('all', now, NaN)).toBeUndefined();
+    expect(windowStart('month', now, -5)).toBe(now - 30 * 86_400_000);
+  });
+
+  it('filters and labels a weekly window end to end', async () => {
+    const now = Date.now();
+    await appendInferMetricBatch([
+      local({ ts: now - 2 * 86_400_000 }),
+      local({ ts: now - 10 * 86_400_000 }),  // inside month, outside week
+    ]);
+    const week = await queryLocalSavings(windowStart('week', now));
+    expect(week!.local_calls).toBe(1);
+    expect(renderSavings(week!, 'week').text).toMatch(/LAST 7 DAYS/);
+    const custom = await queryLocalSavings(windowStart('all', now, 14));
+    expect(custom!.local_calls).toBe(2);
+    expect(renderSavings(custom!, 'all', 14).text).toMatch(/LAST 14 DAYS/);
   });
 });

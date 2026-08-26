@@ -28,13 +28,21 @@
 import { queryLocalSavings, type LocalSavings } from "../storage/inferMetricsLedger.js";
 import { getInferenceSnapshot } from "../utils/inferenceMetrics.js";
 
-export type SavingsPeriod = "session" | "month" | "all";
+export type SavingsPeriod = "session" | "week" | "month" | "all";
 
 const DAY_MS = 86_400_000;
 
-/** Start of the trailing 30-day window. Passed in so tests are not clock-bound. */
-export function windowStart(period: SavingsPeriod, nowMs: number): number | undefined {
-    return period === "month" ? nowMs - 30 * DAY_MS : undefined;
+/** Start of the trailing window. Passed `nowMs` so tests are not clock-bound.
+ *  `week`/`month` are trailing 7/30 days, not calendar units — cheaper to
+ *  reason about and immune to timezone edges. `customDays` (CLI --days N /
+ *  tool `days`) overrides the named period. */
+export function windowStart(period: SavingsPeriod, nowMs: number, customDays?: number): number | undefined {
+    if (customDays !== undefined && Number.isFinite(customDays) && customDays > 0) {
+        return nowMs - Math.floor(customDays) * DAY_MS;
+    }
+    if (period === "week") return nowMs - 7 * DAY_MS;
+    if (period === "month") return nowMs - 30 * DAY_MS;
+    return undefined;
 }
 
 function fmt(n: number): string {
@@ -136,8 +144,14 @@ export interface SavingsRender {
     data: LocalSavings & { period: SavingsPeriod };
 }
 
-export function renderSavings(s: LocalSavings, period: SavingsPeriod): SavingsRender {
-    const label = period === "month" ? "LAST 30 DAYS" : period === "all" ? "ALL TIME" : "THIS SESSION";
+export function renderSavings(s: LocalSavings, period: SavingsPeriod, customDays?: number): SavingsRender {
+    const label =
+        customDays !== undefined && Number.isFinite(customDays) && customDays > 0
+            ? `LAST ${Math.floor(customDays)} DAYS`
+        : period === "week" ? "LAST 7 DAYS"
+        : period === "month" ? "LAST 30 DAYS"
+        : period === "all" ? "ALL TIME"
+        : "THIS SESSION";
     const lines: string[] = [];
 
     lines.push(`💾 Local serving — ${label} (${spanOf(s)})`);
@@ -227,19 +241,22 @@ export function sessionSavings(): LocalSavings {
     };
 }
 
-export async function savingsHandler(args?: { period?: string }): Promise<{
+export async function savingsHandler(args?: { period?: string; days?: number }): Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
 }> {
     const raw = (args?.period ?? "all").toLowerCase();
     const period: SavingsPeriod =
-        raw === "session" ? "session" : raw === "month" ? "month" : "all";
+        raw === "session" ? "session" : raw === "week" ? "week" : raw === "month" ? "month" : "all";
+    const days = args?.days !== undefined && Number.isFinite(args.days) && args.days > 0
+        ? Math.floor(args.days)
+        : undefined;
 
     if (period === "session") {
         return { content: [{ type: "text", text: renderSavings(sessionSavings(), period).text }] };
     }
 
-    const s = await queryLocalSavings(windowStart(period, Date.now()));
+    const s = await queryLocalSavings(windowStart(period, Date.now(), days));
     if (!s) {
         return {
             content: [{
@@ -250,5 +267,5 @@ export async function savingsHandler(args?: { period?: string }): Promise<{
             isError: true,
         };
     }
-    return { content: [{ type: "text", text: renderSavings(s, period).text }] };
+    return { content: [{ type: "text", text: renderSavings(s, period, days).text }] };
 }

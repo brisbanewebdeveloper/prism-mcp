@@ -2218,16 +2218,20 @@ export const SAVINGS_TOOL: Tool = {
     "per-model breakdown. Reports tokens, never money — prism cannot know your " +
     "host's current rates, which model a call would otherwise have used, or " +
     "whether you are on a flat plan, so any dollar figure would be invented. " +
-    "period: 'all' (default, durable ledger), 'month' (trailing 30 days), or " +
-    "'session' (this MCP process). Excludes refused calls and states its known " +
-    "undercounts inline.",
+    "period: 'all' (default, durable ledger), 'month'/'week' (trailing 30/7 " +
+    "days), or 'session' (this MCP process); 'days' sets a custom trailing " +
+    "window. Excludes refused calls and states its known undercounts inline.",
   inputSchema: {
     type: "object",
     properties: {
       period: {
         type: "string",
-        enum: ["session", "month", "all"],
-        description: "Window: 'all' (default), 'month' (trailing 30 days), or 'session'.",
+        enum: ["session", "week", "month", "all"],
+        description: "Window: 'all' (default), 'month' (trailing 30 days), 'week' (trailing 7 days), or 'session'.",
+      },
+      days: {
+        type: "number",
+        description: "Custom trailing window in days — overrides period (ledger views only).",
       },
     },
   },
