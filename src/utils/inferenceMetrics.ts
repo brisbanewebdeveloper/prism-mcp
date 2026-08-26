@@ -41,6 +41,13 @@ export interface InferenceSnapshot {
      *  Accumulated as submittedEst + completionTokens for every used_cloud=false call.
      *  This is the "opportunity savings" — what would have gone to Claude/Synalux portal. */
     cloudTokensSavedEst: number;
+    /** The two halves of cloudTokensSavedEst, kept separately so the savings
+     *  meter can show a prompt/completion split without deriving it by
+     *  subtraction — totalCompletionTokens spans cloud calls too, so
+     *  cloudTokensSavedEst - totalCompletionTokens is wrong whenever any call
+     *  fell through to cloud. */
+    localPromptTokensEst: number;
+    localCompletionTokens: number;
     thinkOnlyRetries: number;
     thinkOnlyRetryPct: number;
     /** Total user prompts seen this session (delegated + not delegated).
@@ -49,6 +56,10 @@ export interface InferenceSnapshot {
     totalPrompts: number;
     nonDelegatedCount: number;
     byModel: Record<string, ModelStats>;
+    /** Local serves only. byModel keys on model name across BOTH local and
+     *  cloud calls, so it cannot answer "what did local serving displace?" for
+     *  a model name that appears on both sides. The savings meter reads this. */
+    byModelLocal: Record<string, ModelStats>;
 }
 
 // T1 fix: content-aware token estimator. Replaces flat text.length / 4 which
@@ -127,6 +138,7 @@ export function estimateTokens(text: string): number {
 }
 
 const byModel: Record<string, ModelStats> = {};
+const byModelLocal: Record<string, ModelStats> = {};
 let localCalls = 0;
 let cloudCalls = 0;
 let promptTokensEvaluated = 0;
@@ -134,6 +146,8 @@ let promptTokensSubmittedEst = 0;
 let totalCompletionTokens = 0;
 let totalLatencyMs = 0;
 let cloudTokensSavedEst = 0;
+let localPromptTokensEst = 0;
+let localCompletionTokens = 0;
 let thinkOnlyRetries = 0;
 let totalPrompts = 0;
 let nonDelegatedCount = 0;
@@ -227,22 +241,28 @@ export function recordInference(result: {
     totalLatencyMs += result.latency_ms;
     if (!result.used_cloud) {
         cloudTokensSavedEst += submittedEst + ct;
+        localPromptTokensEst += submittedEst;
+        localCompletionTokens += ct;
     }
 
-    if (!byModel[key]) {
-        byModel[key] = {
-            calls: 0,
-            promptTokensEvaluated: 0,
-            promptTokensSubmittedEst: 0,
-            completionTokens: 0,
-            totalLatencyMs: 0,
-        };
-    }
-    byModel[key].calls++;
-    byModel[key].promptTokensEvaluated += evaluated;
-    byModel[key].promptTokensSubmittedEst += submittedEst;
-    byModel[key].completionTokens += ct;
-    byModel[key].totalLatencyMs += result.latency_ms;
+    const bump = (into: Record<string, ModelStats>) => {
+        if (!into[key]) {
+            into[key] = {
+                calls: 0,
+                promptTokensEvaluated: 0,
+                promptTokensSubmittedEst: 0,
+                completionTokens: 0,
+                totalLatencyMs: 0,
+            };
+        }
+        into[key].calls++;
+        into[key].promptTokensEvaluated += evaluated;
+        into[key].promptTokensSubmittedEst += submittedEst;
+        into[key].completionTokens += ct;
+        into[key].totalLatencyMs += result.latency_ms;
+    };
+    bump(byModel);
+    if (!result.used_cloud) bump(byModelLocal);
 }
 
 export function getInferenceSnapshot(): InferenceSnapshot {
@@ -250,6 +270,10 @@ export function getInferenceSnapshot(): InferenceSnapshot {
     const modelCopy: Record<string, ModelStats> = {};
     for (const [k, v] of Object.entries(byModel)) {
         modelCopy[k] = { ...v };
+    }
+    const modelLocalCopy: Record<string, ModelStats> = {};
+    for (const [k, v] of Object.entries(byModelLocal)) {
+        modelLocalCopy[k] = { ...v };
     }
     return {
         localCalls,
@@ -263,11 +287,14 @@ export function getInferenceSnapshot(): InferenceSnapshot {
         totalTokens: promptTokensSubmittedEst + totalCompletionTokens,
         avgLatencyMs: total > 0 ? Math.round(totalLatencyMs / total) : 0,
         cloudTokensSavedEst,
+        localPromptTokensEst,
+        localCompletionTokens,
         thinkOnlyRetries,
         thinkOnlyRetryPct: localCalls > 0 ? Math.round((thinkOnlyRetries / localCalls) * 100) : 0,
         totalPrompts,
         nonDelegatedCount,
         byModel: modelCopy,
+        byModelLocal: modelLocalCopy,
     };
 }
 
@@ -279,11 +306,16 @@ export function resetInferenceMetrics(): void {
     totalCompletionTokens = 0;
     totalLatencyMs = 0;
     cloudTokensSavedEst = 0;
+    localPromptTokensEst = 0;
+    localCompletionTokens = 0;
     thinkOnlyRetries = 0;
     totalPrompts = 0;
     nonDelegatedCount = 0;
     for (const key of Object.keys(byModel)) {
         delete byModel[key];
+    }
+    for (const key of Object.keys(byModelLocal)) {
+        delete byModelLocal[key];
     }
     debugLog("[inference-metrics] Session metrics reset");
 }

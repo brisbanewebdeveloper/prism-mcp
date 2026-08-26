@@ -1128,6 +1128,53 @@ scmCmd
     }
   });
 
+// ─── prism savings ────────────────────────────────────────────
+// Surfaces the local-serving meter outside an MCP host. Reports TOKENS, not
+// money — see the header of tools/savingsHandler.ts for why a dollar figure
+// would be fabricated.
+program
+  .command('savings')
+  .description('Show token volume displaced by local serving (all time by default)')
+  .option('-p, --period <period>', 'Window: all | month | session', 'all')
+  .option('--json', 'Emit machine-readable JSON output')
+  .action(async (options: { period?: string; json?: boolean }) => {
+    try {
+      const { queryLocalSavings } = await import('./storage/inferMetricsLedger.js');
+      const { renderSavings, sessionSavings, windowStart } = await import('./tools/savingsHandler.js');
+
+      const raw = (options.period ?? 'all').toLowerCase();
+      if (!['all', 'month', 'session'].includes(raw)) {
+        console.error(`Unknown period "${raw}" — expected all, month, or session.`);
+        process.exit(1);
+      }
+      const period = raw as 'all' | 'month' | 'session';
+
+      // A CLI invocation is a fresh process, so the in-memory session
+      // accumulators are always empty here. Say so rather than printing a
+      // truthful-but-useless zero that reads as "local serving does nothing".
+      if (period === 'session') {
+        console.error('Note: `prism savings --period session` runs in a new process with no ' +
+                      'session history. Use the local_savings MCP tool inside a host session, ' +
+                      'or --period month/all for the durable ledger.');
+      }
+
+      const data = period === 'session'
+        ? sessionSavings()
+        : await queryLocalSavings(windowStart(period, Date.now()));
+
+      if (!data) {
+        console.error('Inference ledger unavailable — no durable figure can be reported.');
+        process.exit(1);
+      }
+
+      const rendered = renderSavings(data, period);
+      console.log(options.json ? JSON.stringify(rendered.data, null, 2) : rendered.text);
+    } catch (err) {
+      console.error(`savings failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 // ─── prism update-models ──────────────────────────────────────
 // Standalone model convergence: pull each installed prism-coder tier from
 // the registry and repair its local alias. connect runs this automatically;

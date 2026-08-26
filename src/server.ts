@@ -104,6 +104,7 @@ import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
 import { ddInfo, ddError as ddLogError } from "./utils/ddLogger.js";
 import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
+import { savingsHandler } from "./tools/savingsHandler.js";
 import { recordInvocation } from "./utils/analytics.js";
 import { BOUNDARIES_TEXT } from "./boundaries/boundaries.js";
 import { triggerSkillManifestSync } from "./skillManifestSync.js";
@@ -184,6 +185,7 @@ import {
   KNOWLEDGE_INGEST_TOOL,
   // v19.2: Inference Metrics
   INFERENCE_METRICS_TOOL,
+  SAVINGS_TOOL,
 
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -339,6 +341,8 @@ function buildSessionMemoryTools(): Tool[] {
     KNOWLEDGE_INGEST_TOOL,         // knowledge_ingest — chunk code, gen Q&A, store in graph
     // ─── v19.2: Inference Metrics ───
     INFERENCE_METRICS_TOOL,          // inference_metrics — read-only session delegation stats
+    // ─── v20.16: Local-serving meter ───
+    SAVINGS_TOOL,                    // local_savings — tokens displaced by local serving
   ];
 }
 
@@ -1139,6 +1143,9 @@ export function createServer() {
 
           case "inference_metrics":
             result = await inferenceMetricsHandler(args as { period?: string }); break;
+
+          case "local_savings":
+            result = await savingsHandler(args as { period?: string }); break;
 
           default:
             result = {

@@ -2207,3 +2207,28 @@ export const INFERENCE_METRICS_TOOL: Tool = {
     },
   },
 };
+
+// ─── v20.16: Local-serving meter ───────────────────────────
+
+export const SAVINGS_TOOL: Tool = {
+  name: "local_savings",
+  description:
+    "Reports what prism's local serving displaced, in TOKENS: volume handled by a " +
+    "local model instead of the cloud, calls served locally vs routed, and a " +
+    "per-model breakdown. Reports tokens, never money — prism cannot know your " +
+    "host's current rates, which model a call would otherwise have used, or " +
+    "whether you are on a flat plan, so any dollar figure would be invented. " +
+    "period: 'all' (default, durable ledger), 'month' (trailing 30 days), or " +
+    "'session' (this MCP process). Excludes refused calls and states its known " +
+    "undercounts inline.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      period: {
+        type: "string",
+        enum: ["session", "month", "all"],
+        description: "Window: 'all' (default), 'month' (trailing 30 days), or 'session'.",
+      },
+    },
+  },
+};

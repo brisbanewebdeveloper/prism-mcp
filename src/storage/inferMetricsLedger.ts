@@ -263,6 +263,120 @@ export async function queryInferMetrics(sinceTs?: number): Promise<InferMetricsA
     }
 }
 
+export interface LocalSavingsModelRow {
+    calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+}
+
+export interface LocalSavings {
+    /** Calls actually SERVED by a local model — the only rows that saved anything. */
+    local_calls: number;
+    /** Calls that fell through to cloud. Context for the ratio, never savings. */
+    cloud_calls: number;
+    local_prompt_tokens: number;
+    local_completion_tokens: number;
+    local_total_tokens: number;
+    /** Local rows carrying no token counts at all. They contribute ZERO to the
+     *  totals above, so a high count here means the headline understates. */
+    local_calls_without_tokens: number;
+    /** Served-locally rows whose prompt_tokens is 0 — Ollama reports
+     *  prompt_eval_count=0 on a KV-cache hit, so real submitted context went
+     *  uncounted. Another source of understatement, tracked separately because
+     *  its cause and fix differ from the row above. */
+    local_calls_with_cached_prompt: number;
+    /** Refused/never-served rows excluded from every figure above. */
+    excluded_refusals: number;
+    first_ts: number | null;
+    last_ts: number | null;
+    by_model: Record<string, LocalSavingsModelRow>;
+}
+
+/**
+ * Aggregate what local serving actually displaced, optionally since a timestamp.
+ *
+ * Distinct from queryInferMetrics(), which sums tokens across local AND cloud
+ * rows — a total that answers "how much did prism process?" not "what did
+ * local serving save?".
+ *
+ * Refusals are excluded. recordInference() writes a ledger row BEFORE its
+ * `backend === "refused"` early return, so the ledger legitimately contains
+ * rows where no model ran and nothing was served. Counting those as savings
+ * would inflate the exact KPI the in-memory accumulators go out of their way
+ * to protect (see the §5.2 note in utils/inferenceMetrics.ts).
+ */
+export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings | null> {
+    try {
+        await ensureTable();
+        if (disabled || !client) return null;
+
+        // Served locally = local row that is not a refusal. `gate_outcome`
+        // 'refused' and backend 'refused' are written by different call sites
+        // (handler vs refusal site), so both are checked.
+        const SERVED_LOCAL = `used_cloud = 0 AND backend <> 'refused'
+                              AND (gate_outcome IS NULL OR gate_outcome <> 'refused')`;
+        const where = sinceTs != null ? `WHERE ts >= ?` : "";
+        const whereArgs = sinceTs != null ? [Math.floor(sinceTs)] : [];
+
+        const agg = await client.execute({
+            sql: `
+            SELECT
+                SUM(CASE WHEN ${SERVED_LOCAL} THEN 1 ELSE 0 END) AS local_calls,
+                SUM(CASE WHEN used_cloud = 1 THEN 1 ELSE 0 END) AS cloud_calls,
+                COALESCE(SUM(CASE WHEN ${SERVED_LOCAL} THEN prompt_tokens END), 0) AS pt,
+                COALESCE(SUM(CASE WHEN ${SERVED_LOCAL} THEN completion_tokens END), 0) AS ct,
+                SUM(CASE WHEN ${SERVED_LOCAL}
+                          AND prompt_tokens IS NULL AND completion_tokens IS NULL
+                         THEN 1 ELSE 0 END) AS untokened,
+                SUM(CASE WHEN ${SERVED_LOCAL} AND prompt_tokens = 0 THEN 1 ELSE 0 END) AS cached_prompt,
+                SUM(CASE WHEN used_cloud = 0 AND NOT (${SERVED_LOCAL}) THEN 1 ELSE 0 END) AS refusals,
+                MIN(CASE WHEN ${SERVED_LOCAL} THEN ts END) AS first_ts,
+                MAX(CASE WHEN ${SERVED_LOCAL} THEN ts END) AS last_ts
+            FROM infer_metrics ${where}`,
+            args: whereArgs,
+        });
+
+        const byM = await client.execute({
+            sql: `SELECT COALESCE(model, backend) AS model,
+                         COUNT(*) AS calls,
+                         COALESCE(SUM(prompt_tokens), 0) AS pt,
+                         COALESCE(SUM(completion_tokens), 0) AS ct
+                  FROM infer_metrics
+                  ${where ? `${where} AND` : "WHERE"} ${SERVED_LOCAL}
+                  GROUP BY COALESCE(model, backend)`,
+            args: whereArgs,
+        });
+
+        const r = agg.rows[0] as Record<string, unknown>;
+        const by_model: Record<string, LocalSavingsModelRow> = {};
+        for (const row of byM.rows as Array<Record<string, unknown>>) {
+            by_model[String(row.model)] = {
+                calls: Number(row.calls ?? 0),
+                prompt_tokens: Number(row.pt ?? 0),
+                completion_tokens: Number(row.ct ?? 0),
+            };
+        }
+        const pt = Number(r.pt ?? 0);
+        const ct = Number(r.ct ?? 0);
+        return {
+            local_calls: Number(r.local_calls ?? 0),
+            cloud_calls: Number(r.cloud_calls ?? 0),
+            local_prompt_tokens: pt,
+            local_completion_tokens: ct,
+            local_total_tokens: pt + ct,
+            local_calls_without_tokens: Number(r.untokened ?? 0),
+            local_calls_with_cached_prompt: Number(r.cached_prompt ?? 0),
+            excluded_refusals: Number(r.refusals ?? 0),
+            first_ts: r.first_ts == null ? null : Number(r.first_ts),
+            last_ts: r.last_ts == null ? null : Number(r.last_ts),
+            by_model,
+        };
+    } catch (e) {
+        debugLog(`[infer-ledger] savings query failed: ${e instanceof Error ? e.message : e}`);
+        return null;
+    }
+}
+
 /** Test hook — reset module state so a fresh DB path/env can be exercised. */
 export function _resetInferLedgerForTest(): void {
     // Close the logical client instead of only dropping its reference.
