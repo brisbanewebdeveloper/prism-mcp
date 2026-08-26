@@ -912,6 +912,10 @@ export function createServer() {
             // GATE 5: Reset drift timer — save_ledger counts as a drift checkpoint
             { const cid = (args as Record<string, unknown>)?.conversation_id as string | undefined;
               if (cid) { const { noteDriftCheck } = await import("./session/sessionContext.js"); noteDriftCheck(cid); } }
+            // Savings sync (paid, opt-in, fail-soft): session end is the natural
+            // push point. pushSavings gates itself — disabled/free/no-jwt all
+            // return without a request, and nothing here awaits it.
+            void import("./sync/savingsSync.js").then(m => m.pushSavings()).catch(() => {});
             break;
 
           case "session_save_handoff":
@@ -1145,7 +1149,7 @@ export function createServer() {
             result = await inferenceMetricsHandler(args as { period?: string }); break;
 
           case "local_savings":
-            result = await savingsHandler(args as { period?: string }); break;
+            result = await savingsHandler(args as { period?: string; days?: number; scope?: string; workspace_id?: string }); break;
 
           default:
             result = {

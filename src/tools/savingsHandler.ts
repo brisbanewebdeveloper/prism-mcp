@@ -241,10 +241,29 @@ export function sessionSavings(): LocalSavings {
     };
 }
 
-export async function savingsHandler(args?: { period?: string; days?: number }): Promise<{
+export async function savingsHandler(args?: { period?: string; days?: number; scope?: string; workspace_id?: string }): Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
 }> {
+    if ((args?.scope ?? "").toLowerCase() === "team") {
+        // Team roll-up is a portal aggregate over members who opted in to
+        // savings sync (paid). Imported lazily: the free/local path must not
+        // load entitlement/JWT machinery it will never use.
+        const { fetchTeamSavings, renderTeamSavings } = await import("../sync/savingsSync.js");
+        const teamDays = args?.days !== undefined && Number.isFinite(args.days) && args.days > 0
+            ? Math.floor(args.days) : 30;
+        const result = await fetchTeamSavings(args?.workspace_id, teamDays);
+        if (!result.ok) {
+            const msg = result.reason === "not_entitled"
+                ? "Team savings needs a paid plan with team features, and workspace membership. " +
+                  "The portal refused this request" + (result.status ? ` (HTTP ${result.status})` : "") + "."
+                : result.reason === "no_jwt" || result.reason === "no_base_url"
+                ? "Team savings needs a signed-in Synalux account (no portal credentials available)."
+                : "Team savings is unavailable right now (portal unreachable or returned a malformed response).";
+            return { content: [{ type: "text", text: `💾 ${msg}` }], isError: true };
+        }
+        return { content: [{ type: "text", text: renderTeamSavings(result.team) }] };
+    }
     const raw = (args?.period ?? "all").toLowerCase();
     const period: SavingsPeriod =
         raw === "session" ? "session" : raw === "week" ? "week" : raw === "month" ? "month" : "all";

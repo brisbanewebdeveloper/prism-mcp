@@ -119,6 +119,23 @@ describe('tamper resistance', () => {
       .toThrow(/authentication failed/);
   });
 
+  it('collapses relay-malformed inputs to the same EnvelopeError as real tampering', () => {
+    // Adversarial review: base64 is lenient (Buffer.from('', 'base64') is 0
+    // bytes), so a relay can set any nonce to "" — and a low-order epk makes
+    // node's diffieHellman throw a raw OpenSSL error. Both used to escape as
+    // non-EnvelopeError exceptions, breaking the caller contract that a bad
+    // blob is always an EnvelopeError.
+    const env = sealFor([dev.raw], plaintext, CTX);
+    const zeroNonce = { ...env, n: '' };
+    expect(() => openSealed(zeroNonce, dev.privateKey, dev.raw, CTX)).toThrow(EnvelopeError);
+    const zeroWrapNonce = { ...env, recipients: [{ ...env.recipients[0]!, n: '' }] };
+    expect(() => openSealed(zeroWrapNonce, dev.privateKey, dev.raw, CTX)).toThrow(EnvelopeError);
+    const lowOrderEpk = { ...env, recipients: [{ ...env.recipients[0]!, epk: Buffer.alloc(32).toString('base64') }] };
+    expect(() => openSealed(lowOrderEpk, dev.privateKey, dev.raw, CTX)).toThrow(EnvelopeError);
+    const garbageB64 = { ...env, recipients: [{ ...env.recipients[0]!, epk: '!!!!' }] };
+    expect(() => openSealed(garbageB64, dev.privateKey, dev.raw, CTX)).toThrow(EnvelopeError);
+  });
+
   it('rejects unknown versions and algorithms instead of guessing', () => {
     const env = sealFor([dev.raw], plaintext, CTX);
     expect(() => openSealed({ ...env, v: 2 }, dev.privateKey, dev.raw, CTX)).toThrow(/version/);
@@ -161,6 +178,15 @@ describe('isSealedEnvelope (wire validation)', () => {
     expect(isSealedEnvelope({ ...env, recipients: [] })).toBe(false);
     expect(isSealedEnvelope({ ...env, v: 99 })).toBe(false);
     expect(isSealedEnvelope({ ...env, ct: 42 })).toBe(false);
+  });
+
+  it('bounds sizes so a hostile relay cannot force huge allocations pre-auth', () => {
+    const dev = newDevice();
+    const env = sealFor([dev.raw], Buffer.from('x'), CTX);
+    const manyRecipients = { ...env, recipients: Array.from({ length: 65 }, () => env.recipients[0]!) };
+    expect(isSealedEnvelope(manyRecipients)).toBe(false);
+    expect(isSealedEnvelope({ ...env, ct: 'A'.repeat(16 * 1024 * 1024 + 1) })).toBe(false);
+    expect(isSealedEnvelope({ ...env, aad: 'A'.repeat(513) })).toBe(false);
   });
 });
 

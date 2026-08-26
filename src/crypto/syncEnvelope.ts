@@ -134,14 +134,18 @@ function gcmOpen(key: Buffer, nonce: Buffer, sealed: Buffer, aad: Buffer): Buffe
     if (sealed.length < GCM_TAG_LEN) throw new EnvelopeError("ciphertext shorter than a GCM tag");
     const ct = sealed.subarray(0, sealed.length - GCM_TAG_LEN);
     const tag = sealed.subarray(sealed.length - GCM_TAG_LEN);
-    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-    decipher.setAAD(aad);
-    decipher.setAuthTag(tag);
+    // Every crypto call sits INSIDE the try. An adversarial review measured
+    // that createDecipheriv on a 0-byte IV (base64 is lenient — a relay can
+    // set n:"" and Buffer.from decodes it to 0 bytes) threw a raw TypeError
+    // from outside the old try, breaking the uniform-EnvelopeError contract.
     try {
+        const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+        decipher.setAAD(aad);
+        decipher.setAuthTag(tag);
         return Buffer.concat([decipher.update(ct), decipher.final()]);
     } catch {
-        // Deliberately indistinguishable: wrong key, tampered ciphertext, and
-        // swapped-context AAD must all present identically to a caller.
+        // Deliberately indistinguishable: wrong key, tampered ciphertext,
+        // malformed nonce, and swapped-context AAD all present identically.
         throw new EnvelopeError("authentication failed");
     }
 }
@@ -225,25 +229,46 @@ export function openSealed(
         throw new EnvelopeError("this device is not a recipient of this envelope");
     }
     const ephRaw = Buffer.from(entry.epk, "base64");
-    const ephKey = publicKeyFromRaw(ephRaw);
-    const shared = diffieHellman({ privateKey: devicePrivateKey, publicKey: ephKey });
+    let shared: Buffer;
+    try {
+        // Node rejects low-order X25519 points by THROWING a raw OpenSSL
+        // error (it never returns an all-zero secret). The epk is
+        // relay-controlled, so that throw must collapse to the uniform
+        // failure like every other adversarial-input path.
+        const ephKey = publicKeyFromRaw(ephRaw);
+        shared = diffieHellman({ privateKey: devicePrivateKey, publicKey: ephKey });
+    } catch {
+        throw new EnvelopeError("authentication failed");
+    }
     const kek = deriveKek(shared, ephRaw, deviceRawPublicKey);
     const cek = gcmOpen(kek, Buffer.from(entry.n, "base64"), Buffer.from(entry.ck, "base64"), Buffer.from(ourKid, "utf8"));
     return gcmOpen(cek, Buffer.from(envelope.n, "base64"), Buffer.from(envelope.ct, "base64"), Buffer.from(expectedAadContext, "utf8"));
 }
 
-/** Structural validation for envelopes arriving off the wire. */
+/** More devices than any user has; far below any allocation hazard. */
+export const MAX_ENVELOPE_RECIPIENTS = 64;
+/** Handoff/ledger blobs are text; 16 MiB of base64 is well past any real one. */
+export const MAX_ENVELOPE_CT_CHARS = 16 * 1024 * 1024;
+
+/** Structural validation for envelopes arriving off the wire. Bounds sizes so
+ *  a hostile relay cannot make the opener allocate unbounded memory before
+ *  any authentication happens. */
 export function isSealedEnvelope(value: unknown): value is SealedEnvelope {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
     const o = value as Record<string, unknown>;
     if (o.v !== ENVELOPE_VERSION || o.alg !== ENVELOPE_ALG) return false;
     if (typeof o.n !== "string" || typeof o.ct !== "string" || typeof o.aad !== "string") return false;
+    if (o.n.length > 64 || o.aad.length > 512) return false;
+    if (o.ct.length > MAX_ENVELOPE_CT_CHARS) return false;
     if (!Array.isArray(o.recipients) || o.recipients.length === 0) return false;
+    if (o.recipients.length > MAX_ENVELOPE_RECIPIENTS) return false;
     return o.recipients.every((r) => {
         if (typeof r !== "object" || r === null) return false;
         const e = r as Record<string, unknown>;
-        return typeof e.kid === "string" && typeof e.epk === "string" &&
-            typeof e.n === "string" && typeof e.ck === "string";
+        return typeof e.kid === "string" && e.kid.length <= 32 &&
+            typeof e.epk === "string" && e.epk.length <= 64 &&
+            typeof e.n === "string" && e.n.length <= 64 &&
+            typeof e.ck === "string" && e.ck.length <= 256;
     });
 }
 

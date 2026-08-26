@@ -398,6 +398,56 @@ export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings 
     }
 }
 
+export interface DailySavingsRow {
+    /** UTC day, "YYYY-MM-DD". */
+    day: string;
+    local_calls: number;
+    cloud_calls: number;
+    local_prompt_tokens: number;
+    local_completion_tokens: number;
+}
+
+/**
+ * Per-UTC-day aggregates of the same SERVED_LOCAL quantity the savings meter
+ * reports — the shape the paid savings-sync uploads.
+ *
+ * Absolute per-day values, not deltas: the uploader re-sends a trailing
+ * window and the portal upserts on (user, device, day), so a lost or repeated
+ * upload converges instead of double-counting. Same refusal exclusion as
+ * queryLocalSavings — a synced figure must never be higher than the local one.
+ */
+export async function queryDailyLocalSavings(sinceTs: number): Promise<DailySavingsRow[] | null> {
+    try {
+        await ensureTable();
+        if (disabled || !client) return null;
+        const SERVED_LOCAL = `used_cloud = 0 AND backend <> 'refused'
+                              AND (gate_outcome IS NULL OR gate_outcome <> 'refused')`;
+        const res = await client.execute({
+            sql: `
+            SELECT date(ts / 1000, 'unixepoch') AS day,
+                   SUM(CASE WHEN ${SERVED_LOCAL} THEN 1 ELSE 0 END) AS local_calls,
+                   SUM(CASE WHEN used_cloud = 1 THEN 1 ELSE 0 END) AS cloud_calls,
+                   COALESCE(SUM(CASE WHEN ${SERVED_LOCAL} THEN prompt_tokens END), 0) AS pt,
+                   COALESCE(SUM(CASE WHEN ${SERVED_LOCAL} THEN completion_tokens END), 0) AS ct
+            FROM infer_metrics
+            WHERE ts >= ?
+            GROUP BY date(ts / 1000, 'unixepoch')
+            ORDER BY day`,
+            args: [Math.floor(sinceTs)],
+        });
+        return (res.rows as Array<Record<string, unknown>>).map((r) => ({
+            day: String(r.day),
+            local_calls: Number(r.local_calls ?? 0),
+            cloud_calls: Number(r.cloud_calls ?? 0),
+            local_prompt_tokens: Number(r.pt ?? 0),
+            local_completion_tokens: Number(r.ct ?? 0),
+        }));
+    } catch (e) {
+        debugLog(`[infer-ledger] daily savings query failed: ${e instanceof Error ? e.message : e}`);
+        return null;
+    }
+}
+
 /** Test hook — reset module state so a fresh DB path/env can be exercised. */
 export function _resetInferLedgerForTest(): void {
     // Close the logical client instead of only dropping its reference.

@@ -1137,9 +1137,48 @@ program
   .description('Show token volume displaced by local serving (all time by default)')
   .option('-p, --period <period>', 'Window: all | month | week | session', 'all')
   .option('-d, --days <n>', 'Custom trailing window in days (overrides --period)')
+  .option('--team', 'Show the team roll-up from the portal (paid; members who opted in)')
+  .option('--workspace <id>', 'Workspace id for --team')
+  .option('--sync-enable', 'Opt in to savings sync (paid): daily COUNTERS only, never content')
+  .option('--sync-disable', 'Opt out of savings sync')
+  .option('--sync-now', 'Push the trailing window of daily counters immediately')
   .option('--json', 'Emit machine-readable JSON output')
-  .action(async (options: { period?: string; days?: string; json?: boolean }) => {
+  .action(async (options: { period?: string; days?: string; team?: boolean; workspace?: string;
+                            syncEnable?: boolean; syncDisable?: boolean; syncNow?: boolean; json?: boolean }) => {
     try {
+      if (options.syncEnable || options.syncDisable) {
+        const { setSetting } = await import('./storage/configStorage.js');
+        await setSetting('PRISM_SAVINGS_SYNC', options.syncEnable ? '1' : '0');
+        console.log(options.syncEnable
+          ? 'Savings sync enabled. What leaves this machine: per-day call/token COUNTERS only — '
+            + 'never prompts, completions, or project names. Disable anytime with --sync-disable.'
+          : 'Savings sync disabled. Nothing further leaves this machine on this channel.');
+        if (!options.syncNow) return;
+      }
+      if (options.syncNow) {
+        const { pushSavings } = await import('./sync/savingsSync.js');
+        const r = await pushSavings();
+        if (r.pushed) { console.log(`Pushed ${r.days} day row(s) of counters.`); return; }
+        console.error(`Not pushed: ${r.reason}`);
+        process.exit(r.reason === 'nothing_to_push' || r.reason === 'disabled' ? 0 : 1);
+      }
+      if (options.team) {
+        const { fetchTeamSavings, renderTeamSavings } = await import('./sync/savingsSync.js');
+        const teamDays = options.days !== undefined ? Math.floor(Number(options.days)) : 30;
+        if (!Number.isFinite(teamDays) || teamDays <= 0) {
+          console.error(`--days expects a positive number, got "${options.days}".`);
+          process.exit(1);
+        }
+        const result = await fetchTeamSavings(options.workspace, teamDays);
+        if (!result.ok) {
+          console.error(result.reason === 'not_entitled'
+            ? 'Team savings needs a paid plan with team features and workspace membership.'
+            : `Team savings unavailable: ${result.reason}`);
+          process.exit(1);
+        }
+        console.log(options.json ? JSON.stringify(result.team, null, 2) : renderTeamSavings(result.team));
+        return;
+      }
       const { queryLocalSavings } = await import('./storage/inferMetricsLedger.js');
       const { renderSavings, sessionSavings, windowStart } = await import('./tools/savingsHandler.js');
 

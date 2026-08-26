@@ -74,9 +74,21 @@ export function loadOrCreateDeviceIdentity(): DeviceIdentity {
     const pem = privateKey.export({ format: "pem", type: "pkcs8" }) as string;
     const dir = resolve(path, "..");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // Write then chmod: writeFileSync's mode is masked by umask, and a device
-    // key readable by group/other for even a moment is a defect.
-    writeFileSync(path, pem, { mode: 0o600 });
+    // 'wx' = exclusive create: two concurrent first-runs cannot silently
+    // overwrite each other's identity, and a dangling symlink pre-planted at
+    // the path fails with EEXIST instead of being followed. Then chmod,
+    // because writeFileSync's mode is masked by umask and a device key
+    // readable by group/other for even a moment is a defect. (On Windows,
+    // POSIX modes are advisory — the profile directory ACL is the boundary.)
+    try {
+        writeFileSync(path, pem, { mode: 0o600, flag: "wx" });
+    } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+            // Lost the creation race — the other writer's identity wins.
+            return loadOrCreateDeviceIdentity();
+        }
+        throw e;
+    }
     chmodSync(path, 0o600);
     const rawPublicKey = rawFromPublicKey(publicKey);
     return { privateKey, publicKey, rawPublicKey, keyId: keyIdOf(rawPublicKey), created: true };

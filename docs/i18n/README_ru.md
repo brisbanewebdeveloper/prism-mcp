@@ -1185,7 +1185,20 @@ Refused calls are excluded, the VS Code panel-playground share is disclosed
 separately, and the known sources of undercount are listed inline rather than
 left implicit — so the durable (`week`/`month`/`all`/`--days`) headline is a
 measured floor rather than a number that merely looks precise. Figures are
-per-machine: each machine reports its own local ledger. The `session` view is the one
+per-machine: each machine reports its own local ledger.
+
+**Team roll-up (paid).** On paid plans, `prism savings --sync-enable` opts this
+machine into savings sync: once a session, prism uploads per-day **counters** —
+call counts and token totals, never prompts, completions, project names, or
+model output (the upload payload is a closed field set; the server rejects
+anything else). `prism savings --team` (or the `local_savings` tool with
+`scope: "team"`) then shows the roll-up across your workspace: total tokens
+kept off cloud models, per-member share, device counts. Members who haven't
+opted in simply aren't counted, so the team figure is a floor. Sync is off by
+default, `--sync-disable` stops it, and the deeper session-content sync
+(handoffs) is a separate channel with end-to-end encryption — the two are
+deliberately not unified, because an E2E blob cannot be aggregated and a
+counter channel must never carry content. The `session` view is the one
 exception: on KV-cache hits it estimates submitted prompt tokens from text
 (the ledger counts the measured 0 instead), so it is marked `(est.)` and says
 so whenever that happens.

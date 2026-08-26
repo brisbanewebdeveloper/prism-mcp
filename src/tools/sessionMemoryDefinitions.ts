@@ -2233,6 +2233,15 @@ export const SAVINGS_TOOL: Tool = {
         type: "number",
         description: "Custom trailing window in days — overrides period (ledger views only).",
       },
+      scope: {
+        type: "string",
+        enum: ["machine", "team"],
+        description: "'machine' (default) reads this machine's ledger. 'team' fetches the portal roll-up of workspace members who opted in to savings sync (paid plans).",
+      },
+      workspace_id: {
+        type: "string",
+        description: "Workspace for scope 'team'. Omit to use your only/default workspace.",
+      },
     },
   },
 };
