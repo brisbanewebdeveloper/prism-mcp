@@ -205,7 +205,6 @@ export function renderTeamSavings(t: TeamSavings): string {
             lines.push(`    ${m.label}: ${m.local_calls.toLocaleString("en-US")} call(s), ~${abbrev(m.local_tokens)} tokens (${m.devices} device(s))`);
         }
     }
-    lines.push("");
     if ((t.shared_devices ?? 0) > 0) {
         lines.push("");
         lines.push(`  ${t.shared_devices} machine(s) reported by more than one member — each counted once`);
