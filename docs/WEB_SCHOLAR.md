@@ -91,7 +91,8 @@ node dist/server.js
 
 ### 4. Verify
 
-Open the Mind Palace Dashboard at `http://localhost:3333` and scroll to the **BACKGROUND SCHEDULER** section. You should see:
+Open the Mind Palace Dashboard using the tokenized URL from the startup log
+(e.g. `http://localhost:3333/?token=<random>`) and scroll to the **BACKGROUND SCHEDULER** section. You should see:
 
 ```
 Web Scholar: 🟢 Enabled (every 5m)

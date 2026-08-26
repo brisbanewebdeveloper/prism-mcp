@@ -123,18 +123,25 @@ lines.forEach((raw, i) => {
     const blocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
         .map(m => m[1]).filter(b => b.trim());
     let bad = 0;
-    for (const [i, block] of blocks.entries()) {
-        const tmp = path.join(os.tmpdir(), `dash-lint-${process.pid}-${i}.js`);
-        fs.writeFileSync(tmp, block);
-        try {
-            execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' });
-        } catch (e) {
-            bad++;
-            console.error(`✗ inline <script> block ${i} fails to parse:`);
-            console.error(String(e.stderr).split('\n').slice(0, 3).join('\n'));
-        } finally {
-            fs.unlinkSync(tmp);
+    // SECURITY (CodeQL js/insecure-temporary-file): write each block into a
+    // private, randomly-named temp dir (0700 via mkdtemp) instead of a
+    // predictable /tmp/dash-lint-<pid>-<i>.js path that an attacker could
+    // pre-create as a symlink to clobber an arbitrary file.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-lint-'));
+    try {
+        for (const [i, block] of blocks.entries()) {
+            const tmp = path.join(tmpDir, `block-${i}.js`);
+            fs.writeFileSync(tmp, block);
+            try {
+                execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' });
+            } catch (e) {
+                bad++;
+                console.error(`✗ inline <script> block ${i} fails to parse:`);
+                console.error(String(e.stderr).split('\n').slice(0, 3).join('\n'));
+            }
         }
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
     }
     if (bad) {
         console.error(`${bad} inline script block(s) have syntax errors — the dashboard JS dies at parse time.`);

@@ -128,7 +128,7 @@ beforeAll(async () => {
   await saveLedgerDirect("purge-6", TEST_PROJECT, true,  true,  true,  true);  // soft-deleted — NOT eligible
   await saveLedgerDirect("purge-7", "other-project", true, true, true); // different project
 
-}, 15_000);
+}, 60_000);
 
 afterAll(() => {
   cleanup();

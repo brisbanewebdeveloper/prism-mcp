@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.15.0 — 2026-08-24
+
+### Security — dashboard DNS-rebinding fix (GHSA-9cvx-7x8q-3g6m)
+
+- **Fixed: the Mind Palace dashboard validates `Host`/`Origin` before serving
+  any `/api/*`, `/sse`, or `/messages` request.** The dashboard auto-starts on
+  every MCP boot, binds loopback, and ran with auth disabled by default — but
+  loopback binding does not stop DNS rebinding. A page the developer merely
+  visited could rebind its own hostname to `127.0.0.1`, reach the dashboard as
+  "same-origin" with an attacker `Host`/`Origin`, and read or export the whole
+  cross-project session-memory store with zero credentials. Requests whose
+  `Host`/`Origin` is not loopback (or the operator-configured
+  `PRISM_DASHBOARD_ORIGIN`) now get `403`, independent of whether auth is
+  configured. Route scoping uses the same WHATWG-normalized pathname the router
+  resolves, so a dot-segment target like `/x/../api/settings` cannot slip past
+  it (a live bypass caught in adversarial review).
+- **Added: the data API is gated by a per-startup token by default** (the
+  advisory's second remediation). With no auth configured, the dashboard mints a
+  random token and prints a tokenized URL to the startup log; opening it once
+  stores a `SameSite` cookie so the SPA authenticates transparently. Pin it with
+  `PRISM_DASHBOARD_TOKEN`, or disable it with `PRISM_DASHBOARD_NO_TOKEN=1` (the
+  `Host`/`Origin` guard still runs). Configuring Basic Auth or JWKS replaces the
+  token with that stronger gate. **Operator-visible change:** open the tokenized
+  URL from the log, not a bare `http://localhost:3000`.
+- 73 new security regression tests (`tests/dashboard/host-guard.test.ts`,
+  `tests/dashboard/dashboard-token.test.ts`); docs updated (README, IDE_SETUP,
+  WEB_SCHOLAR, examples).
+
 ## 20.14.0 — 2026-08-18
 
 ### Model convergence — `prism connect` now updates your models

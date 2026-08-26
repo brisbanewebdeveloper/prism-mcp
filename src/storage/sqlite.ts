@@ -99,6 +99,13 @@ export class SqliteStorage implements StorageBackend {
     // Enable WAL mode for better concurrent read performance
     await this.db.execute("PRAGMA journal_mode=WAL");
 
+    // Wait up to 5s for a lock instead of failing instantly with SQLITE_BUSY.
+    // The background scheduler, watchdog, and test workers all write to the same
+    // DB; without this, transient write contention throws SQLITE_BUSY (flaky
+    // first-run E2E / CI). Mirrors configStorage.ts and inferMetricsLedger.ts,
+    // which already set this on their connections.
+    await this.db.execute("PRAGMA busy_timeout = 5000");
+
     // v6.0: Enable foreign key enforcement — required for ON DELETE CASCADE
     // in memory_links table. Without this, CASCADE is silently ignored.
     await this.db.execute("PRAGMA foreign_keys = ON");
