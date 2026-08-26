@@ -57,6 +57,12 @@ export interface InferenceSnapshot {
     /** Local calls that recorded no token information at all — they contribute
      *  0 to every token figure. */
     localCallsUntokened: number;
+    /** Wall-clock span of local serves this session, for the savings header.
+     *  Null until the first local serve — without these the session render
+     *  said "no local calls yet" above a populated call count (round-2
+     *  adversarial review). */
+    localFirstTs: number | null;
+    localLastTs: number | null;
     thinkOnlyRetries: number;
     thinkOnlyRetryPct: number;
     /** Total user prompts seen this session (delegated + not delegated).
@@ -159,6 +165,8 @@ let localPromptTokensEst = 0;
 let localCompletionTokens = 0;
 let localCallsEstimatedPrompt = 0;
 let localCallsUntokened = 0;
+let localFirstTs: number | null = null;
+let localLastTs: number | null = null;
 let thinkOnlyRetries = 0;
 let totalPrompts = 0;
 let nonDelegatedCount = 0;
@@ -260,6 +268,9 @@ export function recordInference(result: {
         // be read, so both are tracked rather than left implicit.
         if (evaluated === 0 && submittedEst > 0) localCallsEstimatedPrompt++;
         if (submittedEst === 0 && ct === 0) localCallsUntokened++;
+        const now = Date.now();
+        if (localFirstTs === null) localFirstTs = now;
+        localLastTs = now;
     }
 
     const bump = (into: Record<string, ModelStats>) => {
@@ -308,6 +319,8 @@ export function getInferenceSnapshot(): InferenceSnapshot {
         localCompletionTokens,
         localCallsEstimatedPrompt,
         localCallsUntokened,
+        localFirstTs,
+        localLastTs,
         thinkOnlyRetries,
         thinkOnlyRetryPct: localCalls > 0 ? Math.round((thinkOnlyRetries / localCalls) * 100) : 0,
         totalPrompts,
@@ -329,6 +342,8 @@ export function resetInferenceMetrics(): void {
     localCompletionTokens = 0;
     localCallsEstimatedPrompt = 0;
     localCallsUntokened = 0;
+    localFirstTs = null;
+    localLastTs = null;
     thinkOnlyRetries = 0;
     totalPrompts = 0;
     nonDelegatedCount = 0;

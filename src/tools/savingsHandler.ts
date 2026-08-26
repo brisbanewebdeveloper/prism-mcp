@@ -54,7 +54,12 @@ export function abbreviate(n: number): string {
         // rounding reached "1000K" — fall through and render in M instead
     }
     const inM = n / 1_000_000;
-    return `${inM.toFixed(inM < 10 ? 1 : 0)}M`;
+    if (inM < 1_000) {
+        const m = inM.toFixed(inM < 10 ? 1 : 0);
+        if (Number(m) < 1_000) return `${m}M`;
+    }
+    const inB = n / 1_000_000_000;
+    return `${inB.toFixed(inB < 10 ? 1 : 0)}B`;
 }
 
 function spanOf(s: LocalSavings): string {
@@ -215,9 +220,9 @@ export function sessionSavings(): LocalSavings {
         local_calls_with_estimated_prompt: snap.localCallsEstimatedPrompt,
         panel_local_calls: 0,
         panel_local_tokens: 0,
+        first_ts: snap.localFirstTs,
+        last_ts: snap.localLastTs,
         excluded_refusals: 0,
-        first_ts: null,
-        last_ts: null,
         by_model,
     };
 }

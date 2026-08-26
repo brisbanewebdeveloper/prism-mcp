@@ -274,6 +274,10 @@ describe('rendering', () => {
     expect(abbreviate(1_000_000)).toBe('1.0M');
     expect(abbreviate(NaN)).toBe('0');
     expect(abbreviate(-5)).toBe('0');
+    // Round-2 review: billion scale must not render "1000M".
+    expect(abbreviate(999_999_999)).toBe('1.0B');
+    expect(abbreviate(1_500_000_000)).toBe('1.5B');
+    expect(abbreviate(999_499_000)).toBe('999M');
   });
 });
 
@@ -347,6 +351,19 @@ describe('session view', () => {
     const s = sessionSavings();
     expect(s.local_calls_without_tokens).toBe(1);
     expect(s.local_total_tokens).toBe(0);
+  });
+
+  it('shows the real session span, never "no local calls yet" above real calls', () => {
+    // Round-2 review: sessionSavings() hardcoded first_ts/last_ts to null, so
+    // a populated session rendered "THIS SESSION (no local calls yet)" directly
+    // above "2 call(s) served locally" — a visible self-contradiction.
+    recordInference({ backend: 'ollama-9b', model_picked: 'prism-coder:9b', used_cloud: false,
+      latency_ms: 100, prompt_tokens: 800, completion_tokens: 200 });
+    const s = sessionSavings();
+    expect(s.first_ts).not.toBeNull();
+    const text = renderSavings(s, 'session').text;
+    expect(text).not.toMatch(/no local calls yet/);
+    expect(text).toMatch(/THIS SESSION \(\d{4}-\d{2}-\d{2}/);
   });
 
   it('excludes refusals from the session accumulators', () => {
