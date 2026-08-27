@@ -31,7 +31,7 @@ import { getEntitlements } from "../utils/entitlements.js";
 import { getSynaluxJwt } from "../utils/synaluxJwt.js";
 import { getSetting } from "../storage/configStorage.js";
 import { loadOrCreateDeviceIdentity } from "../crypto/deviceKeys.js";
-import { sealFor, openSealed, isSealedEnvelope, EnvelopeError } from "../crypto/syncEnvelope.js";
+import { sealFor, openSealed, isSealedEnvelope, EnvelopeError, keyIdOf } from "../crypto/syncEnvelope.js";
 import { PRISM_SYNALUX_BASE_URL } from "../config.js";
 
 const TIMEOUT_MS = 10_000;
@@ -125,7 +125,19 @@ export function _resetHandoffSyncForTest(): void {
     registeredThisProcess = false;
 }
 
-async function fetchActiveDevices(jwt: string, fetchImpl: typeof fetch): Promise<RemoteDevice[] | null> {
+/** A device we will actually seal to: the public key plus the kid DERIVED from
+ *  it on THIS machine. The derived kid — not the portal's asserted device_id —
+ *  is the identity TOFU and sealing agree on. */
+interface SealTarget {
+    rawKey: Buffer;
+    /** keyIdOf(rawKey), computed locally. This is the recipient kid sealFor
+     *  will produce, so pinning it makes a swapped key a new identity. */
+    derivedKid: string;
+    /** What the portal claimed. Kept only to detect and drop a mismatch. */
+    assertedId: string;
+}
+
+async function fetchActiveDevices(jwt: string, fetchImpl: typeof fetch): Promise<SealTarget[] | null> {
     const res = await fetchImpl(`${baseUrl()}/api/v1/prism/sync/devices`, {
         headers: { "Authorization": `Bearer ${jwt}` },
         signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -133,12 +145,38 @@ async function fetchActiveDevices(jwt: string, fetchImpl: typeof fetch): Promise
     if (!res.ok) return null;
     const data = (await res.json()) as { devices?: unknown };
     if (!Array.isArray(data.devices)) return null;
-    return data.devices
-        .filter((d): d is RemoteDevice =>
-            typeof d === "object" && d !== null &&
-            typeof (d as RemoteDevice).device_id === "string" &&
-            typeof (d as RemoteDevice).public_key === "string")
-        .filter((d) => !d.revoked);
+
+    const out: SealTarget[] = [];
+    for (const d of data.devices) {
+        if (typeof d !== "object" || d === null) continue;
+        const r = d as RemoteDevice;
+        if (typeof r.device_id !== "string" || typeof r.public_key !== "string" || r.revoked) continue;
+
+        // The adversary this whole module names is a portal that lies in THIS
+        // response. It cannot be trusted to tell the truth about which key
+        // belongs to which device_id, so the asserted device_id is not used as
+        // an identity anywhere downstream: re-derive the kid from the key that
+        // will actually receive the blob. A portal that reuses a pinned
+        // device_id with a swapped key produces a DIFFERENT derivedKid here, so
+        // TOFU sees a new device and warns — the exact injection the header
+        // promises to surface. A portal that also forges the device_id to match
+        // its swapped key still surfaces, because the pin is on the derived kid.
+        let rawKey: Buffer;
+        try {
+            rawKey = Buffer.from(r.public_key, "base64");
+        } catch {
+            continue;
+        }
+        if (rawKey.length !== 32) continue;
+        let derivedKid: string;
+        try {
+            derivedKid = keyIdOf(rawKey);
+        } catch {
+            continue;
+        }
+        out.push({ rawKey, derivedKid, assertedId: r.device_id });
+    }
+    return out;
 }
 
 // ── Push ─────────────────────────────────────────────────────────────────────
@@ -177,9 +215,11 @@ export async function pushHandoff(
             return { pushed: false, reason: "device_list_unavailable" };
         }
 
-        // TOFU: growth is allowed but never silent.
+        // TOFU keys on the DERIVED kid — the same value sealFor puts in the
+        // envelope as the recipient — so a swapped key is a new identity here,
+        // never a silent reuse of a pinned device_id.
         const pins = readPins();
-        const newDevices = devices.map((d) => d.device_id).filter((id) => !pins.has(id));
+        const newDevices = devices.map((d) => d.derivedKid).filter((kid) => !pins.has(kid));
         const self = loadOrCreateDeviceIdentity();
 
         const payload = Buffer.from(JSON.stringify({
@@ -191,7 +231,7 @@ export async function pushHandoff(
         }), "utf8");
 
         const envelope = sealFor(
-            devices.map((d) => Buffer.from(d.public_key, "base64")),
+            devices.map((d) => d.rawKey),
             payload,
             aadFor(project),
         );

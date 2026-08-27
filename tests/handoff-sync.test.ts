@@ -226,6 +226,55 @@ describe('TOFU pinning', () => {
     expect(existsSync(join(dir, 'known-sync-devices.json'))).toBe(false);
   });
 
+  it('surfaces a key-SWAP under a pinned device_id — TOFU keys on the derived kid, not the portal id', async () => {
+    // Adversarial review Finding 1 (HIGH): the mitigation must catch a
+    // compromised portal that reuses an already-pinned device_id with a
+    // swapped public_key. If TOFU trusted the portal's device_id, this seals
+    // to the attacker with NO warning. It must instead see a new identity
+    // (the kid derived from the swapped key) and warn, and must never seal to
+    // the attacker's key silently.
+    process.env.PRISM_HANDOFF_SYNC = '1';
+    const relay = makeRelay();
+    const b = otherDevice();
+    relay.devices.push({ device_id: b.keyId, public_key: b.b64, label: null, revoked: false });
+
+    // Push 1: honest list pins {self, B-by-derived-kid}.
+    const first = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
+    expect(first.pushed).toBe(true);
+
+    // Portal is now hostile: same device_id string, attacker's key.
+    const attacker = otherDevice();
+    relay.devices.length = 0;
+    const self = loadOrCreateDeviceIdentity();
+    relay.devices.push({ device_id: self.keyId, public_key: self.rawPublicKey.toString('base64'), label: null, revoked: false });
+    relay.devices.push({ device_id: b.keyId, public_key: attacker.b64, label: null, revoked: false }); // SWAP
+
+    const second = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
+    expect(second.pushed).toBe(true);
+    // The swapped key is a NEW identity → warned, not silent.
+    expect(second.new_devices).toEqual([attacker.keyId]);
+
+    // And the attacker's key WAS among the recipients only as a newly-warned
+    // device — the point is the user is told. Confirm the warning names the
+    // attacker's derived kid, not B's pinned id.
+    expect(second.new_devices).not.toContain(b.keyId);
+  });
+
+  it('drops list entries whose asserted device_id ≠ keyIdOf(public_key) is irrelevant — sealing follows the key', async () => {
+    // A portal that lies about device_id cannot cause a seal to an unintended
+    // identity: TOFU and sealing both use the derived kid, so a mismatched
+    // asserted id simply has no effect on either.
+    process.env.PRISM_HANDOFF_SYNC = '1';
+    const relay = makeRelay();
+    const b = otherDevice();
+    relay.devices.push({ device_id: 'ffffffffffffffff', public_key: b.b64, label: null, revoked: false }); // wrong id
+    const r = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
+    expect(r.pushed).toBe(true);
+    // Warned by B's TRUE derived kid, never the bogus asserted id.
+    expect(r.new_devices).toContain(b.keyId);
+    expect(r.new_devices).not.toContain('ffffffffffffffff');
+  });
+
   it('revoked devices are excluded from sealing entirely', async () => {
     process.env.PRISM_HANDOFF_SYNC = '1';
     const relay = makeRelay();
