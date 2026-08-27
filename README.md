@@ -138,6 +138,14 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.17.1
+
+- **Fixes a broken CLI in 20.17.0** — a command-name collision made every
+  `prism` CLI invocation exit with a commander error at startup (the MCP
+  server was unaffected). The handoff-sync command is `prism handoff …`;
+  `prism sync` remains cross-backend data synchronization. If you installed
+  20.17.0, update.
+
 ## What's New in v20.17.0
 
 ### Cross-Machine Session Handoff — End-to-End Encrypted
