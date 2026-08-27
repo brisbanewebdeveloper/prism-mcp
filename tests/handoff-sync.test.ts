@@ -198,12 +198,14 @@ describe('TOFU pinning', () => {
     const first = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
     expect(first.pushed).toBe(true);
     const self = loadOrCreateDeviceIdentity();
-    expect(first.new_devices).toEqual(expect.arrayContaining([b.keyId, self.keyId]));
+    // self is sealed from local material and is never reported as "new".
+    expect(first.new_devices).toEqual([b.keyId]);
 
     const pinFile = join(dir, 'known-sync-devices.json');
     expect(existsSync(pinFile)).toBe(true);
-    expect(JSON.parse(readFileSync(pinFile, 'utf8')).device_ids).toEqual(
-      expect.arrayContaining([b.keyId, self.keyId]));
+    // self is sealed from local material and never pinned; only remote
+    // recipients are pinned.
+    expect(JSON.parse(readFileSync(pinFile, 'utf8')).device_ids).toEqual([b.keyId]);
 
     const second = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
     expect(second.pushed).toBe(true);
@@ -283,5 +285,34 @@ describe('TOFU pinning', () => {
     const r = await pushHandoff('proj-a', HANDOFF, relay.fetchImpl);
     expect(r.pushed).toBe(true);
     expect(r.sealed_to).toBe(1); // self only — the revoked device is not a recipient
+  });
+
+  it('always seals to self even if the portal omits this device (no self-lockout)', async () => {
+    // Review residual: a hostile/stale portal that leaves this machine off the
+    // list would otherwise make the origin unable to open its own handoff.
+    process.env.PRISM_HANDOFF_SYNC = '1';
+    const relay = makeRelay();
+    const b = otherDevice();
+    relay.devices.push({ device_id: b.keyId, public_key: b.b64, label: null, revoked: false });
+
+    // Force the list to contain ONLY B (never self), even after registration.
+    const self = loadOrCreateDeviceIdentity();
+    const listOnlyB = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith('/sync/devices') && (!init || init.method === 'GET')) {
+        return new Response(JSON.stringify({ devices: [{ device_id: b.keyId, public_key: b.b64, label: null, revoked: false }] }), { status: 200 });
+      }
+      return (relay.fetchImpl as unknown as (u: string, i?: RequestInit) => Promise<Response>)(url, init);
+    }) as unknown as typeof fetch;
+
+    const r = await pushHandoff('proj-a', HANDOFF, listOnlyB);
+    expect(r.pushed).toBe(true);
+    expect(r.sealed_to).toBe(2); // B + self, added locally
+
+    // The origin can open its own blob — the whole point.
+    const pulled = await pullHandoff('proj-a', relay.fetchImpl);
+    expect(pulled.ok).toBe(true);
+    expect(pulled.payload!.handoff).toEqual(HANDOFF);
+    expect(self.keyId).toMatch(/^[0-9a-f]{16}$/);
   });
 });

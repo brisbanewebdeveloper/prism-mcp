@@ -215,12 +215,22 @@ export async function pushHandoff(
             return { pushed: false, reason: "device_list_unavailable" };
         }
 
+        const self = loadOrCreateDeviceIdentity();
+
+        // Always seal to SELF from local key material, regardless of the portal
+        // list. A hostile (or merely stale) portal that omits this device would
+        // otherwise make the origin unable to open its own handoff — a
+        // self-inflicted lockout. Deduped by derived kid so a portal that DOES
+        // list us is not a double recipient.
+        const targets = new Map<string, Buffer>();
+        targets.set(self.keyId, self.rawPublicKey);
+        for (const d of devices) targets.set(d.derivedKid, d.rawKey);
+
         // TOFU keys on the DERIVED kid — the same value sealFor puts in the
         // envelope as the recipient — so a swapped key is a new identity here,
-        // never a silent reuse of a pinned device_id.
+        // never a silent reuse of a pinned device_id. Self is never "new".
         const pins = readPins();
-        const newDevices = devices.map((d) => d.derivedKid).filter((kid) => !pins.has(kid));
-        const self = loadOrCreateDeviceIdentity();
+        const newDevices = [...targets.keys()].filter((kid) => kid !== self.keyId && !pins.has(kid));
 
         const payload = Buffer.from(JSON.stringify({
             v: 1,
@@ -230,11 +240,7 @@ export async function pushHandoff(
             handoff,
         }), "utf8");
 
-        const envelope = sealFor(
-            devices.map((d) => d.rawKey),
-            payload,
-            aadFor(project),
-        );
+        const envelope = sealFor([...targets.values()], payload, aadFor(project));
 
         const res = await fetchImpl(`${baseUrl()}/api/v1/prism/sync/blob`, {
             method: "PUT",
@@ -253,7 +259,7 @@ export async function pushHandoff(
             writePins(pins);
             debugLog(`[handoff-sync] ⚠ sealed to ${newDevices.length} device(s) this machine had never seen: ${newDevices.join(", ")}`);
         }
-        return { pushed: true, reason: "ok", sealed_to: devices.length, ...(newDevices.length ? { new_devices: newDevices } : {}) };
+        return { pushed: true, reason: "ok", sealed_to: targets.size, ...(newDevices.length ? { new_devices: newDevices } : {}) };
     } catch (e) {
         debugLog(`[handoff-sync] push failed: ${e instanceof Error ? e.message : e}`);
         return { pushed: false, reason: "error" };
