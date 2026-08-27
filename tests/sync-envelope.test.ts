@@ -216,10 +216,18 @@ describe('device identity', () => {
     expect(openSealed(env, second.privateKey, second.rawPublicKey, CTX).toString()).toBe('to-this-device');
   });
 
-  it('writes the private key with 0600 permissions', () => {
+  it('writes the private key with 0600 permissions (POSIX)', () => {
     loadOrCreateDeviceIdentity();
     const mode = statSync(join(dir, 'sync-device-key.pem')).mode & 0o777;
-    expect(mode).toBe(0o600);
+    if (process.platform === 'win32') {
+      // POSIX modes are advisory on Windows (chmod is a no-op; the profile
+      // directory ACL is the boundary — documented in deviceKeys.ts). Assert
+      // the file exists and loads rather than a mode Windows cannot hold.
+      expect(mode).toBeGreaterThan(0);
+      expect(loadOrCreateDeviceIdentity().created).toBe(false);
+    } else {
+      expect(mode).toBe(0o600);
+    }
   });
 
   it('the key file never contains anything but the private key PEM', () => {
