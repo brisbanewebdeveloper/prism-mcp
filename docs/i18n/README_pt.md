@@ -138,6 +138,22 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.17.0
+
+### Cross-Machine Session Handoff — End-to-End Encrypted
+
+- **Resume a session on any of your machines.** With `prism sync enable` (paid,
+  off by default), each `session_save_handoff` seals the handoff to all your
+  account's device keys and relays the CIPHERTEXT; another machine pulls with
+  `sync_pull_handoff` (or `prism sync pull <project>`) and opens it locally.
+- **The relay stores ciphertext only** — X25519 + AES-256-GCM sealed
+  envelopes. No key that opens a handoff ever exists server-side. The channel
+  is deliberately separate from savings sync, which carries counters only.
+- **TOFU device pinning** surfaces a compromised relay: sealing to a key this
+  machine has never seen warns loudly, keyed on the client-derived recipient
+  id so a swapped key can't hide behind a familiar device name.
+- `prism sync status|devices` to inspect; revoke a lost machine from the portal.
+
 ## What's New in v20.16.0
 
 ### See What Local Serving Saves You — Meterable, Auditable, Team-Wide
