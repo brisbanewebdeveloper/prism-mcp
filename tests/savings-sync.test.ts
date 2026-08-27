@@ -168,13 +168,17 @@ describe('fetchTeamSavings / renderTeamSavings', () => {
     total_local_calls: 50, total_cloud_calls: 5, total_local_tokens: 1_000_000,
   };
 
-  it('renders totals, per-member rows, and the opt-in floor disclosure', () => {
-    const text = renderTeamSavings(team);
+  it('prints the portal-rendered block VERBATIM when present (thin client)', () => {
+    const rendered = '💾 Team local serving — SERVER SAYS\n  anything the portal rendered';
+    expect(renderTeamSavings({ ...team, rendered })).toBe(rendered);
+  });
+
+  it('falls back to a minimal, currency-free summary for older portals', () => {
+    const text = renderTeamSavings(team); // no rendered field
     expect(text).toMatch(/~1\.0M tokens kept off cloud models across the team/);
-    expect(text).toMatch(/50 call\(s\) served locally of 55 routed \(91%\)/);
-    expect(text).toMatch(/dev-a: 40 call\(s\), ~900K tokens \(2 device\(s\)\)/);
-    expect(text).toMatch(/Members who\s+have not opted in are absent, so the team figure is a floor/);
-    expect(text).not.toMatch(/[$€£¥₹]/u); // same no-currency contract as the local meter
+    expect(text).toMatch(/2 member\(s\)/);
+    expect(text).toMatch(/update the portal/i);
+    expect(text).not.toMatch(/[$€£¥₹]/u); // no-currency contract on the fallback too
   });
 
   it('maps 401/402/403 to not_entitled and validates the wire shape', async () => {
@@ -192,12 +196,12 @@ describe('fetchTeamSavings / renderTeamSavings', () => {
     expect(calledUrl).toContain('workspace_id=ws-1');
   });
 
-  it('discloses shared machines counted once, and tolerates portals that omit the field', () => {
-    // Review F1: a machine used by two members is deduped server-side; the
-    // render must say so rather than leave the member arithmetic mysterious.
-    const withShared = { ...team, shared_devices: 1 };
-    expect(renderTeamSavings(withShared)).toMatch(/1 machine\(s\) reported by more than one member — each counted once/);
-    expect(renderTeamSavings(team)).not.toMatch(/more than one member/);
+  it('shared-machine disclosure arrives via the server render; struct field still validates', () => {
+    // Review F1's disclosure moved portal-side with the rest of the
+    // presentation (thin client). The client's job is to not drop it.
+    const withShared = { ...team, shared_devices: 1,
+      rendered: '💾 …\n  1 machine(s) reported by more than one member — each counted once' };
+    expect(renderTeamSavings(withShared)).toMatch(/more than one member — each counted once/);
     expect(isTeamSavings(withShared)).toBe(true);
   });
 

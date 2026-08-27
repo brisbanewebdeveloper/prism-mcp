@@ -131,6 +131,11 @@ export interface TeamSavings {
      *  counts each once (latest push wins) and reports how many, so the
      *  render can disclose it. Optional: older portals omit it. */
     shared_devices?: number;
+    /** Server-rendered display block. Prism is a THIN CLIENT: presentation
+     *  lives portal-side so it can evolve without an npm release; the client
+     *  prints this verbatim and only falls back to a minimal local summary
+     *  when talking to an older portal that omits it. */
+    rendered?: string;
 }
 
 export function isTeamSavings(value: unknown): value is TeamSavings {
@@ -183,36 +188,24 @@ export async function fetchTeamSavings(
     }
 }
 
-/** Render the team roll-up in the same voice as the local meter. */
+/**
+ * Display text for the team roll-up.
+ *
+ * Thin-client rule: the portal renders the display (rendered field) and this
+ * prints it verbatim. The fallback below exists ONLY for older portals that
+ * predate server rendering — one summary line, tokens only, no currency (the
+ * no-currency contract applies to both paths and is pinned by tests).
+ */
 export function renderTeamSavings(t: TeamSavings): string {
-    const abbrev = abbreviate;
-    const lines: string[] = [];
-    lines.push(`💾 Team local serving — LAST ${t.days} DAYS (workspace ${t.workspace_id})`);
-    lines.push("");
+    if (typeof t.rendered === "string" && t.rendered.trim().length > 0) {
+        return t.rendered;
+    }
     if (t.total_local_calls === 0) {
-        lines.push("  No synced local serving yet. Each member opts in with:");
-        lines.push("    prism savings --sync-enable   (paid plans; counters only, never content)");
-        return lines.join("\n");
+        return `💾 Team local serving — LAST ${t.days} DAYS (workspace ${t.workspace_id})\n` +
+            `  No synced local serving yet. Members opt in with: prism savings --sync-enable`;
     }
-    const routed = t.total_local_calls + t.total_cloud_calls;
-    const pct = routed > 0 ? Math.round((t.total_local_calls / routed) * 100) : 0;
-    lines.push(`  ~${abbrev(t.total_local_tokens)} tokens kept off cloud models across the team`);
-    lines.push(`  ${t.total_local_calls.toLocaleString("en-US")} call(s) served locally of ${routed.toLocaleString("en-US")} routed (${pct}%)`);
-    if (t.members.length > 0) {
-        lines.push("");
-        lines.push("  By member:");
-        for (const m of [...t.members].sort((a, b) => b.local_tokens - a.local_tokens)) {
-            lines.push(`    ${m.label}: ${m.local_calls.toLocaleString("en-US")} call(s), ~${abbrev(m.local_tokens)} tokens (${m.devices} device(s))`);
-        }
-    }
-    if ((t.shared_devices ?? 0) > 0) {
-        lines.push("");
-        lines.push(`  ${t.shared_devices} machine(s) reported by more than one member — each counted once`);
-        lines.push("  (latest push wins), attributed to the member who pushed last.");
-    }
-    lines.push("");
-    lines.push("  Aggregated from members who opted in to savings sync. Counters only — no prompts,");
-    lines.push("  completions, or project names ever leave a machine on this channel. Members who");
-    lines.push("  have not opted in are absent, so the team figure is a floor.");
-    return lines.join("\n");
+    return `💾 Team local serving — LAST ${t.days} DAYS (workspace ${t.workspace_id})\n` +
+        `  ~${abbreviate(t.total_local_tokens)} tokens kept off cloud models across the team ` +
+        `(${t.total_local_calls.toLocaleString("en-US")} local call(s), ${t.members.length} member(s)).\n` +
+        `  Older portal: full breakdown unavailable — update the portal for member rows and disclosures.`;
 }
