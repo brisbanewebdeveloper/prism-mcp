@@ -2216,7 +2216,7 @@ export const SYNC_PULL_HANDOFF_TOOL: Tool = {
     "Pulls this account's synced handoff for a project from the E2E relay and " +
     "opens it with THIS machine's device key. The relay stores ciphertext only; " +
     "a handoff is readable here only if it was sealed to this device. Requires " +
-    "handoff sync enabled (prism sync enable), a paid plan, and a signed-in " +
+    "handoff sync enabled (prism handoff enable), a paid plan, and a signed-in " +
     "account. Push happens automatically on session_save_handoff.",
   inputSchema: {
     type: "object",

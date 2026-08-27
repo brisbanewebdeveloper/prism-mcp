@@ -1224,12 +1224,14 @@ program
     }
   });
 
-// ─── prism sync ───────────────────────────────────────────────
-// Cross-machine handoff sync controls. Push happens automatically on
-// session_save_handoff once enabled; everything E2E lives in src/crypto/.
+// ─── prism handoff ────────────────────────────────────────────
+// Cross-machine handoff sync controls ('sync' was taken by cross-backend
+// data synchronization above — a collision the stale local dist hid until
+// CI built fresh). Push happens automatically on session_save_handoff once
+// enabled; everything E2E lives in src/crypto/.
 program
-  .command('sync <action> [project]')
-  .description('Cross-machine handoff sync: enable | disable | status | pull <project> | devices')
+  .command('handoff <action> [project]')
+  .description('Cross-machine handoff sync (E2E): enable | disable | status | pull <project> | devices')
   .action(async (action: string, project?: string) => {
     try {
       switch (action) {
@@ -1240,7 +1242,7 @@ program
           console.log(action === 'enable'
             ? 'Handoff sync enabled. On each session_save_handoff, the handoff is sealed to your '
               + 'account devices (end-to-end encrypted — the relay stores ciphertext only) and uploaded. '
-              + 'Paid plans; disable anytime with: prism sync disable'
+              + 'Paid plans; disable anytime with: prism handoff disable'
             : 'Handoff sync disabled. Nothing further leaves this machine on this channel.');
           return;
         }
@@ -1255,7 +1257,7 @@ program
           return;
         }
         case 'pull': {
-          if (!project) { console.error('Usage: prism sync pull <project>'); process.exit(1); }
+          if (!project) { console.error('Usage: prism handoff pull <project>'); process.exit(1); }
           const { pullHandoff, renderPulledHandoff } = await import('./sync/handoffSync.js');
           const r = await pullHandoff(project);
           console.log(renderPulledHandoff(r));

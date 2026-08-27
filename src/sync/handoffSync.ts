@@ -276,7 +276,7 @@ export async function pushHandoffFromArgs(args: unknown): Promise<void> {
     if (result.pushed && result.new_devices?.length) {
         console.error(
             `[handoff-sync] ⚠ NEW sync device(s) on your account: ${result.new_devices.join(", ")}. ` +
-            `If you did not add a machine, revoke it: prism sync devices`);
+            `If you did not add a machine, revoke it: prism handoff devices`);
     }
 }
 
@@ -349,7 +349,7 @@ export async function pullHandoff(
 export function renderPulledHandoff(r: HandoffPullResult): string {
     if (!r.ok || !r.payload) {
         const why: Record<string, string> = {
-            disabled: "Handoff sync is off on this machine. Enable: prism sync enable",
+            disabled: "Handoff sync is off on this machine. Enable: prism handoff enable",
             no_blob: "No synced handoff exists for this project yet.",
             not_recipient: "A handoff exists but was sealed before this device joined — it will include this machine after the next save elsewhere.",
             not_entitled: "Cross-machine sync needs a paid plan and a signed-in account.",
