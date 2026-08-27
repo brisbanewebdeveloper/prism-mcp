@@ -138,6 +138,25 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.16.0
+
+### See What Local Serving Saves You — Meterable, Auditable, Team-Wide
+
+- **`local_savings` tool + `prism savings` CLI** — the token volume local
+  serving kept off your cloud model: all time, trailing 30/7 days, or any
+  `--days N` window. Tokens, never an invented dollar figure, with the
+  assumptions and known undercounts printed inline.
+- **Team roll-up (paid)** — `prism savings --sync-enable` uploads per-day
+  counters only (never content; the payload is a closed field set the server
+  also enforces); `prism savings --team` shows the workspace-wide total with
+  per-member share. Off by default.
+- **E2E sync foundation** — sealed multi-recipient envelopes (X25519 +
+  HKDF-SHA256 + AES-256-GCM on node:crypto, no new dependency) and per-device
+  identities, adversarially reviewed: cross-machine session sync will ship on
+  a relay that only ever stores ciphertext.
+- **Push-time public-leak guard** — outgoing diffs AND commit messages are
+  scanned before anything leaves the machine.
+
 ## What's New in v20.12.1
 
 - **`prism connect --refresh` now converges every registration it owns**, not
