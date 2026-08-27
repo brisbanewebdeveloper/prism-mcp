@@ -2208,6 +2208,25 @@ export const INFERENCE_METRICS_TOOL: Tool = {
   },
 };
 
+// ─── v20.17: Cross-machine handoff sync ────────────────────
+
+export const SYNC_PULL_HANDOFF_TOOL: Tool = {
+  name: "sync_pull_handoff",
+  description:
+    "Pulls this account's synced handoff for a project from the E2E relay and " +
+    "opens it with THIS machine's device key. The relay stores ciphertext only; " +
+    "a handoff is readable here only if it was sealed to this device. Requires " +
+    "handoff sync enabled (prism sync enable), a paid plan, and a signed-in " +
+    "account. Push happens automatically on session_save_handoff.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: { type: "string", description: "Project whose handoff to pull." },
+    },
+    required: ["project"],
+  },
+};
+
 // ─── v20.16: Local-serving meter ───────────────────────────
 
 export const SAVINGS_TOOL: Tool = {

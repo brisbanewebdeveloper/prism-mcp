@@ -1224,6 +1224,70 @@ program
     }
   });
 
+// ─── prism sync ───────────────────────────────────────────────
+// Cross-machine handoff sync controls. Push happens automatically on
+// session_save_handoff once enabled; everything E2E lives in src/crypto/.
+program
+  .command('sync <action> [project]')
+  .description('Cross-machine handoff sync: enable | disable | status | pull <project> | devices')
+  .action(async (action: string, project?: string) => {
+    try {
+      switch (action) {
+        case 'enable':
+        case 'disable': {
+          const { setSetting } = await import('./storage/configStorage.js');
+          await setSetting('PRISM_HANDOFF_SYNC', action === 'enable' ? '1' : '0');
+          console.log(action === 'enable'
+            ? 'Handoff sync enabled. On each session_save_handoff, the handoff is sealed to your '
+              + 'account devices (end-to-end encrypted — the relay stores ciphertext only) and uploaded. '
+              + 'Paid plans; disable anytime with: prism sync disable'
+            : 'Handoff sync disabled. Nothing further leaves this machine on this channel.');
+          return;
+        }
+        case 'status': {
+          const enabled = process.env.PRISM_HANDOFF_SYNC === '1' ||
+            (process.env.PRISM_HANDOFF_SYNC !== '0' &&
+             ['1', 'true'].includes((await (await import('./storage/configStorage.js')).getSetting('PRISM_HANDOFF_SYNC', '')).trim().toLowerCase()));
+          const { loadOrCreateDeviceIdentity } = await import('./crypto/deviceKeys.js');
+          const id = loadOrCreateDeviceIdentity();
+          console.log(`Handoff sync: ${enabled ? 'ENABLED' : 'disabled'}`);
+          console.log(`This device: ${id.keyId}${id.created ? ' (key created just now)' : ''}`);
+          return;
+        }
+        case 'pull': {
+          if (!project) { console.error('Usage: prism sync pull <project>'); process.exit(1); }
+          const { pullHandoff, renderPulledHandoff } = await import('./sync/handoffSync.js');
+          const r = await pullHandoff(project);
+          console.log(renderPulledHandoff(r));
+          if (!r.ok) process.exit(1);
+          return;
+        }
+        case 'devices': {
+          const { getSynaluxJwt } = await import('./utils/synaluxJwt.js');
+          const jwt = await getSynaluxJwt();
+          if (!jwt) { console.error('No portal credentials — sign in first.'); process.exit(1); }
+          const base = (process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim() ||
+            (await import('./config.js')).PRISM_SYNALUX_BASE_URL || '').replace(/\/+$/, '');
+          const res = await fetch(`${base}/api/v1/prism/sync/devices`, {
+            headers: { Authorization: `Bearer ${jwt}` }, signal: AbortSignal.timeout(10_000) });
+          if (!res.ok) { console.error(`Device list unavailable (HTTP ${res.status}).`); process.exit(1); }
+          const data = await res.json() as { devices: Array<{ device_id: string; label: string | null; last_seen_at: string; revoked: boolean }> };
+          for (const d of data.devices) {
+            console.log(`${d.revoked ? '✗ (revoked)' : '✓'} ${d.device_id}  ${d.label ?? ''}  last seen ${d.last_seen_at}`);
+          }
+          console.log('Revoke a lost machine via the portal dashboard.');
+          return;
+        }
+        default:
+          console.error(`Unknown action "${action}" — expected enable | disable | status | pull | devices.`);
+          process.exit(1);
+      }
+    } catch (err) {
+      console.error(`sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 // ─── prism update-models ──────────────────────────────────────
 // Standalone model convergence: pull each installed prism-coder tier from
 // the registry and repair its local alias. connect runs this automatically;
