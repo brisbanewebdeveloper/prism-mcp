@@ -2210,3 +2210,60 @@ export const INFERENCE_METRICS_TOOL: Tool = {
     },
   },
 };
+
+// ─── v20.17: Cross-machine handoff sync ────────────────────
+
+export const SYNC_PULL_HANDOFF_TOOL: Tool = {
+  name: "sync_pull_handoff",
+  description:
+    "Pulls this account's synced handoff for a project from the E2E relay and " +
+    "opens it with THIS machine's device key. The relay stores ciphertext only; " +
+    "a handoff is readable here only if it was sealed to this device. Requires " +
+    "handoff sync enabled (prism handoff enable), a paid plan, and a signed-in " +
+    "account. Push happens automatically on session_save_handoff.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: { type: "string", description: "Project whose handoff to pull." },
+    },
+    required: ["project"],
+  },
+};
+
+// ─── v20.16: Local-serving meter ───────────────────────────
+
+export const SAVINGS_TOOL: Tool = {
+  name: "local_savings",
+  description:
+    "Reports what prism's local serving displaced, in TOKENS: volume handled by a " +
+    "local model instead of the cloud, calls served locally vs routed, and a " +
+    "per-model breakdown. Reports tokens, never money — prism cannot know your " +
+    "host's current rates, which model a call would otherwise have used, or " +
+    "whether you are on a flat plan, so any dollar figure would be invented. " +
+    "period: 'all' (default, durable ledger), 'month'/'week' (trailing 30/7 " +
+    "days), or 'session' (this MCP process); 'days' sets a custom trailing " +
+    "window. Excludes refused calls and states its known undercounts inline.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      period: {
+        type: "string",
+        enum: ["session", "week", "month", "all"],
+        description: "Window: 'all' (default), 'month' (trailing 30 days), 'week' (trailing 7 days), or 'session'.",
+      },
+      days: {
+        type: "number",
+        description: "Custom trailing window in days — overrides period (ledger views only).",
+      },
+      scope: {
+        type: "string",
+        enum: ["machine", "team"],
+        description: "'machine' (default) reads this machine's ledger. 'team' fetches the portal roll-up of workspace members who opted in to savings sync (paid plans).",
+      },
+      workspace_id: {
+        type: "string",
+        description: "Workspace for scope 'team'. Omit to use your only/default workspace.",
+      },
+    },
+  },
+};

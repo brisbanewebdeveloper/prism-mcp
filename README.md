@@ -1,6 +1,6 @@
 # Prism Coder
 
-**Give your AI agent memory that lasts.** Persistent sessions, knowledge graphs, and offline tool-routing — fully local and free.
+**Give your AI agent memory that lasts — and see the cloud tokens it never had to spend.** Persistent sessions, knowledge graphs, offline tool-routing, and an auditable savings meter. Fully local and free.
 
 [![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
@@ -11,7 +11,7 @@
   <img src="docs/mind-palace-dashboard-v20.8.png" alt="Prism Mind Palace dashboard v20.8.0 — project state with handoff summary, pending TODOs, intent health, neural graph, and time-travel history" width="700" />
 </p>
 
-Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claude, Cursor, and other AI tools long-term memory that survives across sessions. It ships with the open-weight `prism-coder` model fleet (2B–27B) for fast, offline tool-routing — no cloud required.
+Prism Coder is an [MCP server](https://modelcontextprotocol.io) that gives Claude, Cursor, and other AI tools long-term memory that survives across sessions. It ships with the open-weight `prism-coder` model fleet (2B–27B) for fast, offline tool-routing — no cloud required. And it keeps score: every call served locally is metered, so `prism savings` shows the token volume that never reached your cloud model — [measured honestly, in tokens](#local_savings--what-local-serving-actually-displaced).
 
 **No account needed. No API keys. Runs on your machine.**  
 A paid subscription adds cloud sync, higher model tiers, and team features through the [Synalux portal](https://synalux.ai).
@@ -25,6 +25,11 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
 - **Local-first inference** — bounded work is routed through local Ollama models
   first, with automatic 2B/4B/9B/27B selection based on installed models,
   available RAM, context fit, and subscription entitlements.
+- **A savings meter you can audit** — `prism savings` (or the `local_savings`
+  tool from any host) reports the token volume local serving kept off your
+  cloud model: headline, local share, per-model breakdown. It reports tokens,
+  never an invented dollar figure, and prints its assumptions and known
+  undercounts inline — a number you can check, not marketing.
 - **Route-output enforcement** — route mode returns only well-formed calls to
   tools the host actually advertised. Standard and higher plans can add
   authenticated deterministic correction; `route_guard: "local"` keeps the
@@ -55,6 +60,23 @@ Prism-managed entries after an upgrade. Restart the host after connecting.
 Prism works locally without an account, API key, or cloud subscription. Add a
 Synalux subscription when you want cloud memory, paid-tier skills, or team
 features.
+
+After a few sessions, ask what it's been worth:
+
+```bash
+prism savings --period month
+```
+
+```
+💾 Local serving — LAST 30 DAYS
+  ~510K tokens kept off your cloud model
+  53 call(s) served locally of 58 routed (91%)
+```
+
+Your numbers will differ — that's the point: it reports what *your* machine
+actually served, not a projection. Full report anatomy and the honesty rules
+behind it are in the
+[`local_savings` section](#local_savings--what-local-serving-actually-displaced).
 
 ### Install as a plugin
 
@@ -115,6 +137,49 @@ or by re-enabling after each run.
 
 <details>
 <summary>Release history (optional)</summary>
+
+## What's New in v20.17.1
+
+- **Fixes a broken CLI in 20.17.0** — a command-name collision made every
+  `prism` CLI invocation exit with a commander error at startup (the MCP
+  server was unaffected). The handoff-sync command is `prism handoff …`;
+  `prism sync` remains cross-backend data synchronization. If you installed
+  20.17.0, update.
+
+## What's New in v20.17.0
+
+### Cross-Machine Session Handoff — End-to-End Encrypted
+
+- **Resume a session on any of your machines.** With `prism handoff enable` (paid,
+  off by default), each `session_save_handoff` seals the handoff to all your
+  account's device keys and relays the CIPHERTEXT; another machine pulls with
+  `sync_pull_handoff` (or `prism handoff pull <project>`) and opens it locally.
+- **The relay stores ciphertext only** — X25519 + AES-256-GCM sealed
+  envelopes. No key that opens a handoff ever exists server-side. The channel
+  is deliberately separate from savings sync, which carries counters only.
+- **TOFU device pinning** surfaces a compromised relay: sealing to a key this
+  machine has never seen warns loudly, keyed on the client-derived recipient
+  id so a swapped key can't hide behind a familiar device name.
+- `prism handoff status|devices` to inspect; revoke a lost machine from the portal.
+
+## What's New in v20.16.0
+
+### See What Local Serving Saves You — Meterable, Auditable, Team-Wide
+
+- **`local_savings` tool + `prism savings` CLI** — the token volume local
+  serving kept off your cloud model: all time, trailing 30/7 days, or any
+  `--days N` window. Tokens, never an invented dollar figure, with the
+  assumptions and known undercounts printed inline.
+- **Team roll-up (paid)** — `prism savings --sync-enable` uploads per-day
+  counters only (never content; the payload is a closed field set the server
+  also enforces); `prism savings --team` shows the workspace-wide total with
+  per-member share. Off by default.
+- **E2E sync foundation** — sealed multi-recipient envelopes (X25519 +
+  HKDF-SHA256 + AES-256-GCM on node:crypto, no new dependency) and per-device
+  identities, adversarially reviewed: cross-machine session sync will ship on
+  a relay that only ever stores ciphertext.
+- **Push-time public-leak guard** — outgoing diffs AND commit messages are
+  scanned before anything leaves the machine.
 
 ## What's New in v20.12.1
 
@@ -1064,6 +1129,7 @@ Prism exposes 40+ MCP tools. The core memory loop:
 | `knowledge_ingest` | Teach Prism a codebase or document |
 | `prism_infer` | Local-first inference (route/chat/code modes, thinking, cloud escalation) |
 | `inference_metrics` | Session delegation or persisted MCP + VS Code panel local/cloud stats |
+| `local_savings` | Token volume local serving kept off your cloud model, all time / 30 days / session |
 
 ### `query_memory_natural` — memory first, current sources when needed
 
@@ -1120,6 +1186,68 @@ Call `inference_metrics` anytime mid-session to see how many `prism_infer` calls
 The same block also appears automatically in `session_save_ledger` and `session_save_handoff` responses at session end.
 
 **Note:** The default session view tracks this MCP process's `prism_infer` delegation. The all-time view combines persisted MCP calls with Synalux VS Code panel inference. Neither view includes the host agent's own token spend; use that host's native usage reporting when available.
+
+### `local_savings` — what local serving actually displaced
+
+`inference_metrics` reports raw counters. `local_savings` answers the question
+behind them: how much work never reached your cloud model. Call the tool in any
+host, or run `prism savings` from a terminal — `--period all|month|week|session`,
+`--days N` for any custom trailing window (e.g. `--days 90` for a quarter), and
+`--json` for machine-readable output:
+
+```
+💾 Local serving — LAST 30 DAYS (2026-08-02 → 2026-08-26)
+
+  ~510K tokens kept off your cloud model
+  53 call(s) served locally of 58 routed (91%)
+  Breakdown: 461,400 prompt + 48,400 completion
+
+  By model:
+    prism-coder:9b: 41 call(s), ~505K tokens
+    prism-coder:4b: 12 call(s), ~4.8K tokens
+
+  Counts tokens a local model handled instead of your cloud model. On the token
+  axis, the token count is measured — a floor, with known undercounts listed
+  when present. On the displacement axis, prism cannot observe the call your
+  host would have made, so whether all of it would have hit the cloud is an
+  assumption. Read it as: at most this much displacement, of at least this
+  token volume.
+
+  Caveats:
+    · 12 local call(s) hit the KV cache, so Ollama reported 0 prompt tokens for
+      context that was really submitted — prompt tokens are undercounted.
+    · 3 refused call(s) excluded — nothing was served, so nothing was displaced.
+```
+
+**Why tokens and not money.** Prism reports token volume and never a dollar
+figure, because it cannot honestly produce one: published rates change and a
+bundled price table would be wrong on a timer; prism never observes which model
+your host would have used, and that choice alone is a multiple-fold spread on
+the same tokens; and most users are on flat plans where a currency figure means
+nothing at all. Tokens are the one unit prism measured itself. If you know your
+own effective rate, multiply — the split is printed for exactly that reason.
+
+Refused calls are excluded, the VS Code panel-playground share is disclosed
+separately, and the known sources of undercount are listed inline rather than
+left implicit — so the durable (`week`/`month`/`all`/`--days`) headline is a
+measured floor rather than a number that merely looks precise. Figures are
+per-machine: each machine reports its own local ledger.
+
+**Team roll-up (paid).** On paid plans, `prism savings --sync-enable` opts this
+machine into savings sync: once a session, prism uploads per-day **counters** —
+call counts and token totals, never prompts, completions, project names, or
+model output (the upload payload is a closed field set; the server rejects
+anything else). `prism savings --team` (or the `local_savings` tool with
+`scope: "team"`) then shows the roll-up across your workspace: total tokens
+kept off cloud models, per-member share, device counts. Members who haven't
+opted in simply aren't counted, so the team figure is a floor. Sync is off by
+default, `--sync-disable` stops it, and the deeper session-content sync
+(handoffs) is a separate channel with end-to-end encryption — the two are
+deliberately not unified, because an E2E blob cannot be aggregated and a
+counter channel must never carry content. The `session` view is the one
+exception: on KV-cache hits it estimates submitted prompt tokens from text
+(the ledger counts the measured 0 instead), so it is marked `(est.)` and says
+so whenever that happens.
 
 ### Local-model delegation (default)
 

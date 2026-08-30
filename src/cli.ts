@@ -1128,6 +1128,168 @@ scmCmd
     }
   });
 
+// ─── prism savings ────────────────────────────────────────────
+// Surfaces the local-serving meter outside an MCP host. Reports TOKENS, not
+// money — see the header of tools/savingsHandler.ts for why a dollar figure
+// would be fabricated.
+program
+  .command('savings')
+  .description('Show token volume displaced by local serving (all time by default)')
+  .option('-p, --period <period>', 'Window: all | month | week | session', 'all')
+  .option('-d, --days <n>', 'Custom trailing window in days (overrides --period)')
+  .option('--team', 'Show the team roll-up from the portal (paid; members who opted in)')
+  .option('--workspace <id>', 'Workspace id for --team')
+  .option('--sync-enable', 'Opt in to savings sync (paid): daily COUNTERS only, never content')
+  .option('--sync-disable', 'Opt out of savings sync')
+  .option('--sync-now', 'Push the trailing window of daily counters now (requires sync enabled first)')
+  .option('--json', 'Emit machine-readable JSON output')
+  .action(async (options: { period?: string; days?: string; team?: boolean; workspace?: string;
+                            syncEnable?: boolean; syncDisable?: boolean; syncNow?: boolean; json?: boolean }) => {
+    try {
+      if (options.syncEnable || options.syncDisable) {
+        const { setSetting } = await import('./storage/configStorage.js');
+        await setSetting('PRISM_SAVINGS_SYNC', options.syncEnable ? '1' : '0');
+        console.log(options.syncEnable
+          ? 'Savings sync enabled. What leaves this machine: per-day call/token COUNTERS only — '
+            + 'never prompts, completions, or project names. Disable anytime with --sync-disable.'
+          : 'Savings sync disabled. Nothing further leaves this machine on this channel.');
+        if (!options.syncNow) return;
+      }
+      if (options.syncNow) {
+        const { pushSavings } = await import('./sync/savingsSync.js');
+        const r = await pushSavings();
+        if (r.pushed) { console.log(`Pushed ${r.days} day row(s) of counters.`); return; }
+        console.error(`Not pushed: ${r.reason}`);
+        process.exit(r.reason === 'nothing_to_push' || r.reason === 'disabled' ? 0 : 1);
+      }
+      if (options.team) {
+        const { fetchTeamSavings, renderTeamSavings } = await import('./sync/savingsSync.js');
+        const teamDays = options.days !== undefined ? Math.floor(Number(options.days)) : 30;
+        if (!Number.isFinite(teamDays) || teamDays <= 0) {
+          console.error(`--days expects a positive number, got "${options.days}".`);
+          process.exit(1);
+        }
+        const result = await fetchTeamSavings(options.workspace, teamDays);
+        if (!result.ok) {
+          console.error(result.reason === 'not_entitled'
+            ? 'Team savings needs a paid plan with team features and workspace membership.'
+            : `Team savings unavailable: ${result.reason}`);
+          process.exit(1);
+        }
+        console.log(options.json ? JSON.stringify(result.team, null, 2) : renderTeamSavings(result.team));
+        return;
+      }
+      const { queryLocalSavings } = await import('./storage/inferMetricsLedger.js');
+      const { renderSavings, sessionSavings, windowStart } = await import('./tools/savingsHandler.js');
+
+      const raw = (options.days !== undefined && options.period === undefined ? 'all' : (options.period ?? 'all')).toLowerCase();
+      if (!['all', 'month', 'week', 'session'].includes(raw)) {
+        console.error(`Unknown period "${raw}" — expected all, month, week, or session.`);
+        process.exit(1);
+      }
+      const period = raw as 'all' | 'month' | 'week' | 'session';
+      let days: number | undefined;
+      if (options.days !== undefined) {
+        days = Number(options.days);
+        if (!Number.isFinite(days) || days <= 0) {
+          console.error(`--days expects a positive number, got "${options.days}".`);
+          process.exit(1);
+        }
+        days = Math.floor(days);
+      }
+
+      // A CLI invocation is a fresh process, so the in-memory session
+      // accumulators are always empty here. Say so rather than printing a
+      // truthful-but-useless zero that reads as "local serving does nothing".
+      if (period === 'session') {
+        console.error('Note: `prism savings --period session` runs in a new process with no ' +
+                      'session history. Use the local_savings MCP tool inside a host session, ' +
+                      'or --period month/all for the durable ledger.');
+      }
+
+      const data = period === 'session'
+        ? sessionSavings()
+        : await queryLocalSavings(windowStart(period, Date.now(), days));
+
+      if (!data) {
+        console.error('Inference ledger unavailable — no durable figure can be reported.');
+        process.exit(1);
+      }
+
+      const rendered = renderSavings(data, period, days);
+      console.log(options.json ? JSON.stringify(rendered.data, null, 2) : rendered.text);
+    } catch (err) {
+      console.error(`savings failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+// ─── prism handoff ────────────────────────────────────────────
+// Cross-machine handoff sync controls ('sync' was taken by cross-backend
+// data synchronization above — a collision the stale local dist hid until
+// CI built fresh). Push happens automatically on session_save_handoff once
+// enabled; everything E2E lives in src/crypto/.
+program
+  .command('handoff <action> [project]')
+  .description('Cross-machine handoff sync (E2E): enable | disable | status | pull <project> | devices')
+  .action(async (action: string, project?: string) => {
+    try {
+      switch (action) {
+        case 'enable':
+        case 'disable': {
+          const { setSetting } = await import('./storage/configStorage.js');
+          await setSetting('PRISM_HANDOFF_SYNC', action === 'enable' ? '1' : '0');
+          console.log(action === 'enable'
+            ? 'Handoff sync enabled. On each session_save_handoff, the handoff is sealed to your '
+              + 'account devices (end-to-end encrypted — the relay stores ciphertext only) and uploaded. '
+              + 'Paid plans; disable anytime with: prism handoff disable'
+            : 'Handoff sync disabled. Nothing further leaves this machine on this channel.');
+          return;
+        }
+        case 'status': {
+          const enabled = process.env.PRISM_HANDOFF_SYNC === '1' ||
+            (process.env.PRISM_HANDOFF_SYNC !== '0' &&
+             ['1', 'true'].includes((await (await import('./storage/configStorage.js')).getSetting('PRISM_HANDOFF_SYNC', '')).trim().toLowerCase()));
+          const { loadOrCreateDeviceIdentity } = await import('./crypto/deviceKeys.js');
+          const id = loadOrCreateDeviceIdentity();
+          console.log(`Handoff sync: ${enabled ? 'ENABLED' : 'disabled'}`);
+          console.log(`This device: ${id.keyId}${id.created ? ' (key created just now)' : ''}`);
+          return;
+        }
+        case 'pull': {
+          if (!project) { console.error('Usage: prism handoff pull <project>'); process.exit(1); }
+          const { pullHandoff, renderPulledHandoff } = await import('./sync/handoffSync.js');
+          const r = await pullHandoff(project);
+          console.log(renderPulledHandoff(r));
+          if (!r.ok) process.exit(1);
+          return;
+        }
+        case 'devices': {
+          const { getSynaluxJwt } = await import('./utils/synaluxJwt.js');
+          const jwt = await getSynaluxJwt();
+          if (!jwt) { console.error('No portal credentials — sign in first.'); process.exit(1); }
+          const base = (process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim() ||
+            (await import('./config.js')).PRISM_SYNALUX_BASE_URL || '').replace(/\/+$/, '');
+          const res = await fetch(`${base}/api/v1/prism/sync/devices`, {
+            headers: { Authorization: `Bearer ${jwt}` }, signal: AbortSignal.timeout(10_000) });
+          if (!res.ok) { console.error(`Device list unavailable (HTTP ${res.status}).`); process.exit(1); }
+          const data = await res.json() as { devices: Array<{ device_id: string; label: string | null; last_seen_at: string; revoked: boolean }> };
+          for (const d of data.devices) {
+            console.log(`${d.revoked ? '✗ (revoked)' : '✓'} ${d.device_id}  ${d.label ?? ''}  last seen ${d.last_seen_at}`);
+          }
+          console.log('Revoke a lost machine via the portal dashboard.');
+          return;
+        }
+        default:
+          console.error(`Unknown action "${action}" — expected enable | disable | status | pull | devices.`);
+          process.exit(1);
+      }
+    } catch (err) {
+      console.error(`sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 // ─── prism update-models ──────────────────────────────────────
 // Standalone model convergence: pull each installed prism-coder tier from
 // the registry and repair its local alias. connect runs this automatically;

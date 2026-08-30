@@ -110,6 +110,7 @@ import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
 import { ddInfo, ddError as ddLogError } from "./utils/ddLogger.js";
 import { inferenceMetricsHandler } from "./utils/inferenceMetrics.js";
+import { savingsHandler } from "./tools/savingsHandler.js";
 import { recordInvocation } from "./utils/analytics.js";
 import { BOUNDARIES_TEXT } from "./boundaries/boundaries.js";
 import { triggerSkillManifestSync } from "./skillManifestSync.js";
@@ -190,6 +191,8 @@ import {
   KNOWLEDGE_INGEST_TOOL,
   // v19.2: Inference Metrics
   INFERENCE_METRICS_TOOL,
+  SAVINGS_TOOL,
+  SYNC_PULL_HANDOFF_TOOL,
 
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
@@ -385,6 +388,9 @@ function buildSessionMemoryTools(): Tool[] {
     KNOWLEDGE_INGEST_TOOL,         // knowledge_ingest — chunk code, gen Q&A, store in graph
     // ─── v19.2: Inference Metrics ───
     INFERENCE_METRICS_TOOL,          // inference_metrics — read-only session delegation stats
+    // ─── v20.16: Local-serving meter ───
+    SAVINGS_TOOL,                    // local_savings — tokens displaced by local serving
+    SYNC_PULL_HANDOFF_TOOL,          // sync_pull_handoff — E2E cross-machine handoff pull
   ];
 }
 
@@ -1283,14 +1289,21 @@ export function createServer() {
             // GATE 5: Reset drift timer — save_ledger counts as a drift checkpoint
             { const cid = (args as Record<string, unknown>)?.conversation_id as string | undefined;
               if (cid) { const { noteDriftCheck } = await import("./session/sessionContext.js"); noteDriftCheck(cid); } }
+            // Savings sync (paid, opt-in, fail-soft): session end is the natural
+            // push point. pushSavings gates itself — disabled/free/no-jwt all
+            // return without a request, and nothing here awaits it.
+            void import("./sync/savingsSync.js").then(m => m.pushSavings()).catch(() => {});
             break;
 
           case "session_save_handoff":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
-            // REVIEWER NOTE: v0.4.0 passes the server reference so the
-            // handler can trigger resource update notifications after
-            // a successful save. See notifyResourceUpdate() above.
-            result = await sessionSaveHandoffHandler(args, notifyResourceUpdate); break;
+            // Pass the subscription-aware notifier so successful saves can
+            // trigger resource updates for this server's subscribed clients.
+            result = await sessionSaveHandoffHandler(args, notifyResourceUpdate);
+            // Handoff sync (paid, opt-in, fail-soft): seal to the account's
+            // devices and relay ciphertext. Gated entirely inside the module.
+            void import("./sync/handoffSync.js").then(m => m.pushHandoffFromArgs(args)).catch(() => {});
+            break;
 
           case "session_load_context":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
@@ -1514,6 +1527,16 @@ export function createServer() {
 
           case "inference_metrics":
             result = await inferenceMetricsHandler(args as { period?: string }); break;
+
+          case "sync_pull_handoff": {
+            const { pullHandoff, renderPulledHandoff } = await import("./sync/handoffSync.js");
+            const pr = await pullHandoff(String((args as Record<string, unknown>)?.project ?? ""));
+            result = { content: [{ type: "text", text: renderPulledHandoff(pr) }], ...(pr.ok ? {} : { isError: true }) };
+            break;
+          }
+
+          case "local_savings":
+            result = await savingsHandler(args as { period?: string; days?: number; scope?: string; workspace_id?: string }); break;
 
           default:
             result = {

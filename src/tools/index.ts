@@ -123,7 +123,7 @@ export { verifyBehaviorHandler } from "./behavioralVerifierHandler.js";
 // Chunks source code, generates Q&A via Claude Haiku, stores in knowledge graph.
 // Three entry points: MCP tool, REST API, GitHub webhook.
 export { KNOWLEDGE_INGEST_TOOL } from "./ingestDefinitions.js";
-export { INFERENCE_METRICS_TOOL } from "./sessionMemoryDefinitions.js";
+export { INFERENCE_METRICS_TOOL, SAVINGS_TOOL, SYNC_PULL_HANDOFF_TOOL } from "./sessionMemoryDefinitions.js";
 export { knowledgeIngestHandler, handleGitHubWebhook, ingestKnowledge, isIngestArgs } from "./ingestHandler.js";
 
 // ── v15.4: prism_infer — local-first inference (RAM-gated cascade) ──
