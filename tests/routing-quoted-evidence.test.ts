@@ -153,6 +153,39 @@ describe('round-2 review regressions', () => {
   });
 });
 
+describe('round-3 review regressions', () => {
+  it('a skill named by an ORDINARY WORD keeps its own natural-language trigger', () => {
+    // Round-3 review: unconditional stripping killed sentry/linear/pdf/supabase
+    // routing 100% — the strip ate the very word their triggers need. Only
+    // identifier-shaped (multi-segment) names are evidence-strippable.
+    const t: Record<string, string[]> = {
+      '\\bsentry\\b': ['sentry'],
+      '\\blinear\\b.*\\b(issue|ticket|board)\\b': ['linear'],
+    };
+    expect(_applyPromptRouting([], stripQuotedEvidenceForRouting('check sentry for recent errors', t), t).map(x=>x.name))
+      .toContain('sentry');
+    expect(_applyPromptRouting([], stripQuotedEvidenceForRouting('create a linear ticket for this bug', t), t).map(x=>x.name))
+      .toContain('linear');
+  });
+
+  it('multiword names are word-anchored: never stripped inside a longer token', () => {
+    const t: Record<string, string[]> = { zz: ['fix-ci'] };
+    // 'prefix-fix-ci-suffix' contains fix-ci but as part of a longer identifier
+    const out = stripQuotedEvidenceForRouting('see prefix-fix-ci-suffix here', t);
+    expect(out).toContain('prefix-fix-ci-suffix');
+    // standalone occurrence IS stripped
+    expect(stripQuotedEvidenceForRouting('see fix-ci here', t)).not.toContain('fix-ci');
+  });
+
+  it('resolvePromptSkillNames never throws on corrupted scopedTriggers', async () => {
+    for (const bad of [{ a: null }, { a: undefined }, { a: 42 }, { a: {} }, { a: 'x' }, { a: [[]] }] as never[]) {
+      const names = await resolvePromptSkillNames('any prompt at all', undefined, bad);
+      expect(Array.isArray(names)).toBe(true);
+      for (const n of names) expect(typeof n).toBe('string');
+    }
+  });
+});
+
 describe('stripQuotedEvidenceForRouting mechanics', () => {
   it('removes fenced blocks and identifier-shaped tokens only', () => {
     // Updated after review: INLINE pairs are prose decoration and must NOT be

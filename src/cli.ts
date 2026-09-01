@@ -2,7 +2,7 @@
 
 import { Command } from 'commander';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdirSync, readdirSync, statSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { SqliteStorage } from './storage/sqlite.js';
 import { handleVerifyStatus, handleGenerateHarness } from './verification/cliHandler.js';

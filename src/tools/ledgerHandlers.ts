@@ -1759,10 +1759,10 @@ export async function sessionLoadContextHandler(
           const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
           // Size against the budget this display will ACTUALLY be capped to,
           // not the level constant — bootstrap divides it across projects.
-          // The suffix carries ~600 chars beyond the body (names line,
-          // imperative, truncation notice, offload path). Reserving that here
-          // keeps body+overhead inside the share instead of overflowing into
-          // the context's portion at small divided budgets.
+          // Reserve the suffix chrome (a function of the name — see
+          // symptomChromeUpperBound) so body+chrome stay inside the share
+          // instead of overflowing into the context's portion at small
+          // divided budgets.
           const budgetForLevel = effectiveNativeBudget(level, options.nativeMaxChars);
           const cap = Math.min(
             SYMPTOM_SKILL_INLINE_MAX,

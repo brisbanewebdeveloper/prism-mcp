@@ -401,13 +401,21 @@ export function stripQuotedEvidenceForRouting(
     // "not stripped", never to a thrown SyntaxError that kills routing for
     // the whole prompt — the sibling _applyPromptRouting swallows bad
     // patterns for the same reason (adversarial review, confirmed).
-    // Bounds + substance: a whitespace-only "name" passes a pure length check
-    // and then rewrites every 3-space run in every prompt (round-2 review).
-    // Requiring a word character keeps stripping to actual identifiers.
+    // Only IDENTIFIER-SHAPED names are stripped: at least two segments joined
+    // by - or _ (fusa-bss-billing, training-results-gate). Round-3 review
+    // proved the unconditional version was self-defeating for skills whose
+    // name is an ordinary word: stripping `sentry` from "check sentry for
+    // recent errors" killed that skill's OWN trigger (\bsentry\b) — 100% of
+    // its realistic phrasings routed nothing, same for linear/pdf/supabase.
+    // A single ordinary word cannot be distinguished from prose, so it is
+    // never stripped; the accepted residual is that a pasted skill LIST can
+    // still route single-word-named skills. Word-anchored so a multiword
+    // name never fires inside a longer token.
     if (name.length < 3 || name.length > 128 || !/[a-z0-9]/i.test(name)) continue;
+    if (!/[-_]/.test(name)) continue;
     try {
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      out = out.replace(new RegExp(escaped, 'gi'), SEVER);
+      out = out.replace(new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'gi'), SEVER);
     } catch { /* skip unbuildable names — same policy as the matcher */ }
   }
   return out;
@@ -488,7 +496,14 @@ export async function resolvePromptSkillNames(
 
   const combined: Record<string, string[]> = { ...publicKeywords };
   for (const [pattern, names] of Object.entries(scopedTriggers ?? {})) {
-    combined[pattern] = [...(combined[pattern] ?? []), ...names];
+    // A malformed skill body can hand this merge null/42/{} for a pattern —
+    // spreading that threw "names is not iterable" here, silently blanking
+    // ALL routing for the turn at both callers (round-3 review). Degrade to
+    // skip, matching the never-throw policy everywhere else in this path.
+    if (!Array.isArray(names)) continue;
+    const clean = names.filter((n): n is string => typeof n === "string");
+    if (clean.length === 0) continue;
+    combined[pattern] = [...(combined[pattern] ?? []), ...clean];
   }
   return _applyPromptRouting([], stripQuotedEvidenceForRouting(prompt, combined), combined).map((s) => s.name);
 }
