@@ -2212,7 +2212,10 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
 > {
   try {
     const { collectScopedTriggers, collectLocalSkillTriggers } = await import("./scopedSkillTriggers.js");
-    const merged: Record<string, string[]> = {};
+    // Null-prototype for the same reason as the accumulators in
+    // scopedSkillTriggers.ts (round-5): a user-authored pattern named
+    // __proto__/constructor must be a plain data key, not an inherited read.
+    const merged: Record<string, string[]> = Object.create(null);
     const localNames = new Set<string>();
     const errors: Array<{ skill: string; reason: string }> = [];
 

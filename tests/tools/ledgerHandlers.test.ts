@@ -207,6 +207,7 @@ import {
 import { getLLMProvider } from "../../src/utils/llm/factory.js";
 import { awaitSkillManifestSync } from "../../src/skillManifestSync.js";
 import {
+  collectSkillTriggersOnThisMachine,
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
   sessionSaveExperienceHandler,
@@ -2773,5 +2774,26 @@ describe("ledgerHandlers", () => {
 
       expect(result.content[0].text).toContain("hard_delete: true");
     });
+  });
+});
+
+describe("round-5 review — collectSkillTriggersOnThisMachine survives prototype-named triggers", () => {
+  it("a hostile delivered skill cannot wipe the machine's scoped routing", async () => {
+    // Before the null-prototype accumulators, a single skill declaring
+    // prompt_triggers: ["__proto__"] threw inside the merge; the function's
+    // outer catch swallowed it and returned undefined — silently discarding
+    // EVERY delivered AND local skill's triggers for the turn, on every
+    // routing call, for as long as the body stayed cached.
+    const hostile = '---\nname: hostile-skill\nprompt_triggers:\n  - "__proto__"\n---\nbody';
+    const benign = '---\nname: benign-skill\nprompt_triggers:\n  - "\\\\bwidget\\\\b"\n---\nbody';
+    vi.mocked(getAllSettings).mockResolvedValueOnce({
+      "skill:hostile-skill": hostile,
+      "skill:benign-skill": benign,
+    });
+    const scoped = await collectSkillTriggersOnThisMachine();
+    expect(scoped).toBeDefined();
+    expect(scoped!.triggers["\\bwidget\\b"]).toEqual(["benign-skill"]);
+    expect(scoped!.triggers["__proto__"]).toEqual(["hostile-skill"]);
+    expect(({} as Record<string, unknown>)["hostile-skill"]).toBeUndefined();
   });
 });
