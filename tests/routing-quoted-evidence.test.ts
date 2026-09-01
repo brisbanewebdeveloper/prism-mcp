@@ -168,11 +168,16 @@ describe('round-3 review regressions', () => {
       .toContain('linear');
   });
 
-  it('multiword names are word-anchored: never stripped inside a longer token', () => {
+  it('anchoring is SEGMENT-aligned: mid-token overlaps survive, standalone names are stripped', () => {
     const t: Record<string, string[]> = { zz: ['fix-ci'] };
-    // 'prefix-fix-ci-suffix' contains fix-ci but as part of a longer identifier
-    const out = stripQuotedEvidenceForRouting('see prefix-fix-ci-suffix here', t);
-    expect(out).toContain('prefix-fix-ci-suffix');
+    // Round-4 UPDATE: this test originally asserted 'prefix-fix-ci-suffix'
+    // survives whole — round-4 review proved that behavior recreated the
+    // incident (\b fires at internal hyphens, so an unstripped compound
+    // still satisfies the skill's trigger). Segment-aligned occurrences in
+    // compounds are now stripped; what must survive is a MID-TOKEN overlap:
+    // 'prefix-ci' contains the characters 'fix-ci' but not on a segment edge.
+    expect(stripQuotedEvidenceForRouting('the prefix-ci pipeline here', t)).toContain('prefix-ci');
+    expect(stripQuotedEvidenceForRouting('see prefix-fix-ci-suffix here', t)).not.toContain('fix-ci-suffix');
     // standalone occurrence IS stripped
     expect(stripQuotedEvidenceForRouting('see fix-ci here', t)).not.toContain('fix-ci');
   });
@@ -182,6 +187,80 @@ describe('round-3 review regressions', () => {
       const names = await resolvePromptSkillNames('any prompt at all', undefined, bad);
       expect(Array.isArray(names)).toBe(true);
       for (const n of names) expect(typeof n).toBe('string');
+    }
+  });
+});
+
+describe('round-4 review regressions', () => {
+  it('a name inside a longer COMPOUND identifier still cannot route its skill', () => {
+    // Round-4 HIGH: round 3's (?<![\w-]) anchors refused to strip the name
+    // out of container/pod/schema compounds, and \b fires at every internal
+    // hyphen, so the trigger matched INSIDE the unstripped compound — the
+    // exact incident class this suite exists to prevent. All three repros
+    // from the review, end-to-end through the matcher:
+    expect(route('deploy failed for fusa-bss-billing-worker container, see logs')).toEqual([]);
+    expect(route('legacy-fusa-bss-billing schema still referenced in prod')).toEqual([]);
+    expect(route('CrashLoopBackOff: pod fusa-bss-billing-7d8f9c-abcde restarting')).toEqual([]);
+  });
+
+  it('a mid-token overlap never kills an UNRELATED skill trigger', () => {
+    // The reason anchors exist at all: name 'fix-ci' appears as a character
+    // substring of the unrelated word 'prefix-ci' (pre+fix-ci) but not on a
+    // segment edge. Stripping it would sever 'prefix-ci' and kill that
+    // skill's own trigger — the round-3 bare-name failure in new clothes.
+    const t: Record<string, string[]> = {
+      zz: ['fix-ci'],
+      '\\bprefix-ci\\b': ['prefix-ci-skill'],
+    };
+    expect(_applyPromptRouting([], stripQuotedEvidenceForRouting('the prefix-ci build is broken', t), t).map(x => x.name))
+      .toContain('prefix-ci-skill');
+  });
+
+  it('prototype-named scoped patterns neither throw nor pollute', async () => {
+    // Round-4 HIGH: with a plain-object merge, a pattern key of
+    // '__proto__'/'constructor'/'toString' read the INHERITED value (truthy,
+    // not iterable → uncaught throw → silent loss of ALL routing) or invoked
+    // the prototype setter. Null-prototype merge makes both plain data ops.
+    for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const scoped: Record<string, string[]> = {};
+      Object.defineProperty(scoped, key, {
+        value: ['evil-skill'], enumerable: true, writable: true, configurable: true,
+      });
+      const names = await resolvePromptSkillNames('check sentry for errors', undefined, scoped);
+      expect(Array.isArray(names)).toBe(true);
+      for (const n of names) expect(typeof n).toBe('string');
+    }
+    // No Object.prototype pollution escaped the call.
+    expect(({} as Record<string, unknown>)['evil-skill']).toBeUndefined();
+    expect(Object.prototype.constructor).toBe(Object);
+  });
+
+  it('a corrupt PUBLIC table value is dropped at ingest, never char-iterated', async () => {
+    // Round-4 LOW: isKeywordTable only proves prompt_keywords is an object;
+    // a string value reached the matcher, whose for..of iterated it CHARACTER
+    // BY CHARACTER — resolvePromptSkillNames returned six bogus one-letter
+    // "skills" for {'\\bbaz\\b': 'notarray'}. Sanitized at ingest now: the
+    // corrupt pattern is dropped, well-formed siblings keep routing.
+    const { _setStorage, _invalidateRoutingCache } = await import('../src/tools/skillRouting.js');
+    const stored = new Map<string, string>();
+    stored.set('routing_keywords', JSON.stringify({
+      version: 999_001,
+      prompt_keywords: {
+        '\\bbaz\\b': 'notarray',
+        '\\bqux\\b': ['real-skill'],
+        '\\bmixed\\b': ['ok-skill', 42, null],
+      },
+    }));
+    _invalidateRoutingCache();
+    _setStorage(async () => {}, async (k: string) => stored.get(k) ?? '');
+    try {
+      const names = await resolvePromptSkillNames('baz qux mixed', 999_001);
+      expect(names).toContain('real-skill');
+      expect(names).toContain('ok-skill');
+      for (const n of names) expect(n.length).toBeGreaterThan(1);
+    } finally {
+      _setStorage(null, null);
+      _invalidateRoutingCache();
     }
   });
 });

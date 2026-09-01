@@ -258,6 +258,28 @@ function isKeywordTable(v: unknown): v is KeywordTable {
 }
 
 /**
+ * Enforce the table's value contract at INGEST, once, for every consumer.
+ * isKeywordTable only proves prompt_keywords is an object — round-4 review
+ * showed a string value ('notarray') sails through and the matcher's
+ * `for (const skillName of skills)` iterates it CHARACTER BY CHARACTER,
+ * synthesizing bogus one-letter "skill names". Non-array values are dropped,
+ * non-string members filtered, matching the scoped-trigger merge's policy.
+ * The result is NULL-PROTOTYPE so a hostile pattern key ('__proto__',
+ * 'constructor') can neither read an inherited value nor mutate a prototype
+ * downstream.
+ */
+function sanitizePromptKeywords(raw: Record<string, string[]>): Record<string, string[]> {
+  const clean: Record<string, string[]> = Object.create(null);
+  for (const [pattern, names] of Object.entries(raw)) {
+    if (!Array.isArray(names)) continue;
+    const strings = names.filter((n): n is string => typeof n === 'string');
+    if (strings.length === 0) continue;
+    clean[pattern] = strings;
+  }
+  return clean;
+}
+
+/**
  * @param expectVersion routing_version the portal just reported. A mismatch
  *   means our cached copy predates a routing deploy, so drop it and refetch
  *   once — bounded to one extra request per version change.
@@ -279,8 +301,9 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
       const stored = await readFn(TABLE_STORAGE_KEY);
       const parsed: unknown = stored ? JSON.parse(stored) : null;
       if (isKeywordTable(parsed) && parsed.version === expectVersion) {
-        kwCache = { table: parsed, at: Date.now() };
-        return parsed;
+        const table: KeywordTable = { version: parsed.version, prompt_keywords: sanitizePromptKeywords(parsed.prompt_keywords) };
+        kwCache = { table, at: Date.now() };
+        return table;
       }
     } catch { /* fall through to network */ }
   }
@@ -296,7 +319,7 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const raw: unknown = await res.json();
         if (!isKeywordTable(raw)) throw new Error('malformed routing table');
-        const table: KeywordTable = { version: raw.version, prompt_keywords: raw.prompt_keywords };
+        const table: KeywordTable = { version: raw.version, prompt_keywords: sanitizePromptKeywords(raw.prompt_keywords) };
         kwCache = { table, at: Date.now() };
         if (persistFn) {
           try { await persistFn(TABLE_STORAGE_KEY, JSON.stringify(table)); } catch { /* cache-only */ }
@@ -311,8 +334,9 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
             const stored = await readFn(TABLE_STORAGE_KEY);
             const parsed: unknown = stored ? JSON.parse(stored) : null;
             if (isKeywordTable(parsed)) {
-              kwCache = { table: parsed, at: 0 }; // at:0 → retry live on next call
-              return parsed;
+              const table: KeywordTable = { version: parsed.version, prompt_keywords: sanitizePromptKeywords(parsed.prompt_keywords) };
+              kwCache = { table, at: 0 }; // at:0 → retry live on next call
+              return table;
             }
           } catch { /* fall through to null */ }
         }
@@ -409,13 +433,23 @@ export function stripQuotedEvidenceForRouting(
     // its realistic phrasings routed nothing, same for linear/pdf/supabase.
     // A single ordinary word cannot be distinguished from prose, so it is
     // never stripped; the accepted residual is that a pasted skill LIST can
-    // still route single-word-named skills. Word-anchored so a multiword
-    // name never fires inside a longer token.
+    // still route single-word-named skills.
+    //
+    // Anchoring is SEGMENT-aligned, not token-aligned (round-4 review): the
+    // name must not butt directly against a letter/digit, but MAY butt
+    // against segment glue (-/_). Round 3's stricter (?<![\w-]) anchors
+    // refused to strip the name out of longer compounds — a pasted
+    // `fusa-bss-billing-worker` container name survived intact, and because
+    // \b fires at every internal hyphen, the skill's own trigger still
+    // matched inside it: the exact incident class this function exists to
+    // kill. Alignment on segment edges strips those compounds while still
+    // refusing mid-token overlaps (the name `fix-ci` never fires inside the
+    // unrelated word `prefix-ci`, whose own trigger must survive).
     if (name.length < 3 || name.length > 128 || !/[a-z0-9]/i.test(name)) continue;
     if (!/[-_]/.test(name)) continue;
     try {
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      out = out.replace(new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'gi'), SEVER);
+      out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'gi'), SEVER);
     } catch { /* skip unbuildable names — same policy as the matcher */ }
   }
   return out;
@@ -494,7 +528,16 @@ export async function resolvePromptSkillNames(
   const publicKeywords = kw?.prompt_keywords ?? {};
   if (!kw && !scopedTriggers) return [];
 
-  const combined: Record<string, string[]> = { ...publicKeywords };
+  // NULL-PROTOTYPE, not a literal (round-4 review): with a plain object, a
+  // scoped pattern whose TEXT is an inherited property name made both sides
+  // of the merge below misbehave — `combined['constructor'] ?? []` read the
+  // inherited constructor (truthy, not iterable → throw, blanking ALL
+  // routing for the turn), and `combined['__proto__'] = …` invoked the
+  // prototype setter instead of storing a pattern. A null prototype has
+  // nothing to inherit, so both operations are plain data-property access.
+  const combined: Record<string, string[]> = Object.assign(
+    Object.create(null) as Record<string, string[]>, publicKeywords,
+  );
   for (const [pattern, names] of Object.entries(scopedTriggers ?? {})) {
     // A malformed skill body can hand this merge null/42/{} for a pattern —
     // spreading that threw "names is not iterable" here, silently blanking
