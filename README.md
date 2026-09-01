@@ -138,6 +138,17 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.17.3
+
+- **A plugin install can no longer enable the prompt-routing hook.** The
+  package's maintenance paths (npm postinstall, server startup) now only
+  refresh a hook that an explicit `prism connect` previously installed —
+  a prism MCP registration in host config no longer counts as consent.
+  First install of the hook happens through `prism connect` or not at all.
+- **The Claude Code plugin launcher is fully deterministic.** It runs the
+  exact pinned server version with npm lifecycle scripts disabled, and
+  the plugin now documents its security posture in `plugins/prism/README.md`.
+
 ## What's New in v20.17.2
 
 - **Pasted logs can no longer falsely activate skills.** Symptom-triggered

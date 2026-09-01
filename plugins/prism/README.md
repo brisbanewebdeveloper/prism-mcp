@@ -13,8 +13,11 @@ that list is deliberately short.
   tag), with npm lifecycle scripts disabled
   (`npm_config_ignore_scripts=true`). Installing or launching the plugin
   runs no install-time scripts from this package or its dependencies.
-- **Installing the plugin modifies no host configuration.** The server's
-  optional prompt-routing hook is only ever first-installed by the explicit
+- **This package's code writes no host configuration on install.** (Claude
+  Code itself records your install choice — an `enabledPlugins` entry and
+  the MCP registration declared by `.mcp.json`; that is the host acting on
+  your action, not this package writing config.) The server's optional
+  prompt-routing hook is only ever first-installed by the explicit
   `prism connect` command, which exists to manage host configuration and is
   the user's consent to do so. The npm package's own maintenance paths
   refresh that hook only where a prior `prism connect` left a managed
