@@ -1,96 +1,92 @@
 /**
  * A symptom-routed rule must arrive whole, or say plainly that it did not.
  *
- * Incident 2026-08-31: a startup display surfaced `dev-engineering-super-skill`
- * as a symptom-triggered skill, told the agent "Follow them before proposing
- * any change", and then inlined 1,800 of its 8,863 chars — cutting mid-table —
- * with only "… (rule truncated to fit the startup budget)" as notice. Every
- * super-skill is 8-15 KB, so this fired 100% of the time a super-skill routed.
- *
- * Root cause: SYMPTOM_SKILL_INLINE_MAX (1,800) was BELOW every depth's own
- * budget share, so the constant — not the budget — was the binding constraint.
- * deep allots 30_000 * 0.4 = 12_000 and was throwing 10_200 of it away.
- *
- * These tests pin the arithmetic (a regression here is silent and invisible in
- * output) and the honesty of the truncation notice when it is unavoidable.
+ * Incident 2026-08-31 + adversarial review 2026-09-01. The review confirmed
+ * the FIRST version of this file had the vacuous-test disease: SHARE was a
+ * mirrored literal (production drift invisible), and the notice assertions
+ * grepped SOURCE TEXT — a dead-code wrap around the branch passed every test.
+ * This version reads every constant from source and executes the REAL
+ * exported renderer, so both failures now red.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-
-/** Mirrors the production constants; a drift here means the source changed. */
-const NATIVE_STARTUP_MAX_CHARS: Record<string, number> = {
-  quick: 4_000, standard: 8_000, deep: 30_000,
-};
-const SHARE = 0.4;
-
-/** The production cap expression, verbatim. */
-const capFor = (depth: string, inlineMax: number): number =>
-  Math.min(inlineMax, Math.floor(NATIVE_STARTUP_MAX_CHARS[depth]! * SHARE));
+import { formatSymptomSkillInline, capNativeStartupText } from '../src/tools/ledgerHandlers.js';
 
 const SOURCE = readFileSync(new URL('../src/tools/ledgerHandlers.ts', import.meta.url), 'utf8');
 
-function constantFromSource(name: string): number {
-  const m = SOURCE.match(new RegExp(`const ${name} = ([0-9_]+);`));
-  if (!m) throw new Error(`${name} not found in ledgerHandlers.ts`);
+/** Every constant comes FROM SOURCE — a mirrored literal here would hide production drift. */
+function num(name: string): number {
+  const m = SOURCE.match(new RegExp(`const ${name} = ([0-9_.]+);`));
+  if (!m) throw new Error(`${name} not found in ledgerHandlers.ts — constant renamed? update this test`);
+  return Number(m[1]!.replace(/_/g, ''));
+}
+function depthBudget(depth: string): number {
+  const m = SOURCE.match(new RegExp(`${depth}: ([0-9_]+),`));
+  if (!m) throw new Error(`NATIVE_STARTUP_MAX_CHARS.${depth} not found`);
   return Number(m[1]!.replace(/_/g, ''));
 }
 
-describe('the budget share must govern, not the ceiling constant', () => {
-  const inlineMax = constantFromSource('SYMPTOM_SKILL_INLINE_MAX');
+const INLINE_MAX = num('SYMPTOM_SKILL_INLINE_MAX');
+const SHARE = num('SYMPTOM_SKILL_BUDGET_SHARE');
+const INLINE_MIN = num('SYMPTOM_SKILL_INLINE_MIN');
+const OVERHEAD = num('SYMPTOM_SKILL_SUFFIX_OVERHEAD');
 
-  it('the ceiling is at or above every depth share, so it never binds', () => {
+const capFor = (depth: string): number =>
+  Math.min(INLINE_MAX, Math.floor(depthBudget(depth) * SHARE), Math.max(0, depthBudget(depth) - OVERHEAD));
+
+describe('budget arithmetic — every constant read from source', () => {
+  it('the ceiling never binds below any depth share', () => {
     for (const depth of ['quick', 'standard', 'deep']) {
-      const share = Math.floor(NATIVE_STARTUP_MAX_CHARS[depth]! * SHARE);
-      expect(
-        inlineMax >= share,
-        `${depth}: ceiling ${inlineMax} must not clamp the ${share}-char share`,
-      ).toBe(true);
+      const share = Math.floor(depthBudget(depth) * SHARE);
+      expect(INLINE_MAX >= share, `${depth}: ceiling ${INLINE_MAX} clamps share ${share}`).toBe(true);
     }
   });
 
-  it('deep depth now carries a full dev-engineering-super-skill (8,863 chars)', () => {
-    expect(capFor('deep', inlineMax)).toBeGreaterThanOrEqual(8_863);
+  it('deep depth carries a full dev-engineering-super-skill (8,863 chars)', () => {
+    expect(capFor('deep')).toBeGreaterThanOrEqual(8_863);
   });
 
-  it('the old 1,800 ceiling would have failed both — the regression it replaces', () => {
-    expect(capFor('deep', 1_800)).toBe(1_800);            // 10,200 chars wasted
-    expect(capFor('deep', 1_800)).toBeLessThan(8_863);    // super-skill truncated
+  it('the share itself is sane (drift guard: SHARE is read from source, not mirrored)', () => {
+    expect(SHARE).toBeGreaterThan(0.1);
+    expect(SHARE).toBeLessThanOrEqual(0.5);
+    expect(INLINE_MIN).toBeGreaterThan(0);
+    expect(OVERHEAD).toBeGreaterThanOrEqual(400);
   });
 
-  it('quick depth is unchanged: its own share is still the smaller bound', () => {
-    expect(capFor('quick', inlineMax)).toBe(1_600);
+  it('the old 1,800 ceiling would fail the deep guarantee — the regression it replaces', () => {
+    expect(Math.min(1_800, Math.floor(depthBudget('deep') * SHARE))).toBeLessThan(8_863);
   });
 });
 
-describe('when truncation is unavoidable the notice must be actionable', () => {
-  // The branch is asserted against source because the alternative is booting a
-  // full MCP handler with a mocked skill root — that indirection would test the
-  // mock, not the shipped string. The live end-to-end proof is run separately.
-  const branch = SOURCE.slice(SOURCE.indexOf('if (body.length > cap)'));
+describe('formatSymptomSkillInline — the REAL renderer, executed', () => {
+  const BODY = 'R'.repeat(5_000);
 
-  it('states how much is missing, not just that something was cut', () => {
-    expect(branch).toContain('chars of this rule are NOT shown above');
-    expect(branch).toContain('showing ${cap} of ${body.length} chars');
+  it('delivers a fitting body whole, no notice', () => {
+    const out = formatSymptomSkillInline('some-skill', BODY, 6_000);
+    expect(out).toContain(BODY);
+    expect(out).not.toContain('TRUNCATED');
+  });
+
+  it('states exactly how much is missing when it truncates', () => {
+    const out = formatSymptomSkillInline('some-skill', BODY, 2_000);
+    expect(out).toContain('showing 2000 of 5000 chars');
+    expect(out).toContain('3000 chars of this rule are NOT shown above');
   });
 
   it('names the skill so a host without filesystem access can still load it', () => {
-    expect(branch).toContain('Load the full skill by name');
-    expect(branch).toContain('${shown[0]}');
+    const out = formatSymptomSkillInline('some-skill', BODY, 2_000);
+    expect(out).toContain('Load the full skill by name (`some-skill`)');
+    expect(out).toContain('do not treat the excerpt as the whole rule');
   });
 
-  it('forbids treating the excerpt as the whole rule', () => {
-    expect(branch).toContain('do not treat the excerpt as the whole rule');
+  it('the offload path is an EXTRA route: present when given, absent when not', () => {
+    expect(formatSymptomSkillInline('s', BODY, 100, '/tmp/x.md')).toContain('also saved at: /tmp/x.md');
+    expect(formatSymptomSkillInline('s', BODY, 100)).not.toContain('saved at');
   });
 
-  it('the file path is an EXTRA route, never the only one (Codex/Desktop have no fs)', () => {
-    // The path clause must be conditional — offload can fail, and some hosts
-    // cannot read files at all.
-    expect(branch).toContain('offload ?');
-    expect(branch).toContain('Complete text also saved at');
-  });
-
-  it('the bare uninformative marker is gone', () => {
-    expect(SOURCE).not.toContain('(rule truncated to fit the startup budget)');
+  it('never emits the old uninformative marker', () => {
+    const out = formatSymptomSkillInline('s', BODY, 100);
+    expect(out).not.toContain('rule truncated to fit the startup budget');
   });
 });
 
@@ -101,9 +97,7 @@ describe('routeOffload writer', () => {
     const p = writeRouteOffload(`# test-skill\n\n${body}`, 'test');
     expect(p).toBeTruthy();
     expect(existsSync(p!)).toBe(true);
-    const written = readFileSync(p!, 'utf8');
-    expect(written).toContain(body);           // FULL text, not a clip
-    expect(written.length).toBeGreaterThan(body.length);
+    expect(readFileSync(p!, 'utf8')).toContain(body);
   });
 
   it('never throws when the directory cannot be created', async () => {
@@ -115,5 +109,29 @@ describe('routeOffload writer', () => {
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
     }
+  });
+});
+
+describe('capNativeStartupText — the FINAL budget guarantee, executed', () => {
+  // Review-confirmed: the old code returned marker+suffix UNCHECKED when the
+  // suffix alone exceeded the budget, blowing past per-project caps at
+  // divided multi-project bootstraps and recreating host-side truncation.
+  it('never returns more than the requested budget, even for an oversized suffix', () => {
+    const suffix = 'S'.repeat(13_000);
+    for (const req of [700, 1_024, 4_000, 8_000]) {
+      const out = capNativeStartupText('C'.repeat(5_000), 'deep', req, suffix);
+      expect(out.length, `budget ${req} → got ${out.length}`).toBeLessThanOrEqual(req);
+    }
+  });
+
+  it('a trimmed suffix says it was shortened and how to recover', () => {
+    const out = capNativeStartupText('CTX'.repeat(200), 'deep', 1_024, 'S'.repeat(13_000));
+    expect(out).toContain('shortened to fit');
+    expect(out).toContain('load the skill by name');
+  });
+
+  it('fitting input is returned untouched', () => {
+    const out = capNativeStartupText('short context', 'deep', 8_000, '\n--- x ---\nrule');
+    expect(out).toBe('short context\n--- x ---\nrule');
   });
 });

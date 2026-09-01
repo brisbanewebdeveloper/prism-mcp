@@ -53,6 +53,40 @@ describe('pasted evidence does not activate skills', () => {
     const prompt = 'why did this fail?\n```\nbss billing invoice submitted\n```';
     expect(route(prompt)).toEqual([]);
   });
+
+  it('review: stripping must not BRIDGE unrelated words into a proximity window', () => {
+    // Raw prompt: 'fusa <28-char name token> invoice' — 'fusa' and 'invoice'
+    // are >20 chars apart, so \bfusa\b.{0,20}\b(billing|invoice)\b does NOT
+    // match the raw text. Replacing the name with a SPACE brought them within
+    // the window and CREATED a match (adversarial review, reproduced). The
+    // newline replacement severs the window instead: still no match.
+    const LONG = 'fusa-bss-billing-extra-longer';
+    const triggers = { ...TRIGGERS, ['\\bfusa\\b.{0,20}\\b(billing|invoice)\\b']: ['fusa-bss-billing'] };
+    const prompt = `fusa ${LONG} invoice`;
+    const withLong = { ...triggers, x: ['x'] } as Record<string, string[]>;
+    withLong['zz'] = [LONG]; // make the long token itself routable → stripped
+    const names = _applyPromptRouting([], stripQuotedEvidenceForRouting(prompt, withLong), withLong).map(s => s.name);
+    expect(names).not.toContain('fusa-bss-billing');
+  });
+
+  it('review: two INLINE backtick-triples must not eat user-typed symptom text', () => {
+    // Only line-anchored fences are pasted blocks. Inline pairs in prose used
+    // to bracket-and-delete everything between them (adversarial review).
+    const prompt = 'my ``` markers ``` are decoration, but my fusa billing invoice is broken';
+    expect(route(prompt)).toContain('fusa-bss-billing');
+  });
+
+  it('review: hostile or overlong routable names degrade to not-stripped, never a throw', () => {
+    const hostile: Record<string, string[]> = {
+      ...TRIGGERS,
+      aa: ['x'.repeat(500)],                 // overlong — skipped by bound
+      bb: ['bad[skill-name'],                // unterminated class — raw RegExp() THROWS
+    };
+    expect(() => stripQuotedEvidenceForRouting('any prompt at all', hostile)).not.toThrow();
+    // and routing still works for the legit triggers
+    const names = _applyPromptRouting([], stripQuotedEvidenceForRouting('my fusa billing invoice', hostile), hostile).map(s => s.name);
+    expect(names).toContain('fusa-bss-billing');
+  });
 });
 
 describe('real symptoms still route — the regression risk of the fix', () => {
@@ -60,6 +94,15 @@ describe('real symptoms still route — the regression risk of the fix', () => {
     expect(route('I need to submit the fusa billing invoice')).toContain('fusa-bss-billing');
     expect(route('help me with a bss billing question')).toContain('fusa-bss-billing');
     expect(route('did the training corpus score pass the gate?')).toContain('training-results-gate');
+  });
+
+  it('BY DESIGN: a typed bare name does not trigger-route — the agent reads the name directly', () => {
+    // Adversarial review flagged this as a regression; it is a documented
+    // trade-off instead: trigger routing exists for SYMPTOM text where no
+    // name appears. When the user types the literal name, the agent sees it
+    // in the raw prompt and can invoke the skill by name — no routing needed.
+    // Pasted logs naming skills must not route them; that wins.
+    expect(route('update fusa-bss-billing with the new invoice rate')).toEqual([]);
   });
 
   it('stripping removes only the NAME SPAN, leaving its words usable elsewhere', () => {
@@ -82,11 +125,36 @@ describe('real symptoms still route — the regression risk of the fix', () => {
 
 describe('stripQuotedEvidenceForRouting mechanics', () => {
   it('removes fenced blocks and identifier-shaped tokens only', () => {
-    expect(stripQuotedEvidenceForRouting('a ```x``` b', TRIGGERS)).not.toContain('x');
+    // Updated after review: INLINE pairs are prose decoration and must NOT be
+    // eaten (that deleted real symptom text); only LINE-ANCHORED fences are
+    // pasted blocks.
+    expect(stripQuotedEvidenceForRouting('a ```x``` b', TRIGGERS)).toContain('x');
+    expect(stripQuotedEvidenceForRouting('before\n```\nBLOCK-CONTENT\n```\nafter', TRIGGERS)).not.toContain('BLOCK-CONTENT');
     expect(stripQuotedEvidenceForRouting('see fusa-bss-billing here', TRIGGERS)).not.toContain('fusa-bss-billing');
     expect(stripQuotedEvidenceForRouting('plain words stay', TRIGGERS)).toBe('plain words stay');
     // A skill name NOT in the table is left alone — we only strip what we route.
     expect(stripQuotedEvidenceForRouting('about some-other-skill', TRIGGERS)).toContain('some-other-skill');
+  });
+});
+
+describe('WIRING — second production call site (toResolvedSkillsWithPrompt)', () => {
+  // The review confirmed the first wiring test covered only ONE of the two
+  // call sites; reverting the other went undetected. This drives the portal-
+  // response path with a paid tier so _applyPromptRouting runs there too.
+  it('the incident prompt adds no prompt-category skills on the portal path', async () => {
+    const { toResolvedSkillsWithPrompt, _setStorage } = await import('../src/tools/skillRouting.js');
+    _setStorage(
+      async () => {},
+      async (key: string) => key.includes('keyword')
+        ? JSON.stringify({ version: 1, prompt_keywords: TRIGGERS, universal: [], projects: {}, user_local: { enabled: false, key_prefix: 'u:' } })
+        : '',
+    );
+    const resp = { loaded: ['prime-directive'], skipped: [], routing_version: 1, tier: 'paid' } as never;
+    const resolved = await toResolvedSkillsWithPrompt(resp, PASTED_LOG, true);
+    expect(resolved.names).not.toContain('fusa-bss-billing');
+    expect(resolved.names).not.toContain('training-results-gate');
+    const typed = await toResolvedSkillsWithPrompt(resp, 'my fusa billing invoice is broken', true);
+    expect(typed.names).toContain('fusa-bss-billing');
   });
 });
 

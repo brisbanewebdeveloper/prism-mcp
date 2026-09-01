@@ -34,7 +34,13 @@ export function writeRouteOffload(fullText: string, prefix = "route"): string | 
     const dir = routeOffloadDir();
     mkdirSync(dir, { recursive: true });
     try {
-      for (const f of readdirSync(dir)) {
+      // Bounded: this runs synchronously on the STARTUP hot path (adversarial
+      // review). A directory that has somehow accumulated thousands of files
+      // must not turn bootstrap into an O(n) stat storm — cap the work and let
+      // later calls finish the prune incrementally.
+      const entries = readdirSync(dir);
+      const PRUNE_SCAN_LIMIT = 256;
+      for (const f of entries.slice(0, PRUNE_SCAN_LIMIT)) {
         const p = join(dir, f);
         try {
           if (Date.now() - statSync(p).mtimeMs > RETENTION_MS) rmSync(p);

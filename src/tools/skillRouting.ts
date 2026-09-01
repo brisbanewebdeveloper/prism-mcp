@@ -344,22 +344,50 @@ export function stripQuotedEvidenceForRouting(
   prompt: string,
   promptKeywords: Record<string, string[]> = {},
 ): string {
+  // Fences are LINE-ANCHORED: a pasted code block starts its ``` at the
+  // beginning of a line by convention. The first version paired ANY two
+  // occurrences of the marker anywhere in the string, so two incidental
+  // inline backtick-triples bracketing real user-typed symptom text ate that
+  // text (adversarial review, confirmed with a repro). Line-anchoring means
+  // eating text now requires two line-start fences — which IS a fenced block.
+  //
+  // Replacement is a NEWLINE, not a space: trigger patterns use `.{0,N}`
+  // proximity windows and `.` does not cross \n without the s-flag (none of
+  // the portal-parity patterns use it). A space here let stripping BRIDGE two
+  // unrelated words into one window, CREATING matches the raw prompt never
+  // had (adversarial review, confirmed with a repro). A newline severs the
+  // window instead — and legitimate multi-line prompts never matched across
+  // lines pre-fix either, so this removes no real match.
   let out = prompt
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/~~~[\s\S]*?~~~/g, ' ');
+    .replace(/^[ \t]*```[^\n]*\n[\s\S]*?\n[ \t]*```[ \t]*$/gm, '\n')
+    .replace(/^[ \t]*~~~[^\n]*\n[\s\S]*?\n[ \t]*~~~[ \t]*$/gm, '\n');
 
   // Strip only the names of skills that this very table could route. A generic
   // "identifier-shaped token" heuristic was tried first and rejected by test:
   // it also ate ordinary hyphenated English ("end-to-end", "well-formed"),
   // which risks silently SUPPRESSING a real symptom — a worse failure than the
   // false positive being fixed. Using the actual routable names is exact.
+  //
+  // Deliberate consequence, not an oversight: a user who TYPES a skill's name
+  // ("update fusa-bss-billing's invoice rate") no longer trigger-routes that
+  // skill. That is acceptable because the agent reads the raw prompt and can
+  // invoke a literally-named skill directly — trigger routing exists for
+  // SYMPTOM text, where the name is absent. A pasted log naming skills must
+  // not route them; a typed name doesn't need routing to be honored.
   const names = new Set<string>();
   for (const list of Object.values(promptKeywords)) for (const n of list) names.add(n);
   // Longest first, so a name that contains another is removed whole.
   for (const name of [...names].sort((a, b) => b.length - a.length)) {
-    if (name.length < 3) continue;
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    out = out.replace(new RegExp(escaped, 'gi'), ' ');
+    // Bounds mirror the routing table's own name policy (≤128 chars). An
+    // overlong or hostile name from a poisoned table must degrade to
+    // "not stripped", never to a thrown SyntaxError that kills routing for
+    // the whole prompt — the sibling _applyPromptRouting swallows bad
+    // patterns for the same reason (adversarial review, confirmed).
+    if (name.length < 3 || name.length > 128) continue;
+    try {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(escaped, 'gi'), '\n');
+    } catch { /* skip unbuildable names — same policy as the matcher */ }
   }
   return out;
 }
@@ -453,7 +481,7 @@ function isPaid(resp: PortalResp): boolean {
   return resp.tier ? resp.tier === 'paid' : resp.loaded.length > 0;
 }
 
-async function toResolvedSkillsWithPrompt(
+export async function toResolvedSkillsWithPrompt(
   resp: PortalResp, prompt: string | undefined, isOffline: boolean,
 ): Promise<ResolvedSkills> {
   let skills = toResolvedSkills(resp);

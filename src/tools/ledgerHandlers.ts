@@ -180,6 +180,44 @@ const SYMPTOM_SKILL_INLINE_MAX = 12_000;
 const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
 /** Below this the inlined rule is too clipped to be worth the space it costs. */
 const SYMPTOM_SKILL_INLINE_MIN = 400;
+/** Fixed suffix chrome beyond the body: names line, imperative, truncation
+ *  notice, offload pointer. Reserved out of the budget so body + chrome never
+ *  outgrow the share. */
+const SYMPTOM_SKILL_SUFFIX_OVERHEAD = 600;
+
+/**
+ * Render one symptom-routed skill body for the startup display. EXPORTED and
+ * pure so tests execute the REAL rendering: the first test suite asserted the
+ * notice strings existed in source text, which a dead-code wrap around the
+ * call site would have satisfied while shipping nothing (adversarial review,
+ * confirmed). A test that calls this function fails the moment the strings —
+ * or the branch — stop being live.
+ *
+ * When the body exceeds `cap`, the excerpt says how much is missing, names
+ * the skill so ANY host can load it by name (hosts without hooks — Codex —
+ * or without filesystem tools cannot follow a path), and forbids treating
+ * the excerpt as the whole rule. The offload path is an extra route only.
+ */
+export function formatSymptomSkillInline(
+  name: string,
+  body: string,
+  cap: number,
+  offloadPath?: string,
+): string {
+  if (body.length <= cap) {
+    return `\n--- ${name} ---\n${body}\n`;
+  }
+  const missing = body.length - cap;
+  return (
+    `\n--- ${name} (showing ${cap} of ${body.length} chars) ---\n` +
+    `${body.slice(0, cap).trimEnd()}\n` +
+    `… TRUNCATED — ${missing} chars of this rule are NOT shown above. ` +
+    `Load the full skill by name (\`${name}\`) before acting on it; ` +
+    `do not treat the excerpt as the whole rule.` +
+    (offloadPath ? ` Complete text also saved at: ${offloadPath}` : "") +
+    `\n`
+  );
+}
 
 /**
  * The character budget a native startup display will actually be capped to.
@@ -539,7 +577,7 @@ async function readDashboardUrl(): Promise<string | null> {
   return healthy ? `http://localhost:${port}` : null;
 }
 
-function capNativeStartupText(
+export function capNativeStartupText(
   text: string,
   level: NativeContextDepth,
   requestedMaxChars?: number,
@@ -549,8 +587,23 @@ function capNativeStartupText(
   if (text.length + suffix.length <= maxChars) return text + suffix;
 
   const marker = `\n\n… Additional ${level} context omitted to keep native startup within its display budget.`;
-  const keepChars = Math.max(0, maxChars - marker.length - suffix.length);
-  return text.slice(0, keepChars).trimEnd() + marker + suffix;
+  // FINAL guarantee, not best-effort. The old keepChars=max(0, …) silently
+  // returned marker+suffix UNCHECKED when the suffix alone exceeded the
+  // budget — at heavily-divided multi-project bootstrap budgets the response
+  // then blew past the per-project cap, recreating at the host layer exactly
+  // the arbitrary truncation this display exists to prevent (adversarial
+  // review, reproduced). If the suffix cannot fit beside the marker, the
+  // suffix itself is trimmed with its own honest marker; the return is never
+  // longer than maxChars.
+  let cappedSuffix = suffix;
+  const suffixBudget = maxChars - marker.length;
+  if (cappedSuffix.length > suffixBudget) {
+    const suffixMarker = `\n… symptom-skill excerpt shortened to fit this project's startup budget; load the skill by name for the full rule.`;
+    cappedSuffix = cappedSuffix.slice(0, Math.max(0, suffixBudget - suffixMarker.length)).trimEnd() + suffixMarker;
+    if (cappedSuffix.length > suffixBudget) cappedSuffix = cappedSuffix.slice(0, Math.max(0, suffixBudget));
+  }
+  const keepChars = Math.max(0, maxChars - marker.length - cappedSuffix.length);
+  return text.slice(0, keepChars).trimEnd() + marker + cappedSuffix;
 }
 
 function compactWithOmissionCount(value: unknown, maxChars: number): string {
@@ -1690,37 +1743,25 @@ export async function sessionLoadContextHandler(
           const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
           // Size against the budget this display will ACTUALLY be capped to,
           // not the level constant — bootstrap divides it across projects.
+          // The suffix carries ~600 chars beyond the body (names line,
+          // imperative, truncation notice, offload path). Reserving that here
+          // keeps body+overhead inside the share instead of overflowing into
+          // the context's portion at small divided budgets.
+          const budgetForLevel = effectiveNativeBudget(level, options.nativeMaxChars);
           const cap = Math.min(
             SYMPTOM_SKILL_INLINE_MAX,
-            Math.floor(
-              effectiveNativeBudget(level, options.nativeMaxChars) * SYMPTOM_SKILL_BUDGET_SHARE,
-            ),
+            Math.floor(budgetForLevel * SYMPTOM_SKILL_BUDGET_SHARE),
+            Math.max(0, budgetForLevel - SYMPTOM_SKILL_SUFFIX_OVERHEAD),
           );
           // Too tight to carry a useful rule: keep the name line, which is
           // small, and leave the remaining budget to the session context.
           if (body && cap >= SYMPTOM_SKILL_INLINE_MIN) {
+            let offload: string | undefined;
             if (body.length > cap) {
-              // Still over budget (quick depth, or a 15 KB skill). Say so in
-              // terms the agent can act on: how much is missing, the skill's
-              // exact name to load it by, and a file path when one could be
-              // written. The path is an EXTRA route, never the only one —
-              // hosts without filesystem tools (and hosts without hooks, e.g.
-              // Codex) must still learn that the rule is incomplete, which the
-              // old bare "… (rule truncated)" never conveyed.
               const { writeRouteOffload } = await import("../utils/routeOffload.js");
-              const offload = writeRouteOffload(`# ${shown[0]}\n\n${body}`, "skill");
-              const missing = body.length - cap;
-              symptomSkillSuffix +=
-                `\n--- ${shown[0]} (showing ${cap} of ${body.length} chars) ---\n` +
-                `${body.slice(0, cap).trimEnd()}\n` +
-                `… TRUNCATED — ${missing} chars of this rule are NOT shown above. ` +
-                `Load the full skill by name (\`${shown[0]}\`) before acting on it; ` +
-                `do not treat the excerpt as the whole rule.` +
-                (offload ? ` Complete text also saved at: ${offload}` : "") +
-                `\n`;
-            } else {
-              symptomSkillSuffix += `\n--- ${shown[0]} ---\n${body}\n`;
+              offload = writeRouteOffload(`# ${shown[0]}\n\n${body}`, "skill");
             }
+            symptomSkillSuffix += formatSymptomSkillInline(shown[0], body, cap, offload);
           }
         }
       } catch (err) {
