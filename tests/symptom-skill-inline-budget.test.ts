@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { formatSymptomSkillInline, capNativeStartupText } from '../src/tools/ledgerHandlers.js';
+import { formatSymptomSkillInline, capNativeStartupText, symptomChromeUpperBound, sliceCodepointSafe } from '../src/tools/ledgerHandlers.js';
 
 const SOURCE = readFileSync(new URL('../src/tools/ledgerHandlers.ts', import.meta.url), 'utf8');
 
@@ -29,10 +29,10 @@ function depthBudget(depth: string): number {
 const INLINE_MAX = num('SYMPTOM_SKILL_INLINE_MAX');
 const SHARE = num('SYMPTOM_SKILL_BUDGET_SHARE');
 const INLINE_MIN = num('SYMPTOM_SKILL_INLINE_MIN');
-const OVERHEAD = num('SYMPTOM_SKILL_SUFFIX_OVERHEAD');
+
 
 const capFor = (depth: string): number =>
-  Math.min(INLINE_MAX, Math.floor(depthBudget(depth) * SHARE), Math.max(0, depthBudget(depth) - OVERHEAD));
+  Math.min(INLINE_MAX, Math.floor(depthBudget(depth) * SHARE), Math.max(0, depthBudget(depth) - symptomChromeUpperBound('a-typical-skill-name')));
 
 describe('budget arithmetic — every constant read from source', () => {
   it('the ceiling never binds below any depth share', () => {
@@ -50,7 +50,6 @@ describe('budget arithmetic — every constant read from source', () => {
     expect(SHARE).toBeGreaterThan(0.1);
     expect(SHARE).toBeLessThanOrEqual(0.5);
     expect(INLINE_MIN).toBeGreaterThan(0);
-    expect(OVERHEAD).toBeGreaterThanOrEqual(400);
   });
 
   it('the old 1,800 ceiling would fail the deep guarantee — the regression it replaces', () => {
@@ -133,5 +132,58 @@ describe('capNativeStartupText — the FINAL budget guarantee, executed', () => 
   it('fitting input is returned untouched', () => {
     const out = capNativeStartupText('short context', 'deep', 8_000, '\n--- x ---\nrule');
     expect(out).toBe('short context\n--- x ---\nrule');
+  });
+});
+
+describe('round-2 review regressions', () => {
+  it('chrome estimate is honest for EVERY allowed name length and a long offload path (property)', () => {
+    const LONG_PATH = '/srv/example-home/.prism-mcp/route-context/' + 'x'.repeat(120) + '.md';
+    for (const n of [3, 10, 40, 64, 100, 128]) {
+      const name = 'n'.repeat(n);
+      const body = 'B'.repeat(5_000);
+      const cap = 1_000;
+      const out = formatSymptomSkillInline(name, body, cap, LONG_PATH);
+      const chrome = out.length - cap; // everything beyond the body excerpt
+      expect(chrome, `name len ${n}: chrome ${chrome} vs bound ${symptomChromeUpperBound(name)}`)
+        .toBeLessThanOrEqual(symptomChromeUpperBound(name));
+    }
+  });
+
+  it('slicing never emits a lone surrogate', () => {
+    const emoji = '💥'.repeat(50); // each is a surrogate pair
+    for (let end = 0; end < 20; end++) {
+      const cut = sliceCodepointSafe(emoji, end);
+      const last = cut.charCodeAt(cut.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff, `end=${end} left a lone high surrogate`).toBe(false);
+    }
+    // and via the real cap path
+    const out = capNativeStartupText(emoji, 'deep', 600, 'S'.repeat(1_000));
+    expect(/[\ud800-\udbff]$/.test(out)).toBe(false);
+  });
+});
+
+describe('routeOffload prune — round-2 coverage', () => {
+  it('prunes stale files oldest-first across bounded calls', async () => {
+    const { mkdtempSync, writeFileSync, utimesSync, readdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const home = mkdtempSync(join(tmpdir(), 'offload-'));
+    const prev = process.env.HOME; process.env.HOME = home;
+    try {
+      const dir = join(home, '.prism-mcp', 'route-context');
+      const { writeRouteOffload } = await import('../src/utils/routeOffload.js');
+      writeRouteOffload('seed', 'test'); // creates dir
+      const old = new Date(Date.now() - 30 * 86_400_000);
+      for (let i = 0; i < 300; i++) {
+        const f = join(dir, `route-0stale-${String(i).padStart(3, '0')}.md`);
+        writeFileSync(f, 'x'); utimesSync(f, old, old);
+      }
+      writeRouteOffload('call-1', 'test');   // prunes ≤256 oldest
+      writeRouteOffload('call-2', 'test');   // prunes the rest
+      const left = readdirSync(dir).filter((f) => f.includes('0stale'));
+      expect(left.length, `stale left after 2 bounded calls: ${left.length}`).toBe(0);
+    } finally {
+      if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+    }
   });
 });

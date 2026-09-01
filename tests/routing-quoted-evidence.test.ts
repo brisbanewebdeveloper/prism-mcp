@@ -123,6 +123,36 @@ describe('real symptoms still route — the regression risk of the fix', () => {
   });
 });
 
+describe('round-2 review regressions', () => {
+  it('\\s-glued windows are severed too — the real-table bridging repro', () => {
+    // 34/58 live patterns glue words with \s* (e.g. \bui\s*test\b). \n IS \s,
+    // so the round-1 newline replacement did NOT sever them: stripping a name
+    // from 'ui <name> test' routed xcuitest-ios-watch. The \x1F in the
+    // separator is non-space, so \s runs cannot span it.
+    const t: Record<string, string[]> = {
+      '\\bui\\s*test\\b': ['xcuitest-ios-watch'],
+      zz: ['gh-fix-ci'],
+    };
+    const stripped = stripQuotedEvidenceForRouting('ui gh-fix-ci test', t);
+    const names = _applyPromptRouting([], stripped, t).map((s) => s.name);
+    expect(names).not.toContain('xcuitest-ios-watch');
+    // and a REAL adjacent mention still matches
+    const names2 = _applyPromptRouting([], stripQuotedEvidenceForRouting('run the ui test now', t), t).map((s) => s.name);
+    expect(names2).toContain('xcuitest-ios-watch');
+  });
+
+  it('non-string entries in a corrupted table never throw (null lands in sort)', () => {
+    const corrupt = { a: ['legit-name', null, undefined, 42, {}], b: 'not-an-array' } as never;
+    expect(() => stripQuotedEvidenceForRouting('any prompt', corrupt)).not.toThrow();
+  });
+
+  it('a whitespace-only "name" does not rewrite prompt formatting', () => {
+    const t = { a: ['   '] } as Record<string, string[]>;
+    const input = 'line one\n   indented code line\nmore   spaced   text';
+    expect(stripQuotedEvidenceForRouting(input, t)).toBe(input);
+  });
+});
+
 describe('stripQuotedEvidenceForRouting mechanics', () => {
   it('removes fenced blocks and identifier-shaped tokens only', () => {
     // Updated after review: INLINE pairs are prose decoration and must NOT be
@@ -142,7 +172,7 @@ describe('WIRING — second production call site (toResolvedSkillsWithPrompt)', 
   // call sites; reverting the other went undetected. This drives the portal-
   // response path with a paid tier so _applyPromptRouting runs there too.
   it('the incident prompt adds no prompt-category skills on the portal path', async () => {
-    const { toResolvedSkillsWithPrompt, _setStorage } = await import('../src/tools/skillRouting.js');
+    const { _toResolvedSkillsWithPrompt: toResolvedSkillsWithPrompt, _setStorage } = await import('../src/tools/skillRouting.js');
     _setStorage(
       async () => {},
       async (key: string) => key.includes('keyword')

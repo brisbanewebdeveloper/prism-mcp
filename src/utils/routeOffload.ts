@@ -38,7 +38,10 @@ export function writeRouteOffload(fullText: string, prefix = "route"): string | 
       // review). A directory that has somehow accumulated thousands of files
       // must not turn bootstrap into an O(n) stat storm — cap the work and let
       // later calls finish the prune incrementally.
-      const entries = readdirSync(dir);
+      // Sorted so the bounded scan hits OLDEST files first (names embed a
+      // millisecond timestamp, so lexicographic ≈ chronological): a busy dir
+      // cannot starve the prune by always presenting fresh entries first.
+      const entries = readdirSync(dir).sort();
       const PRUNE_SCAN_LIMIT = 256;
       for (const f of entries.slice(0, PRUNE_SCAN_LIMIT)) {
         const p = join(dir, f);

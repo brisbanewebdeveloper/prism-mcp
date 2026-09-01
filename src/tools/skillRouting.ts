@@ -159,6 +159,13 @@ export function _setStorage(persist: typeof persistFn, read: typeof readFn): voi
   readFn = read;
 }
 
+/** Test-only handle, matching this file's underscore convention for
+ *  internals exposed to tests (round-2 review). Production callers use the
+ *  module-internal function directly. */
+export const _toResolvedSkillsWithPrompt = (
+  ...args: Parameters<typeof toResolvedSkillsWithPrompt>
+) => toResolvedSkillsWithPrompt(...args);
+
 function synaluxBase(): string {
   return (process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
     process.env.SYNALUX_BASE_URL?.trim() || PRISM_SYNALUX_BASE_URL ||
@@ -351,16 +358,20 @@ export function stripQuotedEvidenceForRouting(
   // text (adversarial review, confirmed with a repro). Line-anchoring means
   // eating text now requires two line-start fences — which IS a fenced block.
   //
-  // Replacement is a NEWLINE, not a space: trigger patterns use `.{0,N}`
-  // proximity windows and `.` does not cross \n without the s-flag (none of
-  // the portal-parity patterns use it). A space here let stripping BRIDGE two
-  // unrelated words into one window, CREATING matches the raw prompt never
-  // had (adversarial review, confirmed with a repro). A newline severs the
-  // window instead — and legitimate multi-line prompts never matched across
-  // lines pre-fix either, so this removes no real match.
+  // Replacement must sever BOTH proximity-window classes in the real table:
+  //   - `.{0,N}` windows: `.` does not cross \n (no pattern uses the s-flag),
+  //     so a newline severs them.
+  //   - `\s*`/`\s+`-glued windows (34 of 58 live patterns, e.g.
+  //     `\bui\s*test\b`): \n IS \s, so a bare newline does NOT sever them —
+  //     round-2 review reproduced `ui <stripped-name> test` routing
+  //     xcuitest-ios-watch through exactly that gap. The separator therefore
+  //     includes \x1F (unit separator): non-space (blocks \s runs), non-word
+  //     (leaves \b semantics as a space would), and severed from dot-windows
+  //     by the flanking newlines.
+  const SEVER = '\n\x1f\n';
   let out = prompt
-    .replace(/^[ \t]*```[^\n]*\n[\s\S]*?\n[ \t]*```[ \t]*$/gm, '\n')
-    .replace(/^[ \t]*~~~[^\n]*\n[\s\S]*?\n[ \t]*~~~[ \t]*$/gm, '\n');
+    .replace(/^[ \t]*```[^\n]*\n[\s\S]*?\n[ \t]*```[ \t]*$/gm, SEVER)
+    .replace(/^[ \t]*~~~[^\n]*\n[\s\S]*?\n[ \t]*~~~[ \t]*$/gm, SEVER);
 
   // Strip only the names of skills that this very table could route. A generic
   // "identifier-shaped token" heuristic was tried first and rejected by test:
@@ -375,7 +386,14 @@ export function stripQuotedEvidenceForRouting(
   // SYMPTOM text, where the name is absent. A pasted log naming skills must
   // not route them; a typed name doesn't need routing to be honored.
   const names = new Set<string>();
-  for (const list of Object.values(promptKeywords)) for (const n of list) names.add(n);
+  // Non-string entries (a corrupted cache serializes undefined → null) must
+  // never reach the sort comparator below — round-2 review reproduced an
+  // uncaught TypeError from `.length` on null OUTSIDE the try/catch, killing
+  // routing for the whole prompt. Filter at collection, the only choke point.
+  for (const list of Object.values(promptKeywords)) {
+    if (!Array.isArray(list)) continue;
+    for (const n of list) if (typeof n === "string") names.add(n);
+  }
   // Longest first, so a name that contains another is removed whole.
   for (const name of [...names].sort((a, b) => b.length - a.length)) {
     // Bounds mirror the routing table's own name policy (≤128 chars). An
@@ -383,10 +401,13 @@ export function stripQuotedEvidenceForRouting(
     // "not stripped", never to a thrown SyntaxError that kills routing for
     // the whole prompt — the sibling _applyPromptRouting swallows bad
     // patterns for the same reason (adversarial review, confirmed).
-    if (name.length < 3 || name.length > 128) continue;
+    // Bounds + substance: a whitespace-only "name" passes a pure length check
+    // and then rewrites every 3-space run in every prompt (round-2 review).
+    // Requiring a word character keeps stripping to actual identifiers.
+    if (name.length < 3 || name.length > 128 || !/[a-z0-9]/i.test(name)) continue;
     try {
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      out = out.replace(new RegExp(escaped, 'gi'), '\n');
+      out = out.replace(new RegExp(escaped, 'gi'), SEVER);
     } catch { /* skip unbuildable names — same policy as the matcher */ }
   }
   return out;
@@ -481,7 +502,7 @@ function isPaid(resp: PortalResp): boolean {
   return resp.tier ? resp.tier === 'paid' : resp.loaded.length > 0;
 }
 
-export async function toResolvedSkillsWithPrompt(
+async function toResolvedSkillsWithPrompt(
   resp: PortalResp, prompt: string | undefined, isOffline: boolean,
 ): Promise<ResolvedSkills> {
   let skills = toResolvedSkills(resp);

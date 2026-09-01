@@ -180,10 +180,18 @@ const SYMPTOM_SKILL_INLINE_MAX = 12_000;
 const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
 /** Below this the inlined rule is too clipped to be worth the space it costs. */
 const SYMPTOM_SKILL_INLINE_MIN = 400;
-/** Fixed suffix chrome beyond the body: names line, imperative, truncation
- *  notice, offload pointer. Reserved out of the budget so body + chrome never
- *  outgrow the share. */
-const SYMPTOM_SKILL_SUFFIX_OVERHEAD = 600;
+/**
+ * Upper bound on the suffix chrome beyond the body for ONE inlined skill:
+ * names line + imperative (~230), truncation notice (~200 + the name twice),
+ * offload pointer (~30 + path, ≤ ~180 under $HOME). Round-2 review measured
+ * the old flat 600 undercounting by 2-3x for long names — this is a FUNCTION
+ * of the name so the reserve is honest for every name the table allows
+ * (≤128 chars), and a property test pins estimate ≥ measured chrome. The
+ * final cap guarantee in capNativeStartupText remains the hard backstop.
+ */
+export function symptomChromeUpperBound(name: string): number {
+  return 480 + 2 * name.length + 220; // imperative+notice + 2×name + path slack
+}
 
 /**
  * Render one symptom-routed skill body for the startup display. EXPORTED and
@@ -210,7 +218,7 @@ export function formatSymptomSkillInline(
   const missing = body.length - cap;
   return (
     `\n--- ${name} (showing ${cap} of ${body.length} chars) ---\n` +
-    `${body.slice(0, cap).trimEnd()}\n` +
+    `${sliceCodepointSafe(body, cap).trimEnd()}\n` +
     `… TRUNCATED — ${missing} chars of this rule are NOT shown above. ` +
     `Load the full skill by name (\`${name}\`) before acting on it; ` +
     `do not treat the excerpt as the whole rule.` +
@@ -577,6 +585,14 @@ async function readDashboardUrl(): Promise<string | null> {
   return healthy ? `http://localhost:${port}` : null;
 }
 
+/** slice() that never ends on a lone high surrogate — round-2 review showed
+ *  UTF-16 slicing emitting broken pairs that corrupt downstream rendering. */
+export function sliceCodepointSafe(text: string, end: number): string {
+  const cut = text.slice(0, Math.max(0, end));
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 export function capNativeStartupText(
   text: string,
   level: NativeContextDepth,
@@ -599,11 +615,11 @@ export function capNativeStartupText(
   const suffixBudget = maxChars - marker.length;
   if (cappedSuffix.length > suffixBudget) {
     const suffixMarker = `\n… symptom-skill excerpt shortened to fit this project's startup budget; load the skill by name for the full rule.`;
-    cappedSuffix = cappedSuffix.slice(0, Math.max(0, suffixBudget - suffixMarker.length)).trimEnd() + suffixMarker;
-    if (cappedSuffix.length > suffixBudget) cappedSuffix = cappedSuffix.slice(0, Math.max(0, suffixBudget));
+    cappedSuffix = sliceCodepointSafe(cappedSuffix, suffixBudget - suffixMarker.length).trimEnd() + suffixMarker;
+    if (cappedSuffix.length > suffixBudget) cappedSuffix = sliceCodepointSafe(cappedSuffix, suffixBudget);
   }
   const keepChars = Math.max(0, maxChars - marker.length - cappedSuffix.length);
-  return text.slice(0, keepChars).trimEnd() + marker + cappedSuffix;
+  return sliceCodepointSafe(text, keepChars).trimEnd() + marker + cappedSuffix;
 }
 
 function compactWithOmissionCount(value: unknown, maxChars: number): string {
@@ -1751,7 +1767,7 @@ export async function sessionLoadContextHandler(
           const cap = Math.min(
             SYMPTOM_SKILL_INLINE_MAX,
             Math.floor(budgetForLevel * SYMPTOM_SKILL_BUDGET_SHARE),
-            Math.max(0, budgetForLevel - SYMPTOM_SKILL_SUFFIX_OVERHEAD),
+            Math.max(0, budgetForLevel - symptomChromeUpperBound(shown[0])),
           );
           // Too tight to carry a useful rule: keep the name line, which is
           // small, and leave the remaining budget to the session context.
