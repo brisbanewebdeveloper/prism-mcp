@@ -138,6 +138,22 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.17.2
+
+- **Pasted logs can no longer falsely activate skills.** Symptom-triggered
+  routing now strips fenced blocks and routable skill-name mentions (including
+  inside compound identifiers like container/pod names) from the routing view
+  of a prompt, so quoting an agent log or a skill list doesn't load skills the
+  text merely mentions. Skills named by ordinary words keep routing normally.
+- **Symptom-routed skills now arrive whole.** Startup budgets deliver the full
+  rule text at every depth that fits; when a rule genuinely cannot fit, the
+  display says exactly how much is missing and how to load the rest, instead
+  of silently truncating.
+- **Routing can no longer be silently disabled by one bad skill.** Corrupt or
+  hostile trigger tables — wrong value shapes, patterns named after object
+  prototype properties — are skipped per entry instead of taking down all
+  prompt routing (or, in one case, the vault export) for the session.
+
 ## What's New in v20.17.1
 
 - **Fixes a broken CLI in 20.17.0** — a command-name collision made every
