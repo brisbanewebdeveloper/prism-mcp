@@ -5,7 +5,10 @@
       "args": [
         "-y",
         "prism-mcp-server@20.17.2"
-      ]
+      ],
+      "env": {
+        "npm_config_ignore_scripts": "true"
+      }
     }
   }
 }

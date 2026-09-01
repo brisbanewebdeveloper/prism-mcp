@@ -1,5 +1,4 @@
 {
-  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "prism",
   "description": "Prism \u2014 the memory your coding agent forgets to have. On-device recall, drift detection, and local inference. Nothing leaves your machine by default.",
   "owner": {
