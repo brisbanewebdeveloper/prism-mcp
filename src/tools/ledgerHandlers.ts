@@ -163,7 +163,20 @@ const MAX_SYMPTOM_SKILLS = 5;
  * instruction rewrites failed for that reason before it was found. Inlining
  * removes the indirection entirely: the rule is simply in context.
  */
-const SYMPTOM_SKILL_INLINE_MAX = 1_800;
+/**
+ * Ceiling on an inlined rule — deliberately ABOVE every depth's budget share so
+ * the SHARE governs, not this constant.
+ *
+ * It was 1_800, which made it the binding constraint at every depth that has
+ * room: standard allots 8_000*0.4 = 3_200 and deep allots 30_000*0.4 = 12_000,
+ * so deep discarded 10_200 chars of already-budgeted space. Every super-skill
+ * is 8-15 KB, so a symptom-routed super-skill always arrived at 12-23% of its
+ * text while the same display instructed the agent to "follow them before
+ * proposing any change" — compliance demanded against a rule mostly absent.
+ * At 12_000 a full dev-engineering-super-skill (8_863) now fits whole at deep
+ * depth; quick is unchanged because its share (1_600) is still the smaller.
+ */
+const SYMPTOM_SKILL_INLINE_MAX = 12_000;
 const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
 /** Below this the inlined rule is too clipped to be worth the space it costs. */
 const SYMPTOM_SKILL_INLINE_MIN = 400;
@@ -1686,10 +1699,28 @@ export async function sessionLoadContextHandler(
           // Too tight to carry a useful rule: keep the name line, which is
           // small, and leave the remaining budget to the session context.
           if (body && cap >= SYMPTOM_SKILL_INLINE_MIN) {
-            const clipped = body.length > cap
-              ? `${body.slice(0, cap).trimEnd()}\n… (rule truncated to fit the startup budget)`
-              : body;
-            symptomSkillSuffix += `\n--- ${shown[0]} ---\n${clipped}\n`;
+            if (body.length > cap) {
+              // Still over budget (quick depth, or a 15 KB skill). Say so in
+              // terms the agent can act on: how much is missing, the skill's
+              // exact name to load it by, and a file path when one could be
+              // written. The path is an EXTRA route, never the only one —
+              // hosts without filesystem tools (and hosts without hooks, e.g.
+              // Codex) must still learn that the rule is incomplete, which the
+              // old bare "… (rule truncated)" never conveyed.
+              const { writeRouteOffload } = await import("../utils/routeOffload.js");
+              const offload = writeRouteOffload(`# ${shown[0]}\n\n${body}`, "skill");
+              const missing = body.length - cap;
+              symptomSkillSuffix +=
+                `\n--- ${shown[0]} (showing ${cap} of ${body.length} chars) ---\n` +
+                `${body.slice(0, cap).trimEnd()}\n` +
+                `… TRUNCATED — ${missing} chars of this rule are NOT shown above. ` +
+                `Load the full skill by name (\`${shown[0]}\`) before acting on it; ` +
+                `do not treat the excerpt as the whole rule.` +
+                (offload ? ` Complete text also saved at: ${offload}` : "") +
+                `\n`;
+            } else {
+              symptomSkillSuffix += `\n--- ${shown[0]} ---\n${body}\n`;
+            }
           }
         }
       } catch (err) {
