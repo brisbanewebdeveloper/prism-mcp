@@ -319,6 +319,52 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
 }
 
 /**
+ * Strip QUOTED EVIDENCE from a prompt before trigger matching.
+ *
+ * Triggers are meant to fire on a symptom the user is REPORTING, not on every
+ * string that happens to appear in material they pasted as evidence. Observed
+ * 2026-08-31: a user asked "what's going on with skill loading?" and pasted a
+ * startup log; the log listed installed skill names, and the literal token
+ * `fusa-bss-billing` inside it satisfied that skill's own trigger
+ * `\bfusa\b.{0,20}\b(billing|invoice)\b`. Two unrelated private skills loaded
+ * and were injected as binding rules for a debugging question — pasting a log
+ * that NAMES a skill should never activate it.
+ *
+ * Two removals, both conservative:
+ *   1. Fenced code blocks — pasted output, by convention.
+ *   2. Hyphenated skill-name tokens (`foo-bar-baz`). A bare skill name is
+ *      metadata about the system, not a description of work. Removing only the
+ *      NAME SPAN keeps its constituent words available: "fusa billing invoice"
+ *      typed by the user still matches, because that text is not a name token.
+ *
+ * Deliberately NOT length-capped: a long prompt is not evidence of pasting,
+ * and truncating input would silently stop matching real symptoms stated late.
+ */
+export function stripQuotedEvidenceForRouting(
+  prompt: string,
+  promptKeywords: Record<string, string[]> = {},
+): string {
+  let out = prompt
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/~~~[\s\S]*?~~~/g, ' ');
+
+  // Strip only the names of skills that this very table could route. A generic
+  // "identifier-shaped token" heuristic was tried first and rejected by test:
+  // it also ate ordinary hyphenated English ("end-to-end", "well-formed"),
+  // which risks silently SUPPRESSING a real symptom — a worse failure than the
+  // false positive being fixed. Using the actual routable names is exact.
+  const names = new Set<string>();
+  for (const list of Object.values(promptKeywords)) for (const n of list) names.add(n);
+  // Longest first, so a name that contains another is removed whole.
+  for (const name of [...names].sort((a, b) => b.length - a.length)) {
+    if (name.length < 3) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escaped, 'gi'), ' ');
+  }
+  return out;
+}
+
+/**
  * Verbatim port of portal resolve/route.ts prompt-matching block + the sort
  * that follows it. Parity is the whole point: any divergence silently changes
  * which skills load. Do not "improve" this — the reference implementation and
@@ -326,6 +372,11 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
  *
  * `priority: 200 + resolved.length` reads the length AT PUSH TIME, so it
  * depends on how many skills precede it. Preserved exactly.
+ *
+ * NOTE: callers pass a prompt already run through
+ * `stripQuotedEvidenceForRouting`. The matching semantics here are untouched —
+ * only the INPUT is normalized — so the parity contract with the portal's
+ * reference implementation still holds for any given input string.
  */
 export function _applyPromptRouting(
   base: ResolvedSkill[],
@@ -390,7 +441,7 @@ export async function resolvePromptSkillNames(
   for (const [pattern, names] of Object.entries(scopedTriggers ?? {})) {
     combined[pattern] = [...(combined[pattern] ?? []), ...names];
   }
-  return _applyPromptRouting([], prompt, combined).map((s) => s.name);
+  return _applyPromptRouting([], stripQuotedEvidenceForRouting(prompt, combined), combined).map((s) => s.name);
 }
 
 /**
@@ -419,7 +470,7 @@ async function toResolvedSkillsWithPrompt(
           );
         }
       }
-      skills = _applyPromptRouting(skills, prompt, kw.prompt_keywords);
+      skills = _applyPromptRouting(skills, stripQuotedEvidenceForRouting(prompt, kw.prompt_keywords), kw.prompt_keywords);
     }
   }
   return {
