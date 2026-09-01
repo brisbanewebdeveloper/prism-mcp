@@ -70,7 +70,7 @@ describe("versioned-manifest coverage", () => {
 
 describe("mcp launcher pin guard", () => {
   // The plugin catalogs reject unpinned auto-exec MCP launchers (their CI
-  // gate landed 2026-08-19 while synalux-prism sat in review with exactly
+  // gate landed 2026-08-19 while prism-coder sat in review with exactly
   // `npx -y prism-mcp-server`). The pin is now a lockstep surface: this
   // exercises the exported checker with inline fixtures via the same
   // subprocess pattern the manifest-coverage test documents (top-level

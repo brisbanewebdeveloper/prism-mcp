@@ -87,14 +87,14 @@ skill for you.
 
 ```bash
 /plugin marketplace add anthropics/claude-plugins-community
-/plugin install synalux-prism@claude-community
+/plugin install prism-coder@claude-community
 ```
 
 **Codex** — this repository is itself a plugin marketplace:
 
 ```bash
 codex plugin marketplace add dcostenco/prism-coder
-codex plugin add synalux-prism@prism
+codex plugin add prism-coder@prism
 ```
 
 The plugin registers `prism-mcp` via `npx -y prism-mcp-server`. If you already

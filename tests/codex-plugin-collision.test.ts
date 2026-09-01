@@ -28,10 +28,10 @@ function installPlugin(home: string, marketplace: string, plugin: string, versio
 describe("detecting a Codex plugin that already provides prism-mcp", () => {
   it("finds a plugin whose .mcp.json declares prism-mcp", () => {
     const home = codexHome();
-    installPlugin(home, "prism", "synalux-prism", "20.7.1", {
+    installPlugin(home, "prism", "prism-coder", "20.7.1", {
       mcpServers: { "prism-mcp": { command: "npx", args: ["-y", "prism-mcp-server"] } },
     });
-    expect(codexPluginProvidesPrismMcp(home, new Set(["synalux-prism@prism"]))).toBe("synalux-prism@prism");
+    expect(codexPluginProvidesPrismMcp(home, new Set(["prism-coder@prism"]))).toBe("prism-coder@prism");
   });
 
   it("matches on the manifest, not the plugin name — so a rename still works", () => {
@@ -65,12 +65,12 @@ describe("detecting a Codex plugin that already provides prism-mcp", () => {
     // prism connect would skip its own registration for a plugin that is not
     // active — leaving the user with no prism-mcp server at all.
     const home = codexHome();
-    installPlugin(home, "prism", "synalux-prism", "20.7.1", {
+    installPlugin(home, "prism", "prism-coder", "20.7.1", {
       mcpServers: { "prism-mcp": { command: "npx" } },
     });
     // Cache is present, but the plugin is NOT in the enabled set.
     expect(codexPluginProvidesPrismMcp(home, new Set())).toBeNull();
     // And it IS counted once enabled — same cache, only the flag differs.
-    expect(codexPluginProvidesPrismMcp(home, new Set(["synalux-prism@prism"]))).toBe("synalux-prism@prism");
+    expect(codexPluginProvidesPrismMcp(home, new Set(["prism-coder@prism"]))).toBe("prism-coder@prism");
   });
 });
