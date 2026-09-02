@@ -1,5 +1,6 @@
 /**
- * prism-route — self-installing UserPromptSubmit hook for Claude Code + Codex.
+ * prism-route — self-installing UserPromptSubmit + SessionStart(compact) hook
+ * for Claude Code + Codex.
  *
  * WHY A HOST HOOK. An MCP server never sees the user's prompt; the protocol
  * carries only what a tool call carries. session_route_prompt (the MCP tool)
@@ -7,6 +8,17 @@
  * best. A UserPromptSubmit hook is the only mechanism that fires on EVERY
  * prompt regardless of model behaviour, on both hosts, which is what the
  * operator requires ("i need automatic").
+ *
+ * WHY A SECOND EVENT. Compaction discards the bootstrap with the rest of the
+ * transcript, and nothing the MCP server can do brings it back — the server
+ * is never told a compaction happened. Both hosts run SessionStart hooks
+ * with source "compact" before the next model request (Claude Code:
+ * matcher "compact"; Codex hooks reference, verified 2026-09-01: "SessionStart
+ * hooks that match source: compact run before the next model request"). The
+ * same script answers that event with `prism floor-digest` — the protected
+ * floor, one line per rule — so the model does not spend the rest of the
+ * session re-reading SKILL.md files it can no longer see. Once per
+ * compaction, zero per-prompt cost.
  *
  * WHY SELF-INSTALLING. The previous generation of prism hooks was provisioned
  * by a bootstrap script once, then hand-maintained per machine — which is why
@@ -29,7 +41,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /** Bump to force the on-disk script to be rewritten on the next ensure. */
-export const PROMPT_ROUTE_HOOK_VERSION = "3";
+export const PROMPT_ROUTE_HOOK_VERSION = "4";
+/** SessionStart matcher: only the post-compaction fire carries the digest.
+ *  The script re-checks `source` itself, so a host that ignores matchers on
+ *  this event still injects nothing at startup/resume. */
+const SESSION_START_MATCHER = "compact";
 
 const MARKER_FILE = ".prism-managed.json";
 const SCRIPT_FILE = "on_prompt.py";
@@ -69,6 +85,9 @@ export const PROMPT_ROUTE_HOOK_SCRIPT = `#!/usr/bin/env python3
 
 Routes every user prompt through the on-device skill matcher via
 'prism route-prompt'. Injects newly matched skill bodies as context.
+On SessionStart with source "compact" (the host just discarded the
+transcript, bootstrap included) it re-injects the protected-floor digest
+via 'prism floor-digest' instead.
 Managed by prism; edits are overwritten on version bumps.
 """
 import json
@@ -79,14 +98,104 @@ import subprocess
 import sys
 
 
-def emit(extra=None):
+def emit(extra=None, event="UserPromptSubmit"):
     out = {"continue": True, "suppressOutput": True}
     if extra:
         out["hookSpecificOutput"] = {
-            "hookEventName": "UserPromptSubmit",
+            "hookEventName": event,
             "additionalContext": extra,
         }
     print(json.dumps(out))
+
+
+def run_cli_json(cli, args, stdin_text=""):
+    """Run a prism CLI subcommand; return its last JSON stdout line or None."""
+    try:
+        result = subprocess.run(
+            [cli] + args,
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    # Parse the LAST line that is JSON: wrappers hooked into node via
+    # NODE_OPTIONS (dotenv banners and the like) print to stdout BEFORE the
+    # CLI's own output, and one polluted line must not kill routing.
+    for line in reversed(result.stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            return data if isinstance(data, dict) else None
+    return None
+
+
+def session_state_path(payload):
+    session = str(
+        payload.get("session_id")
+        or payload.get("sessionId")
+        or payload.get("conversation_id")
+        or "default"
+    )
+    session = re.sub(r"[^A-Za-z0-9._-]", "_", session).lstrip(".")[:80] or "default"
+    state_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
+    return state_dir, os.path.join(state_dir, session + ".json")
+
+
+def payload_field(payload, *keys):
+    """First non-empty string among alternative spellings of one field.
+
+    Claude Code documents snake_case keys; Codex's payloads are described as
+    Claude-compatible, not Claude-identical, which is why the prompt lookup
+    below already hedges three ways. The SessionStart detection used to read
+    exactly one spelling, so a Codex payload spelled hookEventName/trigger
+    would fall to the prompt path and pass through with no digest and no
+    signal (round-11 review).
+    """
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def event_name(payload):
+    name = payload_field(payload, "hook_event_name", "hookEventName", "event_name", "eventName", "event")
+    return re.sub(r"[^a-z]", "", name.lower())
+
+
+def on_session_start(payload):
+    # Only the post-compaction fire: at startup/resume the bootstrap carries
+    # the digest itself, and a second copy would be pure cost. "compact",
+    # "compaction", "compacted" all mean the transcript was just discarded.
+    source = payload_field(payload, "source", "trigger", "reason").lower()
+    if not source.startswith("compact"):
+        emit(event="SessionStart")
+        return
+    # The skills injected before compaction are gone with it; forget the
+    # dedupe list so the next matching prompt can bring them back.
+    state_dir, state_path = session_state_path(payload)
+    try:
+        os.remove(state_path)
+    except Exception:
+        pass
+    cli = find_cli()
+    if not cli:
+        emit(event="SessionStart")
+        return
+    data = run_cli_json(cli, ["floor-digest"])
+    text = (data or {}).get("text") or ""
+    names = [n for n in ((data or {}).get("names") or []) if isinstance(n, str)]
+    if not names or not isinstance(text, str) or not text:
+        emit(event="SessionStart")
+        return
+    emit(text, event="SessionStart")
 
 
 def find_cli():
@@ -114,6 +223,12 @@ def main():
         payload = json.loads(raw) if raw.strip() else {}
     except Exception:
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if event_name(payload) == "sessionstart":
+        on_session_start(payload)
+        return
 
     prompt = str(
         payload.get("prompt")
@@ -130,16 +245,7 @@ def main():
     # stretch, and the CLI caps identically on its side.
     prompt = prompt[:100_000]
 
-    session = str(
-        payload.get("session_id")
-        or payload.get("sessionId")
-        or payload.get("conversation_id")
-        or "default"
-    )
-    session = re.sub(r"[^A-Za-z0-9._-]", "_", session).lstrip(".")[:80] or "default"
-
-    state_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
-    state_path = os.path.join(state_dir, session + ".json")
+    state_dir, state_path = session_state_path(payload)
     loaded = []
     try:
         with open(state_path) as fh:
@@ -154,34 +260,8 @@ def main():
         emit()
         return
 
-    try:
-        result = subprocess.run(
-            [cli, "route-prompt", "--loaded", ",".join(loaded)],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception:
-        emit()
-        return
-    if result.returncode != 0:
-        emit()
-        return
-
-    # Parse the LAST line that is JSON: wrappers hooked into node via
-    # NODE_OPTIONS (dotenv banners and the like) print to stdout BEFORE the
-    # CLI's own output, and one polluted line must not kill routing.
-    data = None
-    for line in reversed(result.stdout.strip().splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                break
-            except Exception:
-                continue
-    if not isinstance(data, dict):
+    data = run_cli_json(cli, ["route-prompt", "--loaded", ",".join(loaded)], prompt)
+    if data is None:
         emit()
         return
     names = [n for n in (data.get("names") or []) if isinstance(n, str)]
@@ -212,10 +292,15 @@ if __name__ == "__main__":
 export interface EnsureHookHostResult {
   host: "claude" | "codex";
   script: "installed" | "refreshed" | "unchanged" | "disabled";
-  config: "registered" | "updated" | "unchanged";
+  /** "skipped-unparseable": the host config exists but is not valid JSON
+   *  (or not an object). Nothing was written — replacing it would delete the
+   *  operator's model/env/permissions along with the syntax error. The hook
+   *  is NOT registered on that host until the file is fixed. */
+  config: "registered" | "updated" | "unchanged" | "skipped-unparseable";
   /** Codex only: its trust gate silently skips unapproved hooks. We can
-   *  DETECT approval only coarsely (a [hooks.state] section naming our hook);
-   *  "pending-or-unknown" means the operator must run /hooks and trust it. */
+   *  DETECT approval only coarsely (a [hooks.state] section naming our exact
+   *  versioned command, once per event); "pending-or-unknown" means the
+   *  operator must run /hooks and trust it. */
   codexApproval?: "detected" | "pending-or-unknown" | "state-present-unverifiable";
   scriptPath: string;
   configPath: string;
@@ -271,20 +356,34 @@ function hostSpecs(homeDir: string, env: NodeJS.ProcessEnv): HostSpec[] {
 /**
  * Coarse Codex approval detection. Codex persists hook approvals as a
  * [hooks.state] table in config.toml keyed by definition hash; the hashing
- * algorithm is not public, so the only honest signals are "a state section
- * exists and mentions our hook path" (detected) or anything else
- * (pending-or-unknown). Never treat unknown as approved.
+ * algorithm is not public, so the only honest signal is the state section
+ * naming the EXACT command we register — `… --v<version>` — once per event
+ * (two hooks, two approvals). The version-agnostic path alone is not
+ * evidence: a v3 approval names the same script, and Codex will skip the
+ * v4 definition it never saw. Matching the bare path let a stale approval
+ * read as "detected" from the second `prism connect` after every hook
+ * bump (round-8 review). Never treat unknown as approved.
  */
-function detectCodexApproval(codexRoot: string): "detected" | "pending-or-unknown" | "state-present-unverifiable" {
+function detectCodexApproval(codexRoot: string, wantedCommand: string): "detected" | "pending-or-unknown" | "state-present-unverifiable" {
   try {
-    const toml = readFileSync(join(codexRoot, "config.toml"), "utf8");
-    const hasState = /\[hooks\.state/.test(toml);
-    if (hasState && toml.includes(COMMAND_SIGNATURE)) return "detected";
-    // Approvals are keyed by definition hash (algorithm not public). Once ANY
-    // trust state exists we cannot distinguish ours from here — and claiming
-    // AWAITING TRUST after the operator pressed t would be a false alarm
-    // against their own action. Distinct state, distinct wording.
-    if (hasState) return "state-present-unverifiable";
+    // A Windows path lands in a TOML basic string with its backslashes
+    // ESCAPED (`C:\\Users\\…`); one-for-one replacement turned that into
+    // `C://Users//…` and the approval never matched (round-10 review). A
+    // run of backslashes is one separator.
+    const toml = readFileSync(join(codexRoot, "config.toml"), "utf8").replace(/\\+/g, "/");
+    if (!/\[hooks\.state/.test(toml)) return "pending-or-unknown";
+    const wanted = wantedCommand.replace(/\\+/g, "/");
+    const exact = toml.split(wanted).length - 1;
+    if (exact >= 2) return "detected";
+    // Our script is named, but not under the current definition: positive
+    // evidence that the trust on file is for an OLDER hook version, which
+    // Codex will not honour for this one.
+    if (exact === 0 && toml.includes(COMMAND_SIGNATURE)) return "pending-or-unknown";
+    // Trust state exists (one of our two entries, or hash-only entries that
+    // never name a command) and we cannot distinguish ours from here.
+    // Claiming AWAITING TRUST after the operator pressed t would be a false
+    // alarm against their own action. Distinct state, distinct wording.
+    return "state-present-unverifiable";
   } catch { /* unreadable = no evidence */ }
   return "pending-or-unknown";
 }
@@ -324,7 +423,7 @@ function ensureScript(hookDir: string): "installed" | "refreshed" | "unchanged" 
   return scriptExists ? "refreshed" : "installed";
 }
 
-function ensureRegistered(configPath: string, scriptPath: string, host: "claude" | "codex"): "registered" | "updated" | "unchanged" {
+function ensureRegistered(configPath: string, scriptPath: string, host: "claude" | "codex"): EnsureHookHostResult["config"] {
   // Codex truncates hook additionalContext at ~2,500 tokens by default —
   // a head-and-tail preview of our payload, which defeats the injection.
   // additionalContextLimit: 0 passes the full context through — per the Codex
@@ -339,55 +438,71 @@ function ensureRegistered(configPath: string, scriptPath: string, host: "claude"
   // alone, not stripped).
   const wantsLimit = host === "codex";
   let config: Record<string, unknown> = {};
-  let originalText: string | undefined;
-  try {
-    originalText = readFileSync(configPath, "utf8");
-    const parsed: unknown = JSON.parse(originalText);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+  if (existsSync(configPath)) {
+    // An existing file we cannot parse is the operator's file with a syntax
+    // slip in it (model, env, permissions…) — "replace with {hooks}" would
+    // be a silent wipe. Register nothing; the caller reports it.
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "skipped-unparseable";
       config = parsed as Record<string, unknown>;
+    } catch {
+      return "skipped-unparseable";
     }
-  } catch {
-    /* missing or unreadable — create minimal */
   }
 
   const hooks = (config.hooks && typeof config.hooks === "object" && !Array.isArray(config.hooks)
     ? config.hooks
     : {}) as Record<string, unknown>;
-  const entries = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : [];
 
   const wanted = hookCommand(scriptPath);
-  let stale = false;
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object") continue;
-    const inner = (entry as { hooks?: unknown }).hooks;
-    if (!Array.isArray(inner)) continue;
-    for (const h of inner) {
-      if (!h || typeof h !== "object") continue;
-      // Normalize separators: on Windows join() registers a backslash path,
-      // and a forward-slash signature would never match — so every ensure
-      // would re-register a duplicate entry.
-      const command = String((h as { command?: unknown }).command ?? "");
-      if (!command.replace(/\\/g, "/").includes(COMMAND_SIGNATURE)) continue;
-      const limitCurrent = !wantsLimit || (h as { additionalContextLimit?: unknown }).additionalContextLimit === 0;
-      if (command === wanted && limitCurrent) return "unchanged";
-      // Same hook, older definition: UPDATE it in place. This is what makes a
-      // refresh visible to Codex's definition-hash — and on Claude it is a
-      // harmless argv change.
-      (h as { command: string }).command = wanted;
-      if (wantsLimit) (h as { additionalContextLimit?: number }).additionalContextLimit = 0;
-      stale = true;
+  let updated = false;
+  let registered = false;
+  // One script, two events. Each event is converged independently so a
+  // machine registered under an older release (UserPromptSubmit only) gains
+  // the SessionStart entry on refresh, and a hand-removed entry is not
+  // resurrected by the other event still being current — the disabled marker
+  // is the opt-out for both.
+  const converge = (event: "UserPromptSubmit" | "SessionStart", matcher: string) => {
+    const entries = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
+    let found = false;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const inner = (entry as { hooks?: unknown }).hooks;
+      if (!Array.isArray(inner)) continue;
+      for (const h of inner) {
+        if (!h || typeof h !== "object") continue;
+        // Normalize separators: on Windows join() registers a backslash path,
+        // and a forward-slash signature would never match — so every ensure
+        // would re-register a duplicate entry.
+        const command = String((h as { command?: unknown }).command ?? "");
+        if (!command.replace(/\\/g, "/").includes(COMMAND_SIGNATURE)) continue;
+        found = true;
+        const limitCurrent = !wantsLimit || (h as { additionalContextLimit?: unknown }).additionalContextLimit === 0;
+        if (command === wanted && limitCurrent) continue;
+        // Same hook, older definition: UPDATE it in place. This is what makes a
+        // refresh visible to Codex's definition-hash — and on Claude it is a
+        // harmless argv change.
+        (h as { command: string }).command = wanted;
+        if (wantsLimit) (h as { additionalContextLimit?: number }).additionalContextLimit = 0;
+        updated = true;
+      }
     }
-  }
-  if (!stale) {
-    entries.push({
-      matcher: "*",
-      hooks: [{ type: "command", command: wanted, timeout: 15, ...(wantsLimit ? { additionalContextLimit: 0 } : {}) }],
-    });
-  }
-  hooks.UserPromptSubmit = entries;
+    if (!found) {
+      entries.push({
+        matcher,
+        hooks: [{ type: "command", command: wanted, timeout: 15, ...(wantsLimit ? { additionalContextLimit: 0 } : {}) }],
+      });
+      registered = true;
+    }
+    hooks[event] = entries;
+  };
+  converge("UserPromptSubmit", "*");
+  converge("SessionStart", SESSION_START_MATCHER);
+  if (!updated && !registered) return "unchanged";
   config.hooks = hooks;
   writeAtomically(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  return stale ? "updated" : "registered";
+  return registered ? "registered" : "updated";
 }
 
 /**
@@ -415,7 +530,14 @@ export function ensurePromptRouteHook(options: EnsureHookOptions = {}): EnsureHo
         // Never report a green "registered" as if it were active: Codex
         // SILENTLY SKIPS untrusted hooks, and "installed but inert" is the
         // exact failure class this feature exists to end.
-        result.codexApproval = detectCodexApproval(spec.root);
+        //
+        // Approvals are keyed by definition hash, so a hooks.json we just
+        // rewrote (new entry, changed command) carries definitions the
+        // operator has never trusted — whatever config.toml says about the
+        // OLD ones. Only an untouched config can inherit prior trust.
+        result.codexApproval = config === "unchanged"
+          ? detectCodexApproval(spec.root, hookCommand(result.scriptPath))
+          : "pending-or-unknown";
       }
       results.push(result);
     } catch {

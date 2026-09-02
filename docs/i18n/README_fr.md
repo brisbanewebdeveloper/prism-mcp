@@ -138,6 +138,22 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.18.0
+
+- **`session_bootstrap` inlines a digest of the protected floor** on paid
+  tiers at standard and deep depth: one inert line per rule plus its section
+  map, ~5.6K chars for the full floor, paid for on top of the context budget
+  so the ledger/handoff share is unchanged. Quick depth stays names-only.
+- **A `SessionStart` hook re-injects the digest after compaction** on Claude
+  Code and Codex (`prism floor-digest`, same tier and depth decisions as the
+  bootstrap; nothing on startup/resume/clear). Codex: UNVERIFIED against a
+  live compaction — on an unrecognised payload it re-injects nothing.
+- **Codex trust is reported honestly after a hook rewrite**, and a host
+  config that no longer parses is left byte-identical instead of replaced.
+- Fixed: symptom skills whose frontmatter fence is the last line no longer
+  inline their YAML; digest lines keep their section heading; the publish
+  gate refuses release notes that run ahead of the package version.
+
 ## What's New in v20.17.3
 
 - **A plugin install can no longer enable the prompt-routing hook.** The

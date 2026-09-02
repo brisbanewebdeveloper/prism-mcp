@@ -2,6 +2,81 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.18.0 — 2026-09-01
+
+### Protected-floor digest in the bootstrap + post-compaction re-injection
+
+- **Added: `session_bootstrap` inlines a protected-floor digest** (paid tiers,
+  standard/deep). One inert line per rule from each skill's first paragraph or
+  pinned `digest:`, plus a section map; per-skill cap 360 chars, whole block
+  ≤6,000 chars, source read capped at 64K. The digest budget is additive on
+  top of `NATIVE_STARTUP_MAX_CHARS` on every bootstrap path (projects,
+  first-run, no-projects), so the project/session share is unchanged at every
+  depth (pinned by a with/without byte-identity test). Quick depth stays
+  names-only. A floor skill whose body yields no digest (front matter only,
+  fenced blocks only) is listed as `digest unavailable; read the full skill`
+  so an absent rule is never mistaken for a silent one; the block is dropped
+  only when the budget cannot carry every digestible name at ≥80 chars.
+- **Added: `prism floor-digest`** and a `SessionStart` hook matched on
+  `compact` (Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`,
+  hook version 4). The hook resolves tier and depth through the same manifest
+  snapshot as the bootstrap — a free-tier machine with paid names left in its
+  manifest gets nothing (adversarial-review finding, pinned). The script reads
+  the event as `hook_event_name`, `hookEventName`, `event_name`, `eventName`
+  or `event` (any casing or separators) and the trigger as `source`,
+  `trigger` or `reason` with any value beginning `compact`; every other
+  SessionStart (startup, resume, clear) emits nothing. **The Codex half is
+  UNVERIFIED against a live compaction**: the entry is registered and its
+  trust state reported, and the script accepts every documented spelling of
+  the payload, but no Codex compaction has been observed end-to-end. Its
+  failure mode on an unrecognised payload is *no* re-injection, never a wrong
+  one. Claude Code's payload shape is pinned by test; the live check on this
+  machine is part of the release procedure. If the digest was rendered from a
+  generation whose files never finished reaching the skill roots, the hook
+  payload carries the same `Skill files are STALE` warning the bootstrap
+  shows — after a compaction the bootstrap's copy is no longer on screen.
+- **Fixed: Codex trust voided on hook rewrite.** `ensurePromptRouteHook` now
+  reports `pending-or-unknown` whenever it changed `hooks.json`, regardless of
+  `[hooks.state]`, and "detected" requires the current *versioned* command
+  (`--v4`) to appear at least twice in `config.toml` — trust recorded for an
+  older hook version, or an unversioned entry, reads as pending, never as
+  detected; connect's ✓ line now names both hooks.
+- **Fixed: an unparseable host config was replaced.** A `settings.json` or
+  `hooks.json` that exists but is not valid JSON (a hand-edit with a trailing
+  comma, say) is now left byte-identical, nothing is registered there, and
+  connect prints `⚠ <host>: <path> is not valid JSON — prism-route hooks NOT
+  registered`. Before, the parse failure was treated as "no file" and the
+  operator's model/env/permissions were overwritten with a minimal hooks file.
+  The npm postinstall notice says the same thing for Codex instead of
+  "installed but NOT yet trusted — press t", which sent the operator to
+  `/hooks` to trust an entry that was never written.
+- **Fixed: frontmatter-only symptom skill inlined its YAML** when the closing
+  fence was the file's last line (inline path had its own fence parser).
+- Hardening from review: every `<` and `>` in digest text becomes a guillemet
+  (`‹`/`›`) — per bracket, not per tag-shaped span, so a tag split across two
+  units cannot re-form when the assembler joins them, and the assembled digest
+  is made inert as a whole; wiki-link stripping is linear (256KB of `[`
+  digests in milliseconds, was 54s). A digest unit that opens a new section
+  carries its heading in front (`Do NOT delegate: Tasks requiring…`), so a
+  skill whose sections are "Delegate to" / "Do NOT delegate" cannot flip
+  polarity when the assembler joins a unit from each — including when the
+  section is opened by a mid-document H1, an empty heading, or a setext
+  underline, each of which previously reset the section to the intro. The
+  on-disk `SKILL.md` is used only when it *digests*: an empty file, a file
+  cut off inside its frontmatter (which rendered `prompt_triggers: …` YAML as
+  the rule), or a frontmatter-only file falls back to the DB copy. A Codex
+  approval whose Windows path is TOML-escaped (`C:\\Users\\…`) now matches
+  the registered command. `check-publish-clean` refuses a publish whose
+  CHANGELOG.md, README.md, or translated README leads with a version *ahead*
+  of package.json, so release notes cannot announce a version npm does not
+  carry; notes that lag the bump (the repo's convention) still pass. The
+  guard reads the whole heading line and compares its *newest* version token
+  (a `v20.17.3 – v20.18.0` range on a 20.17.3 package is ahead), matches a
+  typographic apostrophe in `What’s New`, and strips a leading BOM — each of
+  which had silently disabled a half of the check. An inert free-tier filter
+  in the floor-digest name resolution was removed in favour of a pinned
+  invariant that the free bundle and the protected floor stay disjoint.
+
 ## 20.15.0 — 2026-08-24
 
 ### Security — dashboard DNS-rebinding fix (GHSA-9cvx-7x8q-3g6m)
