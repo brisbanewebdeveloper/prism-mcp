@@ -267,7 +267,11 @@ describe("release-notes version guard", () => {
     const paths: string[] = JSON.parse(out.stdout);
     expect(paths.slice(0, 2)).toEqual(["CHANGELOG.md", "README.md"]);
     expect(paths.length).toBeGreaterThan(2);
-    expect(paths.slice(2).every((p) => /^docs[\\/]i18n[\\/]README_[a-z]+\.md$/.test(p))).toBe(true);
+    // `/` on every host: the name is reported verbatim in the gate's message
+    // and is the same document on Windows. The earlier `[\\/]` tolerance here
+    // hid a `docs\i18n\…` report that the WIRING test above then caught only
+    // on the Windows CI leg.
+    expect(paths.slice(2).every((p) => /^docs\/i18n\/README_[a-z]+\.md$/.test(p))).toBe(true);
   });
 });
 

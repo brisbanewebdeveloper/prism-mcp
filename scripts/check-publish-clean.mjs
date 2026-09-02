@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -241,10 +241,14 @@ function readOptional(path) {
 export function releaseNoteDocPaths(repoRoot) {
   let translated = [];
   try {
+    // Repo-relative names are reported verbatim and are the same document on
+    // every OS, so they use `/` regardless of host — `path.join` produced
+    // `docs\i18n\README_ja.md` on the Windows CI leg. `join(repoRoot, name)`
+    // below still resolves a `/` name correctly on Windows.
     translated = readdirSync(join(repoRoot, "docs", "i18n"))
       .filter((name) => /^README_[A-Za-z-]+\.md$/.test(name))
       .sort()
-      .map((name) => join("docs", "i18n", name));
+      .map((name) => posix.join("docs", "i18n", name));
   } catch (error) {
     if (!error || error.code !== "ENOENT") throw error;
   }

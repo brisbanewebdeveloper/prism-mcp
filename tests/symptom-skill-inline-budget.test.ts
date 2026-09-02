@@ -168,7 +168,14 @@ describe('routeOffload prune — round-2 coverage', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const home = mkdtempSync(join(tmpdir(), 'offload-'));
-    const prev = process.env.HOME; process.env.HOME = home;
+    // os.homedir() reads USERPROFILE on Windows and HOME elsewhere — setting
+    // only HOME left the module writing under the real profile while the
+    // test wrote its stale files under the temp dir, so every Windows CI leg
+    // failed here with ENOENT on the first stale file.
+    const prev = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const dir = join(home, '.prism-mcp', 'route-context');
       const { writeRouteOffload } = await import('../src/utils/routeOffload.js');
@@ -184,6 +191,7 @@ describe('routeOffload prune — round-2 coverage', () => {
       expect(left.length, `stale left after 2 bounded calls: ${left.length}`).toBe(0);
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     }
   });
 });
