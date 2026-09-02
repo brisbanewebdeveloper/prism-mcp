@@ -160,10 +160,69 @@ const MAX_SYMPTOM_SKILLS = 5;
  * instruction rewrites failed for that reason before it was found. Inlining
  * removes the indirection entirely: the rule is simply in context.
  */
-const SYMPTOM_SKILL_INLINE_MAX = 1_800;
+/**
+ * Ceiling on an inlined rule — deliberately ABOVE every depth's budget share so
+ * the SHARE governs, not this constant.
+ *
+ * It was 1_800, which made it the binding constraint at every depth that has
+ * room: standard allots 8_000*0.4 = 3_200 and deep allots 30_000*0.4 = 12_000,
+ * so deep discarded 10_200 chars of already-budgeted space. Every super-skill
+ * is 8-15 KB, so a symptom-routed super-skill always arrived at 12-23% of its
+ * text while the same display instructed the agent to "follow them before
+ * proposing any change" — compliance demanded against a rule mostly absent.
+ * At 12_000 a full dev-engineering-super-skill (8_863) now fits whole at deep
+ * depth; quick is unchanged because its share (1_600) is still the smaller.
+ */
+const SYMPTOM_SKILL_INLINE_MAX = 12_000;
 const SYMPTOM_SKILL_BUDGET_SHARE = 0.4;
 /** Below this the inlined rule is too clipped to be worth the space it costs. */
 const SYMPTOM_SKILL_INLINE_MIN = 400;
+/**
+ * Upper bound on the suffix chrome beyond the body for ONE inlined skill:
+ * names line + imperative (~230), truncation notice (~200 + the name twice),
+ * offload pointer (~30 + path, ≤ ~180 under $HOME). Round-2 review measured
+ * the old flat 600 undercounting by 2-3x for long names — this is a FUNCTION
+ * of the name so the reserve is honest for every name the table allows
+ * (≤128 chars), and a property test pins estimate ≥ measured chrome. The
+ * final cap guarantee in capNativeStartupText remains the hard backstop.
+ */
+export function symptomChromeUpperBound(name: string): number {
+  return 480 + 2 * name.length + 220; // imperative+notice + 2×name + path slack
+}
+
+/**
+ * Render one symptom-routed skill body for the startup display. EXPORTED and
+ * pure so tests execute the REAL rendering: the first test suite asserted the
+ * notice strings existed in source text, which a dead-code wrap around the
+ * call site would have satisfied while shipping nothing (adversarial review,
+ * confirmed). A test that calls this function fails the moment the strings —
+ * or the branch — stop being live.
+ *
+ * When the body exceeds `cap`, the excerpt says how much is missing, names
+ * the skill so ANY host can load it by name (hosts without hooks — Codex —
+ * or without filesystem tools cannot follow a path), and forbids treating
+ * the excerpt as the whole rule. The offload path is an extra route only.
+ */
+export function formatSymptomSkillInline(
+  name: string,
+  body: string,
+  cap: number,
+  offloadPath?: string,
+): string {
+  if (body.length <= cap) {
+    return `\n--- ${name} ---\n${body}\n`;
+  }
+  const missing = body.length - cap;
+  return (
+    `\n--- ${name} (showing ${cap} of ${body.length} chars) ---\n` +
+    `${sliceCodepointSafe(body, cap).trimEnd()}\n` +
+    `… TRUNCATED — ${missing} chars of this rule are NOT shown above. ` +
+    `Load the full skill by name (\`${name}\`) before acting on it; ` +
+    `do not treat the excerpt as the whole rule.` +
+    (offloadPath ? ` Complete text also saved at: ${offloadPath}` : "") +
+    `\n`
+  );
+}
 
 /**
  * The character budget a native startup display will actually be capped to.
@@ -523,7 +582,15 @@ async function readDashboardUrl(): Promise<string | null> {
   return healthy ? `http://localhost:${port}` : null;
 }
 
-function capNativeStartupText(
+/** slice() that never ends on a lone high surrogate — round-2 review showed
+ *  UTF-16 slicing emitting broken pairs that corrupt downstream rendering. */
+export function sliceCodepointSafe(text: string, end: number): string {
+  const cut = text.slice(0, Math.max(0, end));
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
+export function capNativeStartupText(
   text: string,
   level: NativeContextDepth,
   requestedMaxChars?: number,
@@ -533,8 +600,23 @@ function capNativeStartupText(
   if (text.length + suffix.length <= maxChars) return text + suffix;
 
   const marker = `\n\n… Additional ${level} context omitted to keep native startup within its display budget.`;
-  const keepChars = Math.max(0, maxChars - marker.length - suffix.length);
-  return text.slice(0, keepChars).trimEnd() + marker + suffix;
+  // FINAL guarantee, not best-effort. The old keepChars=max(0, …) silently
+  // returned marker+suffix UNCHECKED when the suffix alone exceeded the
+  // budget — at heavily-divided multi-project bootstrap budgets the response
+  // then blew past the per-project cap, recreating at the host layer exactly
+  // the arbitrary truncation this display exists to prevent (adversarial
+  // review, reproduced). If the suffix cannot fit beside the marker, the
+  // suffix itself is trimmed with its own honest marker; the return is never
+  // longer than maxChars.
+  let cappedSuffix = suffix;
+  const suffixBudget = maxChars - marker.length;
+  if (cappedSuffix.length > suffixBudget) {
+    const suffixMarker = `\n… symptom-skill excerpt shortened to fit this project's startup budget; load the skill by name for the full rule.`;
+    cappedSuffix = sliceCodepointSafe(cappedSuffix, suffixBudget - suffixMarker.length).trimEnd() + suffixMarker;
+    if (cappedSuffix.length > suffixBudget) cappedSuffix = sliceCodepointSafe(cappedSuffix, suffixBudget);
+  }
+  const keepChars = Math.max(0, maxChars - marker.length - cappedSuffix.length);
+  return sliceCodepointSafe(text, keepChars).trimEnd() + marker + cappedSuffix;
 }
 
 function compactWithOmissionCount(value: unknown, maxChars: number): string {
@@ -1707,19 +1789,25 @@ export async function sessionLoadContextHandler(
           const body = stripSkillFrontmatter(await readNativeSkillBody(shown[0]));
           // Size against the budget this display will ACTUALLY be capped to,
           // not the level constant — bootstrap divides it across projects.
+          // Reserve the suffix chrome (a function of the name — see
+          // symptomChromeUpperBound) so body+chrome stay inside the share
+          // instead of overflowing into the context's portion at small
+          // divided budgets.
+          const budgetForLevel = effectiveNativeBudget(level, options.nativeMaxChars);
           const cap = Math.min(
             SYMPTOM_SKILL_INLINE_MAX,
-            Math.floor(
-              effectiveNativeBudget(level, options.nativeMaxChars) * SYMPTOM_SKILL_BUDGET_SHARE,
-            ),
+            Math.floor(budgetForLevel * SYMPTOM_SKILL_BUDGET_SHARE),
+            Math.max(0, budgetForLevel - symptomChromeUpperBound(shown[0])),
           );
           // Too tight to carry a useful rule: keep the name line, which is
           // small, and leave the remaining budget to the session context.
           if (body && cap >= SYMPTOM_SKILL_INLINE_MIN) {
-            const clipped = body.length > cap
-              ? `${body.slice(0, cap).trimEnd()}\n… (rule truncated to fit the startup budget)`
-              : body;
-            symptomSkillSuffix += `\n--- ${shown[0]} ---\n${clipped}\n`;
+            let offload: string | undefined;
+            if (body.length > cap) {
+              const { writeRouteOffload } = await import("../utils/routeOffload.js");
+              offload = writeRouteOffload(`# ${shown[0]}\n\n${body}`, "skill");
+            }
+            symptomSkillSuffix += formatSymptomSkillInline(shown[0], body, cap, offload);
           }
         }
       } catch (err) {
@@ -2154,7 +2242,10 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
 > {
   try {
     const { collectScopedTriggers, collectLocalSkillTriggers } = await import("./scopedSkillTriggers.js");
-    const merged: Record<string, string[]> = {};
+    // Null-prototype for the same reason as the accumulators in
+    // scopedSkillTriggers.ts (round-5): a user-authored pattern named
+    // __proto__/constructor must be a plain data key, not an inherited read.
+    const merged: Record<string, string[]> = Object.create(null);
     const localNames = new Set<string>();
     const errors: Array<{ skill: string; reason: string }> = [];
 

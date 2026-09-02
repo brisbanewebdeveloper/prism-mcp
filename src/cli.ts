@@ -2,7 +2,7 @@
 
 import { Command } from 'commander';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdirSync, readdirSync, statSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { SqliteStorage } from './storage/sqlite.js';
 import { handleVerifyStatus, handleGenerateHarness } from './verification/cliHandler.js';
@@ -540,27 +540,13 @@ program
 
 /** Deliberate offload for payloads over the host inline cap. The host's own
  *  overflow path swaps the payload for a 2KB preview with no instruction to
- *  read the rest; this file plus the inline pointer is the recoverable form. */
-function writeRouteOffload(fullText: string): string | undefined {
-  try {
-    const dir = path.join(homedir(), '.prism-mcp', 'route-context');
-    mkdirSync(dir, { recursive: true });
-    try {
-      // Best-effort prune: one file per over-budget routed prompt, kept a week.
-      for (const f of readdirSync(dir)) {
-        const p = path.join(dir, f);
-        try {
-          if (Date.now() - statSync(p).mtimeMs > 7 * 86_400_000) rmSync(p);
-        } catch { /* skip unstat-able entries */ }
-      }
-    } catch { /* prune failure never blocks the write */ }
-    const target = path.join(dir, `route-${Date.now()}-${process.pid}.md`);
-    writeFileSync(target, fullText);
-    return target;
-  } catch {
-    return undefined; // reshape degrades to the loud in-band fallback
-  }
-}
+ *  read the rest; this file plus the inline pointer is the recoverable form.
+ *  Round-2 review: this file kept its own UNBOUNDED copy after the shared
+ *  extraction — two implementations, one fixed, the hook path (the hotter
+ *  one) still stat-ing every entry. One shared implementation serves both. */
+import { writeRouteOffload as sharedWriteRouteOffload } from './utils/routeOffload.js';
+const writeRouteOffload = (fullText: string): string | undefined =>
+  sharedWriteRouteOffload(fullText, 'route');
 
 program
   .command('route-prompt')

@@ -149,7 +149,14 @@ export function buildVaultDirectory(
   }
 
   // 4. Ledger/ and Keywords/ processing
-  const keywordMentions: Record<string, { sessionName: string, path: string }[]> = {};
+  // NULL-PROTOTYPE (round-6 review): keywords are auto-extracted from the
+  // user's free-text summaries, so an ordinary word like "constructor"
+  // slugifies to an inherited Object.prototype property name. On a plain
+  // object the truthiness guard below then read the inherited function,
+  // skipped the [] init, and .push threw — and because session_export_memory
+  // wraps the whole multi-project loop in one try/catch, a single such
+  // keyword in ANY ledger entry aborted the ENTIRE vault export.
+  const keywordMentions: Record<string, { sessionName: string, path: string }[]> = Object.create(null);
 
   // O(1) filename collision counter: key = "YYYY-MM-DD_slug", value = next suffix number
   const filenameCounters = new Map<string, number>();

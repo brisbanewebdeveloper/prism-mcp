@@ -107,7 +107,17 @@ function unquote(value: string): string {
  * reader already used by skill_save so the two agree on what a skill file is.
  */
 export function extractSkillTriggers(skillName: string, content: string): TriggerExtraction {
-  const result: TriggerExtraction = { triggers: {}, errors: [] };
+  // NULL-PROTOTYPE accumulator (round-5 review): `prompt_triggers` is
+  // user-authored text, and a pattern whose TEXT is an inherited property
+  // name (__proto__, constructor, toString…) made the plain-object merge
+  // idiom `(triggers[pattern] ||= []).push(…)` read the inherited value —
+  // truthy, no .push → throw. That throw escaped collectScopedTriggers and
+  // was swallowed by collectSkillTriggersOnThisMachine's outer catch,
+  // silently discarding EVERY skill's triggers on this machine, not just
+  // the poisoned one. A null prototype has nothing to inherit, so the
+  // idiom is a plain data-property op for any key. Same treatment at every
+  // trigger accumulator in this file and in ledgerHandlers' merge.
+  const result: TriggerExtraction = { triggers: Object.create(null) as Record<string, string[]>, errors: [] };
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
   if (!frontmatter) return result;
 
@@ -187,7 +197,7 @@ export async function collectLocalSkillTriggers(
   },
   join: (...parts: string[]) => string,
 ): Promise<TriggerExtraction & { names: string[] }> {
-  const merged: TriggerExtraction & { names: string[] } = { triggers: {}, errors: [], names: [] };
+  const merged: TriggerExtraction & { names: string[] } = { triggers: Object.create(null) as Record<string, string[]>, errors: [], names: [] };
   let budget = MAX_LOCAL_SKILLS;
   const seen = new Set<string>();
 
@@ -223,7 +233,7 @@ export async function collectLocalSkillTriggers(
 }
 
 export function collectScopedTriggers(skills: Iterable<[string, string]>): TriggerExtraction {
-  const merged: TriggerExtraction = { triggers: {}, errors: [] };
+  const merged: TriggerExtraction = { triggers: Object.create(null) as Record<string, string[]>, errors: [] };
   for (const [name, content] of skills) {
     if (!content || !content.includes("prompt_triggers")) continue;   // cheap pre-filter
     const extracted = extractSkillTriggers(name, content);

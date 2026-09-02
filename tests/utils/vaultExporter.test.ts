@@ -43,6 +43,30 @@ describe("vaultExporter", () => {
     });
   });
 
+  describe("round-6 review — prototype-named keywords", () => {
+    it("a ledger keyword like 'constructor' cannot crash the export", () => {
+      // Keywords are auto-extracted from free-text summaries, so ordinary
+      // words that collide with Object.prototype property names reach the
+      // keywordMentions accumulator. On a plain object the truthiness guard
+      // read the inherited function and .push threw, aborting the WHOLE
+      // multi-project export (session_export_memory has one outer catch).
+      const data = {
+        prism_export: {
+          project: "test",
+          ledger: [
+            { summary: "learned about JS classes", keywords: ["constructor", "widget"] },
+            { summary: "object protocol notes", keywords: ["toString", "hasOwnProperty", "valueOf"] },
+          ],
+        },
+      };
+      const vault = buildVaultDirectory(data);
+      const files = Object.keys(vault);
+      expect(files.some((f) => f.includes("Keywords/constructor.md"))).toBe(true);
+      expect(files.some((f) => f.includes("Keywords/widget.md"))).toBe(true);
+      expect(files.some((f) => f.includes("Keywords/tostring.md"))).toBe(true);
+    });
+  });
+
   describe("escapeYaml edge cases", () => {
     it("escapes quotes and newlines in project, summary, and keywords safely", () => {
       const data = {

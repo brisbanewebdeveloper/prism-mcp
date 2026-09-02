@@ -1,9 +1,12 @@
 /**
- * npm postinstall — the upgrade path for the prism-route hook.
- *
- * `prism connect` is only typed once per machine, so an upgrade that adds or
- * fixes the hook would otherwise reach no one until they reconnect. Silent
- * and always-exit-0: a hook installer must never break `npm install`.
+ * npm postinstall — the UPGRADE path for the prism-route hook, never the
+ * install path. `prism connect` is typed once per machine and is the only
+ * consent that first-installs the hook; this script merely refreshes hosts
+ * that carry the managed marker from that explicit install (mode "auto" is
+ * marker-gated in ensurePromptRouteHook). On any machine without the marker
+ * — including every Claude Code plugin install, where npx runs this
+ * package's lifecycle scripts — it is a no-op that writes nothing. Silent
+ * and always-exit-0: a lifecycle script must never break `npm install`.
  */
 import { ensurePromptRouteHook } from "./promptRouteHostHook.js";
 

@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -64,6 +65,66 @@ describe("versioned-manifest coverage", () => {
     expect(manifests).toContain("packages/prism-coder/package.json");
     expect(manifests).toContain("plugins/prism/.codex-plugin/plugin.json");
     expect(manifests).toContain("plugins/prism/.claude-plugin/plugin.json");
+  });
+});
+
+describe("mcp launcher pin guard", () => {
+  // The plugin catalogs reject unpinned auto-exec MCP launchers (their CI
+  // gate landed 2026-08-19 while prism-coder sat in review with exactly
+  // `npx -y prism-mcp-server`). The pin is now a lockstep surface: this
+  // exercises the exported checker with inline fixtures via the same
+  // subprocess pattern the manifest-coverage test documents (top-level
+  // import of the .mjs breaks vitest on Windows).
+  it("flags unpinned and wrong-version launchers, passes the exact pin", () => {
+    const out = spawnSync(process.execPath, [
+      "-e",
+      `const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>{
+        const f=m.mcpLauncherPinMismatches;
+        console.log(JSON.stringify([
+          f({mcpServers:{a:{command:'npx',args:['-y','prism-mcp-server']}}}, '1.2.3').length,
+          f({mcpServers:{a:{command:'npx',args:['-y','prism-mcp-server@1.0.0']}}}, '1.2.3').length,
+          f({mcpServers:{a:{command:'npx',args:['-y','prism-mcp-server@1.2.3']}}}, '1.2.3').length,
+          f({mcpServers:{a:{command:'npx',args:['-y','some-other-package']}}}, '1.2.3').length,
+          f({}, '1.2.3').length,
+        ]))})`,
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT } });
+    expect(out.status, out.stderr).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual([1, 1, 0, 0, 0]);
+  });
+
+  it("WIRING: the gate itself fails a repo whose only defect is a stale pin", () => {
+    // Mutant analysis during authoring showed the two tests below never
+    // exercise checkManifestVersions' wiring: dropping the checkMcpLauncherPin
+    // call left them green. This drives the composed gate over a fixture repo
+    // that is version-consistent EVERYWHERE except the launcher pin.
+    const dir = mkdtempSync(resolve(tmpdir(), "pin-wiring-"));
+    tempRepos.push(dir);
+    const { mkdirSync } = require("node:fs");
+    mkdirSync(resolve(dir, "plugins/prism"), { recursive: true });
+    writeFileSync(resolve(dir, "package.json"), JSON.stringify({ name: "prism-mcp-server", version: "9.9.9" }));
+    writeFileSync(resolve(dir, "server.json"), JSON.stringify({
+      version: "9.9.9", description: "x",
+      packages: [{ identifier: "prism-mcp-server", version: "9.9.9" }],
+    }));
+    writeFileSync(resolve(dir, "plugins/prism/.mcp.json"), JSON.stringify({
+      mcpServers: { "prism-mcp": { command: "npx", args: ["-y", "prism-mcp-server@1.0.0"] } },
+    }));
+    const out = spawnSync(process.execPath, [
+      "-e",
+      `const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>console.log(JSON.stringify(m.checkManifestVersions(process.env.FIXTURE))))`,
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT, FIXTURE: dir } });
+    expect(out.status, out.stderr).toBe(0);
+    const problems: string[] = JSON.parse(out.stdout);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('must be pinned "prism-mcp-server@9.9.9"');
+  });
+
+  it("the REAL plugin manifest is pinned to the REAL package version", () => {
+    const mcp = JSON.parse(readFileSync(resolve(process.cwd(), "plugins/prism/.mcp.json"), "utf8"));
+    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    const args: string[] = mcp.mcpServers["prism-mcp"].args;
+    expect(args).toContain(`prism-mcp-server@${pkg.version}`);
+    expect(args).not.toContain("prism-mcp-server");
   });
 });
 

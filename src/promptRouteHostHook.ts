@@ -235,25 +235,22 @@ export interface EnsureHookOptions {
    * "auto" (postinstall, server startup) — this package is PUBLIC npm, and
    *   silently rewriting a stranger's ~/.claude/settings.json because they
    *   installed an MCP server is consent they never gave. Auto paths
-   *   therefore only act on hosts that show PRIOR prism integration: our
-   *   own managed marker (upgrade/refresh) or a prism MCP registration in
-   *   that host's config (the machine was connected at some point).
+   *   therefore REFRESH ONLY: they act solely on hosts carrying our own
+   *   managed marker, i.e. a hook a prior EXPLICIT `prism connect` put
+   *   there. A prism MCP registration in host config is deliberately NOT
+   *   accepted as evidence (it was, until the 2026-09 directory review):
+   *   installing the Claude Code PLUGIN registers `prism-mcp` in host
+   *   config, so registration-as-consent let a plugin install transitively
+   *   "consent" to a global UserPromptSubmit hook the user never approved.
+   *   First install of the hook happens on the explicit path or not at all.
    */
   mode?: "explicit" | "auto";
 }
 
-/** Evidence that this host was already prism-integrated by explicit action. */
-function hostShowsPriorConsent(spec: HostSpec, homeDir: string): boolean {
-  if (existsSync(join(spec.root, "hooks", HOOK_DIR, MARKER_FILE))) return true;
-  const evidenceFiles = spec.host === "claude"
-    ? [join(homeDir, ".claude.json"), spec.configPath]
-    : [join(spec.root, "config.toml"), spec.configPath];
-  for (const file of evidenceFiles) {
-    try {
-      if (/prism/i.test(readFileSync(file, "utf8"))) return true;
-    } catch { /* unreadable = no evidence */ }
-  }
-  return false;
+/** A prior EXPLICIT install left our managed marker; only that authorizes
+ *  the auto paths to touch this host again (refresh/upgrade). */
+function hostHasManagedHook(spec: HostSpec): boolean {
+  return existsSync(join(spec.root, "hooks", HOOK_DIR, MARKER_FILE));
 }
 
 interface HostSpec {
@@ -407,7 +404,7 @@ export function ensurePromptRouteHook(options: EnsureHookOptions = {}): EnsureHo
   for (const spec of hostSpecs(homeDir, env)) {
     if (!wanted.has(spec.host)) continue;
     if (onlyExisting && !existsSync(spec.root)) continue;
-    if ((options.mode ?? "explicit") === "auto" && !hostShowsPriorConsent(spec, homeDir)) continue;
+    if ((options.mode ?? "explicit") === "auto" && !hostHasManagedHook(spec)) continue;
     try {
       const hookDir = join(spec.root, "hooks", HOOK_DIR);
       const script = ensureScript(hookDir);

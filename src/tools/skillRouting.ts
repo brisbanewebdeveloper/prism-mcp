@@ -159,6 +159,13 @@ export function _setStorage(persist: typeof persistFn, read: typeof readFn): voi
   readFn = read;
 }
 
+/** Test-only handle, matching this file's underscore convention for
+ *  internals exposed to tests (round-2 review). Production callers use the
+ *  module-internal function directly. */
+export const _toResolvedSkillsWithPrompt = (
+  ...args: Parameters<typeof toResolvedSkillsWithPrompt>
+) => toResolvedSkillsWithPrompt(...args);
+
 function synaluxBase(): string {
   return (process.env.PRISM_SYNALUX_BASE_URL?.trim() ||
     process.env.SYNALUX_BASE_URL?.trim() || PRISM_SYNALUX_BASE_URL ||
@@ -251,6 +258,28 @@ function isKeywordTable(v: unknown): v is KeywordTable {
 }
 
 /**
+ * Enforce the table's value contract at INGEST, once, for every consumer.
+ * isKeywordTable only proves prompt_keywords is an object — round-4 review
+ * showed a string value ('notarray') sails through and the matcher's
+ * `for (const skillName of skills)` iterates it CHARACTER BY CHARACTER,
+ * synthesizing bogus one-letter "skill names". Non-array values are dropped,
+ * non-string members filtered, matching the scoped-trigger merge's policy.
+ * The result is NULL-PROTOTYPE so a hostile pattern key ('__proto__',
+ * 'constructor') can neither read an inherited value nor mutate a prototype
+ * downstream.
+ */
+function sanitizePromptKeywords(raw: Record<string, string[]>): Record<string, string[]> {
+  const clean: Record<string, string[]> = Object.create(null);
+  for (const [pattern, names] of Object.entries(raw)) {
+    if (!Array.isArray(names)) continue;
+    const strings = names.filter((n): n is string => typeof n === 'string');
+    if (strings.length === 0) continue;
+    clean[pattern] = strings;
+  }
+  return clean;
+}
+
+/**
  * @param expectVersion routing_version the portal just reported. A mismatch
  *   means our cached copy predates a routing deploy, so drop it and refetch
  *   once — bounded to one extra request per version change.
@@ -272,8 +301,9 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
       const stored = await readFn(TABLE_STORAGE_KEY);
       const parsed: unknown = stored ? JSON.parse(stored) : null;
       if (isKeywordTable(parsed) && parsed.version === expectVersion) {
-        kwCache = { table: parsed, at: Date.now() };
-        return parsed;
+        const table: KeywordTable = { version: parsed.version, prompt_keywords: sanitizePromptKeywords(parsed.prompt_keywords) };
+        kwCache = { table, at: Date.now() };
+        return table;
       }
     } catch { /* fall through to network */ }
   }
@@ -289,7 +319,7 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const raw: unknown = await res.json();
         if (!isKeywordTable(raw)) throw new Error('malformed routing table');
-        const table: KeywordTable = { version: raw.version, prompt_keywords: raw.prompt_keywords };
+        const table: KeywordTable = { version: raw.version, prompt_keywords: sanitizePromptKeywords(raw.prompt_keywords) };
         kwCache = { table, at: Date.now() };
         if (persistFn) {
           try { await persistFn(TABLE_STORAGE_KEY, JSON.stringify(table)); } catch { /* cache-only */ }
@@ -304,8 +334,9 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
             const stored = await readFn(TABLE_STORAGE_KEY);
             const parsed: unknown = stored ? JSON.parse(stored) : null;
             if (isKeywordTable(parsed)) {
-              kwCache = { table: parsed, at: 0 }; // at:0 → retry live on next call
-              return parsed;
+              const table: KeywordTable = { version: parsed.version, prompt_keywords: sanitizePromptKeywords(parsed.prompt_keywords) };
+              kwCache = { table, at: 0 }; // at:0 → retry live on next call
+              return table;
             }
           } catch { /* fall through to null */ }
         }
@@ -319,6 +350,112 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
 }
 
 /**
+ * Strip QUOTED EVIDENCE from a prompt before trigger matching.
+ *
+ * Triggers are meant to fire on a symptom the user is REPORTING, not on every
+ * string that happens to appear in material they pasted as evidence. Observed
+ * 2026-08-31: a user asked "what's going on with skill loading?" and pasted a
+ * startup log; the log listed installed skill names, and the literal token
+ * `fusa-bss-billing` inside it satisfied that skill's own trigger
+ * `\bfusa\b.{0,20}\b(billing|invoice)\b`. Two unrelated private skills loaded
+ * and were injected as binding rules for a debugging question — pasting a log
+ * that NAMES a skill should never activate it.
+ *
+ * Two removals, both conservative:
+ *   1. Fenced code blocks — pasted output, by convention.
+ *   2. Hyphenated skill-name tokens (`foo-bar-baz`). A bare skill name is
+ *      metadata about the system, not a description of work. Removing only the
+ *      NAME SPAN keeps its constituent words available: "fusa billing invoice"
+ *      typed by the user still matches, because that text is not a name token.
+ *
+ * Deliberately NOT length-capped: a long prompt is not evidence of pasting,
+ * and truncating input would silently stop matching real symptoms stated late.
+ */
+export function stripQuotedEvidenceForRouting(
+  prompt: string,
+  promptKeywords: Record<string, string[]> = {},
+): string {
+  // Fences are LINE-ANCHORED: a pasted code block starts its ``` at the
+  // beginning of a line by convention. The first version paired ANY two
+  // occurrences of the marker anywhere in the string, so two incidental
+  // inline backtick-triples bracketing real user-typed symptom text ate that
+  // text (adversarial review, confirmed with a repro). Line-anchoring means
+  // eating text now requires two line-start fences — which IS a fenced block.
+  //
+  // Replacement must sever BOTH proximity-window classes in the real table:
+  //   - `.{0,N}` windows: `.` does not cross \n (no pattern uses the s-flag),
+  //     so a newline severs them.
+  //   - `\s*`/`\s+`-glued windows (34 of 58 live patterns, e.g.
+  //     `\bui\s*test\b`): \n IS \s, so a bare newline does NOT sever them —
+  //     round-2 review reproduced `ui <stripped-name> test` routing
+  //     xcuitest-ios-watch through exactly that gap. The separator therefore
+  //     includes \x1F (unit separator): non-space (blocks \s runs), non-word
+  //     (leaves \b semantics as a space would), and severed from dot-windows
+  //     by the flanking newlines.
+  const SEVER = '\n\x1f\n';
+  let out = prompt
+    .replace(/^[ \t]*```[^\n]*\n[\s\S]*?\n[ \t]*```[ \t]*$/gm, SEVER)
+    .replace(/^[ \t]*~~~[^\n]*\n[\s\S]*?\n[ \t]*~~~[ \t]*$/gm, SEVER);
+
+  // Strip only the names of skills that this very table could route. A generic
+  // "identifier-shaped token" heuristic was tried first and rejected by test:
+  // it also ate ordinary hyphenated English ("end-to-end", "well-formed"),
+  // which risks silently SUPPRESSING a real symptom — a worse failure than the
+  // false positive being fixed. Using the actual routable names is exact.
+  //
+  // Deliberate consequence, not an oversight: a user who TYPES a skill's name
+  // ("update fusa-bss-billing's invoice rate") no longer trigger-routes that
+  // skill. That is acceptable because the agent reads the raw prompt and can
+  // invoke a literally-named skill directly — trigger routing exists for
+  // SYMPTOM text, where the name is absent. A pasted log naming skills must
+  // not route them; a typed name doesn't need routing to be honored.
+  const names = new Set<string>();
+  // Non-string entries (a corrupted cache serializes undefined → null) must
+  // never reach the sort comparator below — round-2 review reproduced an
+  // uncaught TypeError from `.length` on null OUTSIDE the try/catch, killing
+  // routing for the whole prompt. Filter at collection, the only choke point.
+  for (const list of Object.values(promptKeywords)) {
+    if (!Array.isArray(list)) continue;
+    for (const n of list) if (typeof n === "string") names.add(n);
+  }
+  // Longest first, so a name that contains another is removed whole.
+  for (const name of [...names].sort((a, b) => b.length - a.length)) {
+    // Bounds mirror the routing table's own name policy (≤128 chars). An
+    // overlong or hostile name from a poisoned table must degrade to
+    // "not stripped", never to a thrown SyntaxError that kills routing for
+    // the whole prompt — the sibling _applyPromptRouting swallows bad
+    // patterns for the same reason (adversarial review, confirmed).
+    // Only IDENTIFIER-SHAPED names are stripped: at least two segments joined
+    // by - or _ (fusa-bss-billing, training-results-gate). Round-3 review
+    // proved the unconditional version was self-defeating for skills whose
+    // name is an ordinary word: stripping `sentry` from "check sentry for
+    // recent errors" killed that skill's OWN trigger (\bsentry\b) — 100% of
+    // its realistic phrasings routed nothing, same for linear/pdf/supabase.
+    // A single ordinary word cannot be distinguished from prose, so it is
+    // never stripped; the accepted residual is that a pasted skill LIST can
+    // still route single-word-named skills.
+    //
+    // Anchoring is SEGMENT-aligned, not token-aligned (round-4 review): the
+    // name must not butt directly against a letter/digit, but MAY butt
+    // against segment glue (-/_). Round 3's stricter (?<![\w-]) anchors
+    // refused to strip the name out of longer compounds — a pasted
+    // `fusa-bss-billing-worker` container name survived intact, and because
+    // \b fires at every internal hyphen, the skill's own trigger still
+    // matched inside it: the exact incident class this function exists to
+    // kill. Alignment on segment edges strips those compounds while still
+    // refusing mid-token overlaps (the name `fix-ci` never fires inside the
+    // unrelated word `prefix-ci`, whose own trigger must survive).
+    if (name.length < 3 || name.length > 128 || !/[a-z0-9]/i.test(name)) continue;
+    if (!/[-_]/.test(name)) continue;
+    try {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'gi'), SEVER);
+    } catch { /* skip unbuildable names — same policy as the matcher */ }
+  }
+  return out;
+}
+
+/**
  * Verbatim port of portal resolve/route.ts prompt-matching block + the sort
  * that follows it. Parity is the whole point: any divergence silently changes
  * which skills load. Do not "improve" this — the reference implementation and
@@ -326,6 +463,11 @@ async function fetchKeywordTable(expectVersion?: number): Promise<KeywordTable |
  *
  * `priority: 200 + resolved.length` reads the length AT PUSH TIME, so it
  * depends on how many skills precede it. Preserved exactly.
+ *
+ * NOTE: callers pass a prompt already run through
+ * `stripQuotedEvidenceForRouting`. The matching semantics here are untouched —
+ * only the INPUT is normalized — so the parity contract with the portal's
+ * reference implementation still holds for any given input string.
  */
 export function _applyPromptRouting(
   base: ResolvedSkill[],
@@ -386,11 +528,27 @@ export async function resolvePromptSkillNames(
   const publicKeywords = kw?.prompt_keywords ?? {};
   if (!kw && !scopedTriggers) return [];
 
-  const combined: Record<string, string[]> = { ...publicKeywords };
+  // NULL-PROTOTYPE, not a literal (round-4 review): with a plain object, a
+  // scoped pattern whose TEXT is an inherited property name made both sides
+  // of the merge below misbehave — `combined['constructor'] ?? []` read the
+  // inherited constructor (truthy, not iterable → throw, blanking ALL
+  // routing for the turn), and `combined['__proto__'] = …` invoked the
+  // prototype setter instead of storing a pattern. A null prototype has
+  // nothing to inherit, so both operations are plain data-property access.
+  const combined: Record<string, string[]> = Object.assign(
+    Object.create(null) as Record<string, string[]>, publicKeywords,
+  );
   for (const [pattern, names] of Object.entries(scopedTriggers ?? {})) {
-    combined[pattern] = [...(combined[pattern] ?? []), ...names];
+    // A malformed skill body can hand this merge null/42/{} for a pattern —
+    // spreading that threw "names is not iterable" here, silently blanking
+    // ALL routing for the turn at both callers (round-3 review). Degrade to
+    // skip, matching the never-throw policy everywhere else in this path.
+    if (!Array.isArray(names)) continue;
+    const clean = names.filter((n): n is string => typeof n === "string");
+    if (clean.length === 0) continue;
+    combined[pattern] = [...(combined[pattern] ?? []), ...clean];
   }
-  return _applyPromptRouting([], prompt, combined).map((s) => s.name);
+  return _applyPromptRouting([], stripQuotedEvidenceForRouting(prompt, combined), combined).map((s) => s.name);
 }
 
 /**
@@ -419,7 +577,7 @@ async function toResolvedSkillsWithPrompt(
           );
         }
       }
-      skills = _applyPromptRouting(skills, prompt, kw.prompt_keywords);
+      skills = _applyPromptRouting(skills, stripQuotedEvidenceForRouting(prompt, kw.prompt_keywords), kw.prompt_keywords);
     }
   }
   return {

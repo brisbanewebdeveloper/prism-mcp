@@ -190,11 +190,20 @@ describe("consent — auto paths must not touch a stranger's machine", () => {
     expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false);
   });
 
-  it("auto mode installs when the host's MCP config references prism — the machine was connected", () => {
-    writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { "prism-mcp": { command: "node" } } }));
+  it("an MCP registration alone is NOT consent — the plugin-install hole (2026-09 directory review)", () => {
+    // This test previously asserted the OPPOSITE: registration-as-consent.
+    // Installing the Claude Code PLUGIN registers `prism-mcp` in host config,
+    // so under that rule a plugin install transitively "consented" to a
+    // global UserPromptSubmit hook — flagged as the top objection candidate
+    // in the plugin-directory review investigation. Auto paths now refresh
+    // only hosts carrying our managed marker from a prior explicit install.
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { "prism-mcp": { command: "npx" } } }));
     writeFileSync(join(home, ".codex", "config.toml"), "[mcp_servers.prism]\ncommand = \"prism-coder\"\n");
     const results = ensurePromptRouteHook({ homeDir: home, env: {}, mode: "auto" });
-    expect(results.map((r) => r.host).sort()).toEqual(["claude", "codex"]);
+    expect(results).toEqual([]);
+    expect(existsSync(join(home, ".claude", "hooks", "prism-route"))).toBe(false);
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false);
+    expect(existsSync(join(home, ".codex", "hooks.json"))).toBe(false);
   });
 
   it("auto mode refreshes an existing managed install — the upgrade path stays alive", () => {

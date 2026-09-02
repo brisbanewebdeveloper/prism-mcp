@@ -79,6 +79,51 @@ function checkLockfileVersion(repoRoot, expected) {
   return problems;
 }
 
+/**
+ * The plugin's MCP launcher must be PINNED to the release version. An
+ * unpinned `npx -y prism-mcp-server` executes whatever npm serves at install
+ * time — which the Claude plugin catalogs now reject outright (their CI added
+ * a "deterministic static pin check for auto-exec MCP launchers" on
+ * 2026-08-19, while our submission sat in review with exactly that shape).
+ * Once pinned, the version becomes one more lockstep surface: a release that
+ * bumps package.json but not the launcher would ship a plugin that installs
+ * the PREVIOUS server — so it is held to the same rule as every manifest
+ * above.
+ */
+export function mcpLauncherPinMismatches(mcpJson, expected) {
+  const problems = [];
+  for (const [name, server] of Object.entries(mcpJson.mcpServers ?? {})) {
+    const args = Array.isArray(server?.args) ? server.args : [];
+    for (const arg of args) {
+      if (typeof arg !== "string" || !arg.startsWith("prism-mcp-server")) continue;
+      const pinned = `prism-mcp-server@${expected}`;
+      if (arg !== pinned) {
+        problems.push(
+          `plugins/prism/.mcp.json server "${name}" launches "${arg}" — must be pinned "${pinned}"`,
+        );
+      }
+    }
+    const cmd = server?.command;
+    if (typeof cmd === "string" && cmd.includes("prism-mcp-server") && !cmd.includes(`@${expected}`)) {
+      problems.push(
+        `plugins/prism/.mcp.json server "${name}" command "${cmd}" is not pinned to ${expected}`,
+      );
+    }
+  }
+  return problems;
+}
+
+function checkMcpLauncherPin(repoRoot, expected) {
+  let raw;
+  try {
+    raw = readFileSync(join(repoRoot, "plugins/prism/.mcp.json"), "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return []; // fixture repos have no plugin
+    throw error;
+  }
+  return mcpLauncherPinMismatches(JSON.parse(raw), expected);
+}
+
 function checkVersionedManifests(repoRoot, expected) {
   const problems = [];
   for (const relative of VERSIONED_MANIFESTS) {
@@ -97,7 +142,7 @@ function checkVersionedManifests(repoRoot, expected) {
   return problems;
 }
 
-function checkManifestVersions(repoRoot) {
+export function checkManifestVersions(repoRoot) {
   // A repo without a registry manifest has nothing to drift: repos that never
   // published to the MCP Registry (and the guard's own test fixtures) must
   // pass untouched. Only an EXISTING manifest is held to the sync contract —
@@ -117,6 +162,7 @@ function checkManifestVersions(repoRoot) {
     ...serverManifestVersionMismatches(packageJson, serverJson),
     ...checkVersionedManifests(repoRoot, packageJson.version),
     ...checkLockfileVersion(repoRoot, packageJson.version),
+    ...checkMcpLauncherPin(repoRoot, packageJson.version),
     ...serverDescriptionTooLong(serverJson),
   ];
 }

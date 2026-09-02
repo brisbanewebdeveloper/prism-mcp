@@ -175,6 +175,62 @@ describe("routing — matched scoped skills join the prompt category", () => {
   });
 });
 
+describe("round-5 review — prototype-named trigger patterns", () => {
+  // A trigger whose TEXT is an inherited Object.prototype property name made
+  // the plain-object accumulator idiom `(triggers[pattern] ||= []).push(…)`
+  // throw ("push is not a function" on the inherited value). The throw
+  // escaped collectScopedTriggers into collectSkillTriggersOnThisMachine's
+  // outer catch, silently wiping EVERY skill's triggers machine-wide — the
+  // benign siblings included. Null-prototype accumulators make these keys
+  // plain data properties.
+  const PROTO_KEYS = [
+    "__proto__", "constructor", "toString", "hasOwnProperty",
+    "valueOf", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
+  ];
+
+  it("extractSkillTriggers records prototype-named patterns without throwing or polluting", () => {
+    for (const key of PROTO_KEYS) {
+      const { triggers, errors } = extractSkillTriggers("hostile-skill", skill(`prompt_triggers:\n  - "${key}"`, "hostile-skill"));
+      expect(errors).toEqual([]);
+      expect(triggers[key]).toEqual(["hostile-skill"]);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.prototype.constructor).toBe(Object);
+  });
+
+  it("one hostile skill cannot destroy a benign sibling's trigger (the exact round-5 repro)", () => {
+    for (const order of [0, 1]) {
+      const bodies: Array<[string, string]> = [
+        ["hostile-skill", skill('prompt_triggers:\n  - "__proto__"', "hostile-skill")],
+        ["benign-skill", skill('prompt_triggers:\n  - "\\bwidget\\b"', "benign-skill")],
+      ];
+      if (order) bodies.reverse();
+      const { triggers } = collectScopedTriggers(bodies);
+      expect(triggers["\\bwidget\\b"]).toEqual(["benign-skill"]);
+      expect(triggers["__proto__"]).toEqual(["hostile-skill"]);
+    }
+  });
+
+  it("a hostile LOCAL skill cannot destroy the local trigger scan either", async () => {
+    const files: Record<string, string> = {
+      "/root/hostile-skill/SKILL.md": skill('prompt_triggers:\n  - "constructor"', "hostile-skill"),
+      "/root/benign-skill/SKILL.md": skill('prompt_triggers:\n  - "\\bwidget\\b"', "benign-skill"),
+    };
+    const merged = await collectLocalSkillTriggers(
+      ["/root"],
+      {
+        readdir: async () => ["hostile-skill", "benign-skill"],
+        stat: async (p) => { if (!files[p]) throw new Error("ENOENT"); return { size: files[p].length }; },
+        readFile: async (p) => files[p],
+      },
+      (...parts: string[]) => parts.join("/"),
+    );
+    expect(merged.triggers["\\bwidget\\b"]).toEqual(["benign-skill"]);
+    expect(merged.triggers["constructor"]).toEqual(["hostile-skill"]);
+    expect(merged.names.sort()).toEqual(["benign-skill", "hostile-skill"]);
+  });
+});
+
 describe("local-scope skills — written to disk, never in the settings cache", () => {
   // scope:"local" writes SKILL.md straight to the host skill roots and never
   // populates skill:<name>, so a trigger declared in a local skill was read by

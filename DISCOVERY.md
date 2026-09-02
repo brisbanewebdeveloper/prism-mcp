@@ -20,7 +20,7 @@ The canonical one-line description (keep every surface consistent with this):
 | `wong2/awesome-mcp-servers` | ❌ absent; **does not accept PRs** — submissions via the mcpservers.org/submit web form | Owner action: submit the canonical line via the form |
 | mcp.so / PulseMCP | unverified | Check; submit only if registry syndication hasn't carried it |
 | `.well-known/mcp.json` | **not a real discovery spec** — verified against MCP docs | No action; do not invent the file |
-| Codex | no third-party directory exists (`openai/plugins` = examples only) | Hand out the two-liner (README/npm/site):<br>`codex plugin marketplace add dcostenco/prism-coder`<br>`codex plugin add synalux-prism@prism` |
+| Codex | no third-party directory exists (`openai/plugins` = examples only) | Hand out the two-liner (README/npm/site):<br>`codex plugin marketplace add dcostenco/prism-coder`<br>`codex plugin add prism-coder@prism` |
 | Claude community marketplace | submitted 2026-08-06, **verified still pending 2026-08-18** in the Console status view (see below); the pending entry snapshots the pre-#128 form text as predicted | If listing shows old copy post-approval, amend via plugin review out-of-band |
 
 ## Paste-ready: `punkpeye/awesome-mcp-servers` (UPDATE the existing line)

@@ -494,9 +494,11 @@ export function registerServerNotificationTarget(server: Server): () => void {
 // created inside createServer() so HTTP sessions keep isolated subscriptions.
 
 // ─── prism-route hook self-heal ──────────────────────────────
-// The safety net of the three install paths (connect, postinstall, here):
-// covers installs that skipped npm scripts and machines that never re-ran
-// connect. Idempotent and version-marked, so the steady-state cost is two
+// REFRESH-ONLY safety net: repairs/upgrades a hook that a prior EXPLICIT
+// `prism connect` installed (managed marker present). It never performs a
+// first install — a machine that merely installed this package (or the
+// Claude Code plugin, which registers prism-mcp in host config) is not
+// touched. Idempotent and version-marked, so the steady-state cost is two
 // stat calls a few seconds after boot. Opt out: PRISM_DISABLE_HOOK_AUTOINSTALL=1.
 // Guarded against test runners: five suites import this module, and a
 // module-scope timer would otherwise rewrite the DEVELOPER'S real host

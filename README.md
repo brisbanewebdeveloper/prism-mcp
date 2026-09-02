@@ -87,14 +87,14 @@ skill for you.
 
 ```bash
 /plugin marketplace add anthropics/claude-plugins-community
-/plugin install synalux-prism@claude-community
+/plugin install prism-coder@claude-community
 ```
 
 **Codex** — this repository is itself a plugin marketplace:
 
 ```bash
 codex plugin marketplace add dcostenco/prism-coder
-codex plugin add synalux-prism@prism
+codex plugin add prism-coder@prism
 ```
 
 The plugin registers `prism-mcp` via `npx -y prism-mcp-server`. If you already
@@ -137,6 +137,33 @@ or by re-enabling after each run.
 
 <details>
 <summary>Release history (optional)</summary>
+
+## What's New in v20.17.3
+
+- **A plugin install can no longer enable the prompt-routing hook.** The
+  package's maintenance paths (npm postinstall, server startup) now only
+  refresh a hook that an explicit `prism connect` previously installed —
+  a prism MCP registration in host config no longer counts as consent.
+  First install of the hook happens through `prism connect` or not at all.
+- **The Claude Code plugin launcher is fully deterministic.** It runs the
+  exact pinned server version with npm lifecycle scripts disabled, and
+  the plugin now documents its security posture in `plugins/prism/README.md`.
+
+## What's New in v20.17.2
+
+- **Pasted logs can no longer falsely activate skills.** Symptom-triggered
+  routing now strips fenced blocks and routable skill-name mentions (including
+  inside compound identifiers like container/pod names) from the routing view
+  of a prompt, so quoting an agent log or a skill list doesn't load skills the
+  text merely mentions. Skills named by ordinary words keep routing normally.
+- **Symptom-routed skills now arrive whole.** Startup budgets deliver the full
+  rule text at every depth that fits; when a rule genuinely cannot fit, the
+  display says exactly how much is missing and how to load the rest, instead
+  of silently truncating.
+- **Routing can no longer be silently disabled by one bad skill.** Corrupt or
+  hostile trigger tables — wrong value shapes, patterns named after object
+  prototype properties — are skipped per entry instead of taking down all
+  prompt routing (or, in one case, the vault export) for the session.
 
 ## What's New in v20.17.1
 
