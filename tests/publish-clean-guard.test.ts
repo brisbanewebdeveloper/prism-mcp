@@ -128,6 +128,149 @@ describe("mcp launcher pin guard", () => {
   });
 });
 
+describe("release-notes version guard", () => {
+  // CHANGELOG/README entries are written before the bump, so at publish time
+  // they can announce a version the package does not carry (20.18.0 notes on
+  // a 20.17.3 package, 2026-09-01). The rule is "never AHEAD of package.json",
+  // not "equal": the first draft of this guard demanded equality and was red
+  // on main the day it was written — CHANGELOG had led with 20.15.0 through
+  // five releases (notes lag by convention) — so it would have blocked every
+  // one of those publishes (round-10 review). Only the FIRST versioned
+  // heading is read; older entries are history.
+  function docsGuard(cases: string) {
+    const out = spawnSync(process.execPath, [
+      "-e",
+      `const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>{
+        const f=m.docsVersionMismatches;
+        const D=(path,text)=>({path,text});
+        console.log(JSON.stringify([${cases}]))})`,
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT } });
+    expect(out.status, out.stderr).toBe(0);
+    return JSON.parse(out.stdout) as string[][];
+  }
+
+  it("flags notes that run AHEAD of the package; agreement, lag, and absence pass", () => {
+    const [agree, ahead, behind, logOnly, readmeOnly, none, unreleased, unparseable] = docsGuard(`
+      f([D('CHANGELOG.md','# Changelog\\n\\n## 2.0.0 — 2026-09-01\\n\\n- new\\n\\n## 1.0.0\\n'), D('README.md','# Prism\\n\\n## What\\'s New in v2.0.0\\n\\ntext\\n\\n## What\\'s New in v1.0.0\\n')], '2.0.0'),
+      f([D('CHANGELOG.md','# Changelog\\n\\n## 2.0.0 — 2026-09-01\\n\\n- new\\n\\n## 1.0.0\\n'), D('README.md','# Prism\\n\\n## What\\'s New in v2.0.0\\n\\ntext\\n\\n## What\\'s New in v1.0.0\\n')], '1.0.0'),
+      f([D('CHANGELOG.md','# Changelog\\n\\n## 20.15.0 — 2026-08-24\\n'), D('README.md','## What\\'s New in v20.17.2\\n')], '20.17.3'),
+      f([D('CHANGELOG.md','## 2.0.0\\n'), D('README.md',null)], '1.0.0'),
+      f([D('CHANGELOG.md',null), D('README.md','## What\\'s New in v2.0.0\\n')], '1.0.0'),
+      f([D('CHANGELOG.md',null), D('README.md',null)], '1.0.0'),
+      f([D('CHANGELOG.md','# Changelog\\n\\n## Unreleased\\n\\n## 1.0.1\\n')], '1.0.0'),
+      f([D('CHANGELOG.md','## 2.0.0\\n')], 'not-a-version'),
+    `);
+    expect(agree).toEqual([]);
+    expect(ahead).toEqual([
+      "CHANGELOG.md leads with 2.0.0, ahead of package.json 1.0.0",
+      "README.md leads with 2.0.0, ahead of package.json 1.0.0",
+    ]);
+    expect(behind).toEqual([]); // main's real shape on 2026-09-01: notes lag the bump
+    expect(logOnly).toHaveLength(1);
+    expect(readmeOnly).toHaveLength(1);
+    expect(none).toEqual([]);
+    // "Unreleased" is not a version, so the first VERSIONED heading is read —
+    // and 1.0.1 is ahead of a 1.0.0 package.
+    expect(unreleased).toEqual(["CHANGELOG.md leads with 1.0.1, ahead of package.json 1.0.0"]);
+    expect(unparseable).toEqual([]); // the manifest checks own a bad package version
+  });
+
+  it("compares numerically, reads only headings, ignores fenced code, and takes a range's NEWER bound", () => {
+    const [numeric, patchless, prerelease, prose, fenced, rangeReleased, rangeAhead, rangePatchless, changelogRange, descending, keepAChangelog, translated] = docsGuard(`
+      f([D('CHANGELOG.md','## 20.9.0\\n')], '20.10.0'),
+      f([D('README.md','## What\\'s New in v20.7\\n')], '20.7.2'),
+      f([D('CHANGELOG.md','## 1.0.0\\n'), D('README.md','## What\\'s New in v1.0.0\\n')], '1.0.0-rc.1'),
+      f([D('README.md','Prism\\n\\nSee What\\'s New in v9.0.0 below.\\n\\n## What\\'s New in v1.0.0\\n')], '1.0.0'),
+      f([D('CHANGELOG.md','# Changelog\\n\\n\`\`\`md\\n## 9.0.0\\n\`\`\`\\n\\n## 1.0.0\\n')], '1.0.0'),
+      f([D('README.md','## What\\'s New in v20.10.0 – v20.11.0\\n')], '20.11.0'),
+      f([D('README.md','## What\\'s New in v20.17.3 – v20.18.0\\n')], '20.17.3'),
+      f([D('README.md','## What\\'s New in v20.7 – v20.8.0\\n')], '20.7.2'),
+      f([D('CHANGELOG.md','## 20.17.3 – 20.18.0\\n')], '20.17.3'),
+      f([D('CHANGELOG.md','## 20.18.0 — supersedes 20.17.3\\n')], '20.17.3'),
+      f([D('CHANGELOG.md','## [2.0.0] - 2026-09-01\\n')], '1.0.0'),
+      f([D('docs/i18n/README_de.md','## What\\'s New in v2.0.0\\n')], '1.0.0'),
+    `);
+    expect(numeric).toEqual([]); // "20.9.0" > "20.10.0" as strings, behind as versions
+    expect(patchless).toEqual([]); // v20.7 reads as 20.7.0
+    expect(prerelease).toEqual([]);
+    expect(prose).toEqual([]);
+    expect(fenced).toEqual([]);
+    // A range announces its newer bound: released → passes; the round-11
+    // case (upper bound ahead, package at the lower) → flagged. Reading the
+    // first capture alone passed it.
+    expect(rangeReleased).toEqual([]);
+    expect(rangeAhead).toEqual(["README.md leads with 20.18.0, ahead of package.json 20.17.3"]);
+    expect(rangePatchless).toEqual(["README.md leads with 20.8.0, ahead of package.json 20.7.2"]);
+    // Both halves scan the whole line: a CHANGELOG regex that stopped at the
+    // first version token survived every README range case above.
+    expect(changelogRange).toEqual(["CHANGELOG.md leads with 20.18.0, ahead of package.json 20.17.3"]);
+    // The HIGHEST token on the line, not the last one (round-12 review).
+    expect(descending).toEqual(["CHANGELOG.md leads with 20.18.0, ahead of package.json 20.17.3"]);
+    expect(keepAChangelog).toEqual(["CHANGELOG.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+    expect(translated).toEqual(["docs/i18n/README_de.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+  });
+
+  it("a typographic apostrophe, a BOM, or CRLF line endings do not disable the README half", () => {
+    const [curly, bom, bomCurly, crlf, dateInHeading] = docsGuard(`
+      f([D('README.md','# Prism\\n\\n## What’s New in v2.0.0\\n')], '1.0.0'),
+      f([D('README.md','\\uFEFF## What\\'s New in v2.0.0\\n')], '1.0.0'),
+      f([D('docs/i18n/README_ja.md','\\uFEFF## What’s New in v2.0.0\\n')], '1.0.0'),
+      f([D('CHANGELOG.md','# Changelog\\r\\n\\r\\n## 2.0.0 — 2026-09-01\\r\\n')], '1.0.0'),
+      f([D('CHANGELOG.md','## 1.0.0 — 2026-09-01 (supersedes 0.9.0)\\n')], '1.0.0'),
+    `);
+    expect(curly).toEqual(["README.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+    expect(bom).toEqual(["README.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+    expect(bomCurly).toEqual(["docs/i18n/README_ja.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+    expect(crlf).toEqual(["CHANGELOG.md leads with 2.0.0, ahead of package.json 1.0.0"]);
+    // Only version-shaped tokens count, and the newest one is the announcement.
+    expect(dateInHeading).toEqual([]);
+  });
+
+  it("WIRING: the gate itself fails a repo whose only defect is release notes ahead of the package, translations included", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "docs-wiring-"));
+    tempRepos.push(dir);
+    const { mkdirSync } = require("node:fs");
+    mkdirSync(resolve(dir, "docs/i18n"), { recursive: true });
+    writeFileSync(resolve(dir, "package.json"), JSON.stringify({ name: "prism-mcp-server", version: "9.9.9" }));
+    writeFileSync(resolve(dir, "server.json"), JSON.stringify({
+      version: "9.9.9", description: "x",
+      packages: [{ identifier: "prism-mcp-server", version: "9.9.9" }],
+    }));
+    writeFileSync(resolve(dir, "CHANGELOG.md"), "# Changelog\n\n## 9.10.0 — 2026-09-02\n\n- next\n\n## 9.9.9 — 2026-09-01\n");
+    writeFileSync(resolve(dir, "README.md"), "# Prism\n\n## What's New in v9.9.9\n");
+    writeFileSync(resolve(dir, "docs/i18n/README_fr.md"), "# Prism\n\n## What's New in v9.9.9\n");
+    writeFileSync(resolve(dir, "docs/i18n/README_ja.md"), "# Prism\n\n## What's New in v10.0.0\n");
+    writeFileSync(resolve(dir, "docs/i18n/notes.md"), "## What's New in v99.0.0\n"); // not a README, not read
+    const out = spawnSync(process.execPath, [
+      "-e",
+      `const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>console.log(JSON.stringify(m.checkManifestVersions(process.env.FIXTURE))))`,
+    ], { encoding: "utf8", env: { ...process.env, GUARD_SCRIPT: SCRIPT, FIXTURE: dir } });
+    expect(out.status, out.stderr).toBe(0);
+    const problems: string[] = JSON.parse(out.stdout);
+    expect(problems).toEqual([
+      "CHANGELOG.md leads with 9.10.0, ahead of package.json 9.9.9",
+      "docs/i18n/README_ja.md leads with 10.0.0, ahead of package.json 9.9.9",
+    ]);
+  });
+
+  it("the REAL repo's CHANGELOG, README and every translated README are in the guard's scope", () => {
+    // Scope on this repo, not a fixture. Deliberately NOT asserting "none
+    // ahead" here: a feature branch writes its notes before the bump, so
+    // that assertion would red `npm test` on every such branch — the same
+    // workflow-blocking class the equality guard had. Ahead-ness is judged
+    // at publish time only (prepublishOnly + registry-publish).
+    const out = spawnSync(process.execPath, [
+      "-e",
+      `const{pathToFileURL}=require('node:url');import(pathToFileURL(process.env.GUARD_SCRIPT).href).then(m=>console.log(JSON.stringify(m.releaseNoteDocPaths(process.cwd()))))`,
+    ], { encoding: "utf8", cwd: process.cwd(), env: { ...process.env, GUARD_SCRIPT: SCRIPT } });
+    expect(out.status, out.stderr).toBe(0);
+    const paths: string[] = JSON.parse(out.stdout);
+    expect(paths.slice(0, 2)).toEqual(["CHANGELOG.md", "README.md"]);
+    expect(paths.length).toBeGreaterThan(2);
+    expect(paths.slice(2).every((p) => /^docs[\\/]i18n[\\/]README_[a-z]+\.md$/.test(p))).toBe(true);
+  });
+});
+
 describe("npm publish cleanliness guard", () => {
   it("allows a release only when its artifact is reproducible from Git", () => {
     const result = runGuard(createCommittedRepo());

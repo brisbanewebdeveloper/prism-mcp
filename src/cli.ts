@@ -396,10 +396,15 @@ program
                 const { ensurePromptRouteHook } = await import('./promptRouteHostHook.js');
                 for (const r of ensurePromptRouteHook({ hosts: hookHosts, mode: 'explicit' })) {
                   const state = r.script === 'unchanged' && r.config === 'unchanged' ? 'up to date' : 'installed';
-                  if (r.host === 'codex' && r.codexApproval === 'pending-or-unknown') {
+                  if (r.config === 'skipped-unparseable') {
+                    // The file was left byte-identical on purpose: replacing
+                    // it would have wiped the operator's own settings along
+                    // with the syntax error.
+                    console.log(`⚠ ${r.host}: ${r.configPath} is not valid JSON — prism-route hooks NOT registered; fix the file and re-run prism connect`);
+                  } else if (r.host === 'codex' && r.codexApproval === 'pending-or-unknown') {
                     // Codex silently skips untrusted hooks — a green "installed"
                     // here would be the "configured and inert" lie.
-                    console.log(`⚠ codex: prism-route hook ${state}, AWAITING TRUST — run codex, then /hooks, and trust the entry ending prism-route/on_prompt.py`);
+                    console.log(`⚠ codex: prism-route hook ${state}, AWAITING TRUST — run codex, then /hooks, and trust BOTH entries ending prism-route/on_prompt.py (UserPromptSubmit and SessionStart)`);
                   } else if (r.host === 'codex' && r.codexApproval === 'state-present-unverifiable') {
                     // Approvals are keyed by definition hash, whose algorithm is
                     // not public — once ANY trust state exists we cannot tell
@@ -408,7 +413,7 @@ program
                     // take", which is a false alarm against their own action.
                     console.log(`− codex: prism-route hook ${state}; trust state exists but is not verifiable from here — confirm once in /hooks`);
                   } else {
-                    console.log(`✓ ${r.host}: prism-route prompt hook ${state} (${r.scriptPath})`);
+                    console.log(`✓ ${r.host}: prism-route hooks ${state} — prompt routing + post-compaction floor (${r.scriptPath})`);
                   }
                 }
               } catch {
@@ -576,6 +581,29 @@ program
       await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
     } catch {
       // Never break the hook: an empty result is a routing miss, not an error.
+      await new Promise<void>((resolveWrite) => process.stdout.write('{"names":[],"text":""}\n', () => resolveWrite()));
+    } finally {
+      try { await closeStorage(); } catch { /* exit anyway */ }
+      process.exit(0);
+    }
+  });
+
+// ── floor-digest ──────────────────────────────────────────────
+// Called by the same hook on SessionStart with source "compact": the host
+// just discarded the bootstrap along with the rest of the transcript, and
+// this is the protected floor coming back in one line per rule. Same
+// contract as route-prompt — exit 0, one JSON line, cached DB and the local
+// skills root only. Fires once per compaction, never per prompt.
+program
+  .command('floor-digest')
+  .description('Print the protected-floor digest as {names, text} JSON. Used by the prism-route host hook after a context compaction.')
+  .action(async () => {
+    try {
+      const { renderProtectedFloorDigestForHook } = await import('./tools/ledgerHandlers.js');
+      const result = await renderProtectedFloorDigestForHook();
+      const payload = JSON.stringify({ names: result.names, text: result.text });
+      await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
+    } catch {
       await new Promise<void>((resolveWrite) => process.stdout.write('{"names":[],"text":""}\n', () => resolveWrite()));
     } finally {
       try { await closeStorage(); } catch { /* exit anyway */ }

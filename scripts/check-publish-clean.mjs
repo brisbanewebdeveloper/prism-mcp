@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -142,6 +142,122 @@ function checkVersionedManifests(repoRoot, expected) {
   return problems;
 }
 
+/**
+ * The release notes are a version surface too. CHANGELOG.md's first
+ * versioned heading and each README's first "What's New in vX.Y.Z" are
+ * written while the feature is built — before the bump — so at publish time
+ * they can announce a version package.json does not carry (20.18.0 notes on
+ * a 20.17.3 package, caught in review 2026-09-01 with nothing guarding it).
+ * npm and the registry would then ship notes for a release that does not
+ * exist.
+ *
+ * The rule is "never AHEAD of the package", not "equal to it": the notes
+ * lag by convention (CHANGELOG led with 20.15.0 through the 20.16.0–20.17.3
+ * releases), and an equality guard would have blocked every one of those
+ * publishes. Only the FIRST versioned heading is read — older entries are
+ * history — and only outside fenced code, where a heading is just text. A
+ * README range like "v20.10.0 – v20.11.0" announces its NEWER bound: the
+ * whole heading line is scanned and the highest version on it is compared
+ * (reading the first capture alone let "v20.17.3 – v20.18.0" pass on a
+ * 20.17.3 package — round-11 review). The whole-line scan widens the
+ * known false-positive class from "heading starts with a date" to "heading
+ * mentions any higher version-shaped token" (`## 1.0.0 — requires Node
+ * 22.1.0` blocks, naming 22.1.0); zero such headings in 1,286 commits of
+ * history, and the failure is loud and in the safe direction, so it is
+ * accepted rather than special-cased. A pre-release package (1.0.0-rc.1)
+ * compares on its numeric triple, so 1.0.0 notes are not "ahead" of it. A
+ * repo with no docs has nothing to drift.
+ */
+const DOC_VERSION_HEADINGS = {
+  changelog: /^#{1,6}\s+\[?v?\d+\.\d+(?:\.\d+)?\b.*$/m, // "## 20.18.0 — 2026-09-01"
+  // Typographic apostrophe too: "What’s" silently disabled the README half.
+  readme: /^#{1,6}\s+What['’]s New in v\d+\.\d+(?:\.\d+)?\b.*$/m,
+};
+
+function docHeadingFor(path) {
+  return /(^|[\\/])CHANGELOG\.md$/i.test(path) ? DOC_VERSION_HEADINGS.changelog : DOC_VERSION_HEADINGS.readme;
+}
+
+function parseVersionTriple(text) {
+  const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(text ?? "").trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)] : null;
+}
+
+function compareVersionTriples(a, b) {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+/** The highest version-shaped token on one heading line — what the heading announces. */
+function newestVersionOnLine(line) {
+  let newest = null;
+  for (const [, raw] of line.matchAll(/\bv?(\d+\.\d+(?:\.\d+)?)\b/g)) {
+    const triple = parseVersionTriple(raw);
+    if (triple && (!newest || compareVersionTriples(triple, newest.triple) > 0)) newest = { raw, triple };
+  }
+  return newest;
+}
+
+function withoutFencedBlocks(markdown) {
+  const kept = [];
+  let inFence = false;
+  // A BOM glued to a first-line heading hid it from the anchored regex.
+  for (const line of markdown.replace(/^\uFEFF/, "").split("\n")) {
+    if (/^\s*(?:`{3,}|~{3,})/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+export function docsVersionMismatches(docs, expected) {
+  const expectedTriple = parseVersionTriple(expected);
+  if (!expectedTriple) return []; // an unparseable package version fails the manifest checks instead
+  const problems = [];
+  for (const { path, text } of docs) {
+    if (!text) continue;
+    const heading = withoutFencedBlocks(text).match(docHeadingFor(path));
+    const newest = heading && newestVersionOnLine(heading[0]);
+    if (newest && compareVersionTriples(newest.triple, expectedTriple) > 0) {
+      problems.push(`${path} leads with ${newest.raw}, ahead of package.json ${expected}`);
+    }
+  }
+  return problems;
+}
+
+function readOptional(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null; // fixture repos have no docs
+    throw error;
+  }
+}
+
+export function releaseNoteDocPaths(repoRoot) {
+  let translated = [];
+  try {
+    translated = readdirSync(join(repoRoot, "docs", "i18n"))
+      .filter((name) => /^README_[A-Za-z-]+\.md$/.test(name))
+      .sort()
+      .map((name) => join("docs", "i18n", name));
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  return ["CHANGELOG.md", "README.md", ...translated];
+}
+
+function checkDocsVersion(repoRoot, expected) {
+  return docsVersionMismatches(
+    releaseNoteDocPaths(repoRoot).map((path) => ({ path, text: readOptional(join(repoRoot, path)) })),
+    expected,
+  );
+}
+
 export function checkManifestVersions(repoRoot) {
   // A repo without a registry manifest has nothing to drift: repos that never
   // published to the MCP Registry (and the guard's own test fixtures) must
@@ -163,6 +279,7 @@ export function checkManifestVersions(repoRoot) {
     ...checkVersionedManifests(repoRoot, packageJson.version),
     ...checkLockfileVersion(repoRoot, packageJson.version),
     ...checkMcpLauncherPin(repoRoot, packageJson.version),
+    ...checkDocsVersion(repoRoot, packageJson.version),
     ...serverDescriptionTooLong(serverJson),
   ];
 }

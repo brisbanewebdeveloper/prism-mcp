@@ -20,7 +20,11 @@ import {
   resolveSkills,
   _invalidateRoutingCache,
   OFFLINE_FALLBACK,
+  FREE_NATIVE_SKILL_NAMES,
+  REQUIRED_NATIVE_SKILL_NAMES,
+  REQUIRED_PROTECTED_SKILL_NAMES,
 } from '../src/tools/skillRouting.js';
+import { splitSkillFrontmatter } from '../src/utils/skillDigest.js';
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -92,6 +96,24 @@ describe('skill routing — portal call', () => {
       const serialized = `${String(url)} ${init?.body ?? ''}`;
       expect(serialized).not.toContain('Sam Doe');
       expect(serialized).not.toContain('sam.doe@example.invalid');
+    }
+  });
+});
+
+describe('skill routing — native floor lists', () => {
+  it('the free bundle and the protected floor are disjoint — the floor digest relies on it', () => {
+    // The post-compaction floor digest (ledgerHandlers
+    // entitledProtectedFloorNames) renders every provisioned protected skill
+    // with no free-tier exclusion: prism-startup is free chrome, not a rule,
+    // and stays out by not being protected at all. A `!free.has(name)` filter
+    // used to restate this in code no input could reach (round-11 review);
+    // this pins the invariant instead, so promoting a free skill to the floor
+    // is a deliberate decision that has to update the digest too.
+    const free = new Set<string>(FREE_NATIVE_SKILL_NAMES);
+    expect(REQUIRED_PROTECTED_SKILL_NAMES.filter((name) => free.has(name))).toEqual([]);
+    // Every free skill is still a native skill — the paid manifest is a superset.
+    for (const name of FREE_NATIVE_SKILL_NAMES) {
+      expect(REQUIRED_NATIVE_SKILL_NAMES).toContain(name);
     }
   });
 });
@@ -428,9 +450,18 @@ describe('skill routing — native path (bootstrap)', () => {
     expect(src).toMatch(/stripSkillFrontmatter/);
     expect(src, 'must apply the strip at the inline site')
       .toMatch(/stripSkillFrontmatter\(await readNativeSkillBody/);
-    // Unterminated frontmatter must degrade to inlining as-is, never to "".
-    expect(src, 'unterminated frontmatter must not blank the rule')
-      .toMatch(/if \(end === -1\) return text/);
+    // The strip delegates to the ONE fence parser (its private copy returned
+    // the whole document when the closing fence was the last line). Assert
+    // the parser's contract, not its spelling:
+    // unterminated frontmatter must degrade to inlining as-is, never to "".
+    expect(src, 'one fence parser for every inline path')
+      .toMatch(/return splitSkillFrontmatter\(raw\)\.body/);
+    const unterminated = '---\nname: x\ndescription: never closed\n\n# Rule\nDo the thing.';
+    expect(splitSkillFrontmatter(unterminated).body, 'unterminated frontmatter must not blank the rule')
+      .toBe(unterminated);
+    expect(splitSkillFrontmatter('---\nname: x\n---').body, 'fence on the last line = empty body, not the YAML')
+      .toBe('');
+    expect(splitSkillFrontmatter('---\nname: x\n---\n# Rule\nDo the thing.').body).toBe('# Rule\nDo the thing.');
   });
 
   it('reads the body via the canonical resolver, never a hardcoded path', () => {

@@ -33,6 +33,7 @@ import { getLLMProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, setSetting, getAllSettings, refreshConfigStorageCache } from "../storage/configStorage.js";
 import { MATERIALIZED_GENERATION_KEY, type SkillSyncResult } from "../skillManifestSync.js";
+import { renderFloorDigestBlock, skillDigestFromSource, splitSkillFrontmatter } from "../utils/skillDigest.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
 import { resolveProject } from "../utils/projectResolver.js";
 import { getUpdateNotice } from "../updateNotice.js";
@@ -261,13 +262,10 @@ function effectiveNativeBudget(level: NativeContextDepth, requestedMaxChars?: nu
  * both "no body" and "frontmatter only".
  */
 function stripSkillFrontmatter(raw: string | null): string {
-  const text = (raw ?? "").trim();
-  if (!text.startsWith("---")) return text;
-  // Closing fence must be its own line; a body line of "---" mid-document is
-  // not a terminator, so anchor on the newline pair.
-  const end = text.indexOf("\n---", 3);
-  if (end === -1) return text; // unterminated frontmatter — inline as-is
-  return text.slice(text.indexOf("\n", end + 1) + 1).trim();
+  // One fence parser for every inline path. The local copy this replaced
+  // returned the WHOLE document — frontmatter included — for a file whose
+  // closing fence is its last line (no newline after it, indexOf → -1).
+  return splitSkillFrontmatter(raw).body;
 }
 
 /**
@@ -280,10 +278,32 @@ function stripSkillFrontmatter(raw: string | null): string {
  */
 const SESSION_FACTS_RESERVE = 256;
 
+/**
+ * Project/session-context budget per depth. This also bounds the standalone
+ * session_load_context / `prism load` output, which render no System Ready
+ * block — so the floor digest is NOT folded in here: the bootstrap adds the
+ * digest's own length on top (see startupMaxChars), and the context share at
+ * every depth stays exactly what it was before the digest existed.
+ */
 const NATIVE_STARTUP_MAX_CHARS: Record<NativeContextDepth, number> = {
   quick: 4_000,
   standard: 8_000,
   deep: 30_000,
+};
+
+/**
+ * Protected-floor digest allowance per depth (chars), paid on top of the
+ * context budget above. The bootstrap names the floor; the digest carries
+ * one line of each rule so the model knows what is in force without
+ * re-reading SKILL.md — measured 2026-09-01 on Codex rollout logs: median 8
+ * re-reads / 36KB per session, 823 / 5.1MB in the worst. quick stays
+ * names-only: sixteen useful lines are ~5.6K, more than the whole quick
+ * budget, and a partial digest would make the omitted rules look absent.
+ */
+const NATIVE_FLOOR_DIGEST_MAX_CHARS: Record<NativeContextDepth, number> = {
+  quick: 0,
+  standard: 6_000,
+  deep: 6_000,
 };
 
 const NATIVE_CONTEXT_LIMITS = {
@@ -353,6 +373,11 @@ function parseNativeSkillNames(value: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** The dashboard's default_context_depth, validated; anything else is standard. */
+function nativeDepthFromSetting(value: string): NativeContextDepth {
+  return ["quick", "standard", "deep"].includes(value) ? value as NativeContextDepth : "standard";
 }
 
 async function resolveNativeSkillManifestSnapshot(
@@ -454,13 +479,112 @@ function sanitizeNativeIdentity(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The protected floor's rules, one line each, for the names in `names`.
+ * Bodies come from the canonical skills root — what the host itself reads —
+ * with the manifest DB as fallback for a body committed but not yet on disk
+ * (validated-partial). Returns null when the budget cannot carry every name.
+ *
+ * Shared by the bootstrap block and the `prism floor-digest` CLI so a rule
+ * digested one way at startup is never digested another way after a
+ * compaction.
+ */
+async function buildProtectedFloorDigest(
+  names: string[],
+  options: { maxChars: number; linePrefix: string },
+): Promise<string | null> {
+  if (names.length === 0 || options.maxChars <= 0) return null;
+  const { readNativeSkillBody, resolveCanonicalSkillsDir } = await import("../skillManifestSync.js");
+  const entries = await Promise.all(names.map(async (name) => {
+    // The file on disk wins only when it digests. A truncated
+    // materialization — zero bytes, whitespace, a header cut off before its
+    // closing fence, a fenced header with no body — is not a body, and the
+    // DB copy the fallback exists for must win over it; before, any
+    // non-empty file shadowed the committed rule, and one cut mid-header
+    // rendered its YAML as the rule in force.
+    const onDisk = await readNativeSkillBody(name);
+    const source = skillDigestFromSource(onDisk) !== null
+      ? onDisk
+      : (await getSetting(`skill:${name}`, "")) || onDisk || "";
+    return { name, source };
+  }));
+  return renderFloorDigestBlock(entries, {
+    maxChars: options.maxChars,
+    linePrefix: options.linePrefix,
+    skillsRoot: resolveCanonicalSkillsDir(),
+  });
+}
+
+/**
+ * Protected floor ∩ entitled manifest, in floor order — the set the digest
+ * covers. prism-startup (free-tier chrome whose whole body is "call
+ * session_bootstrap") never gets a digest line because it is not on
+ * REQUIRED_PROTECTED_SKILL_NAMES at all — tests/skill-routing.test.ts pins
+ * the free and protected lists disjoint. An earlier `!free.has(name)` filter
+ * here re-stated that in code no input could ever exercise (round-11 review).
+ */
+async function entitledProtectedFloorNames(provisionedNames: string[]): Promise<string[]> {
+  const { REQUIRED_PROTECTED_SKILL_NAMES } = await import("./skillRouting.js");
+  const provisioned = new Set(provisionedNames);
+  return REQUIRED_PROTECTED_SKILL_NAMES.filter((name) => provisioned.has(name));
+}
+
+/**
+ * The post-compaction payload for the prism-route host hook (SessionStart
+ * with source "compact"): the same digest the bootstrap rendered, without
+ * the blockquote chrome, from the last-synced manifest — cache only, never a
+ * portal round-trip, exactly like route-prompt.
+ *
+ * Same entitlement and depth decisions as the bootstrap, through the same
+ * code: the manifest snapshot re-filters the committed names by the stored
+ * tier (a free-tier DB can hold paid names — the resolver never trusts the
+ * list alone), and quick depth is names-only here too. Round-7 review found
+ * this path reading the raw names: bootstrap said "free, 1 skill" while the
+ * hook injected sixteen paid rules from the same database.
+ */
+export async function renderProtectedFloorDigestForHook(): Promise<{ names: string[]; text: string }> {
+  // No sync on this path — "unchanged" is what the committed state is.
+  const snapshot = await resolveNativeSkillManifestSnapshot({
+    status: "unchanged", installed: [], updated: [], pruned: [], conflicts: [],
+  });
+  const depth = nativeDepthFromSetting(await getSetting("default_context_depth", "standard"));
+  const names = await entitledProtectedFloorNames(snapshot.names);
+  const block = await buildProtectedFloorDigest(names, {
+    maxChars: NATIVE_FLOOR_DIGEST_MAX_CHARS[depth],
+    linePrefix: "",
+  });
+  if (!block) return { names: [], text: "" };
+  // Post-compaction is exactly when the bootstrap's STALE line is no longer
+  // on screen, so a digest rendered from a generation that never reached the
+  // skill roots must say so itself (round-11 review; the bootstrap copy of
+  // this warning is undeliveredWarning below).
+  const staleLine = snapshot.undeliveredGeneration
+    ? `⚠️ Skill files are STALE: the entitlement DB is at generation ` +
+      `\`${snapshot.undeliveredGeneration.slice(0, 12)}…\` but its files never finished reaching ` +
+      `the skill roots, so this digest may be older than the rules in force. Run a sync ` +
+      `(restart the host or \`prism connect\`).\n`
+    : "";
+  return {
+    names,
+    text: `Prism: context was compacted. The protected floor below is still in force for the rest of this session.\n${staleLine}${block}`,
+  };
+}
+
 async function buildNativeSystemReadyBlock(
   snapshot: NativeSkillManifestSnapshot,
   depth: NativeContextDepth,
-): Promise<string> {
+): Promise<{ text: string; floorDigestChars: number }> {
   const { REQUIRED_NATIVE_SKILL_NAMES } = await import("./skillRouting.js");
   const provisioned = new Set(snapshot.names);
   const coreSkills = REQUIRED_NATIVE_SKILL_NAMES.filter((name) => provisioned.has(name));
+  // Directly under the names line, inside the blockquote: the digest is part
+  // of the same fact ("these rules are in force"), and the head of this block
+  // is what capped depths keep.
+  const floorDigest = await buildProtectedFloorDigest(
+    await entitledProtectedFloorNames(snapshot.names),
+    { maxChars: NATIVE_FLOOR_DIGEST_MAX_CHARS[depth], linePrefix: "> " },
+  );
+  const floorDigestLines = floorDigest ? `${floorDigest}\n` : "";
   const coreSkillSet = new Set<string>(REQUIRED_NATIVE_SKILL_NAMES);
   const superSkills = snapshot.names.filter((name) => name.endsWith("-super-skill"));
   const superSkillAliases = superSkills.map((name) => `${name.slice(0, -"-super-skill".length)} (${name})`);
@@ -497,37 +621,41 @@ async function buildNativeSystemReadyBlock(
       `reaching the skill roots. Agents are reading older skills. Run a sync ` +
       `(restart the host or \`prism connect\`) and report this if it persists.`
     : "";
+  const wrap = (text: string) => ({ text, floorDigestChars: floorDigestLines.length });
   if (snapshot.source === "validated-partial") {
-    return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
+    return wrap(`> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 📦 **Entitled skills (materialization incomplete):** ${snapshot.names.length}\n` +
       `> - 📚 **Core/protected entitlements:** ${formatBoundedSkillNames(coreSkills, "entitled")}\n` +
+      floorDigestLines +
       `> - 🧩 **Super-skill entitlements:** ${formatBoundedSkillNames(superSkillAliases, "entitled")}\n` +
       `> - 🛠️ **Other tier entitlements:** ${formatBoundedSkillNames(otherTierSkills, "entitled")}\n` +
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · native materialization incomplete${conflictSuffix}` +
       conflictWarning +
-      freeTierUpgradeLine(snapshot.tier);
+      freeTierUpgradeLine(snapshot.tier));
   }
   if (snapshot.source === "tier-fallback") {
-    return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
+    return wrap(`> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
       `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
       `> - 🛡️ **Fallback skill names:** ${formatBoundedSkillNames(snapshot.names, "fallback")}\n` +
+      floorDigestLines +
       `> - 🧠 **Context depth:** ${depth}\n` +
       `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · no committed manifest${conflictSuffix}` +
       conflictWarning +
-      freeTierUpgradeLine(snapshot.tier);
+      freeTierUpgradeLine(snapshot.tier));
   }
-  return `> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
+  return wrap(`> **Prism System Ready**\n>` + undeliveredWarning + `\n` +
     `> - 🪪 **Subscription tier:** ${snapshot.tier}\n` +
     `> - 📦 **Provisioned skills:** ${snapshot.names.length}\n` +
     `> - 📚 **Core/protected skills provisioned:** ${formatBoundedSkillNames(coreSkills, "provisioned")}\n` +
+    floorDigestLines +
     `> - 🧩 **Super-skills provisioned:** ${formatBoundedSkillNames(superSkillAliases, "provisioned")}\n` +
     `> - 🛠️ **Other tier skills provisioned:** ${formatBoundedSkillNames(otherTierSkills, "provisioned")}\n` +
     `> - 🧠 **Context depth:** ${depth}\n` +
     `> - 🔄 **Skill sync:** ${SKILL_SYNC_STATUS_LABELS[snapshot.syncStatus]} · committed manifest${conflictSuffix}` +
     conflictWarning +
-    freeTierUpgradeLine(snapshot.tier);
+    freeTierUpgradeLine(snapshot.tier));
 }
 
 /**
@@ -598,8 +726,13 @@ export function capNativeStartupText(
   level: NativeContextDepth,
   requestedMaxChars?: number,
   suffix = "",
+  additiveChars = 0,
 ): string {
-  const maxChars = effectiveNativeBudget(level, requestedMaxChars);
+  // additiveChars rides on top of the depth budget: the protected-floor
+  // digest is paid for by its own allowance (NATIVE_FLOOR_DIGEST_MAX_CHARS)
+  // on every bootstrap path, so it never displaces the session or the
+  // System Ready tail — the projects path adds it the same way.
+  const maxChars = effectiveNativeBudget(level, requestedMaxChars) + Math.max(0, additiveChars);
   if (text.length + suffix.length <= maxChars) return text + suffix;
 
   const marker = `\n\n… Additional ${level} context omitted to keep native startup within its display budget.`;
@@ -2370,9 +2503,7 @@ export async function sessionBootstrapHandler(
     getSetting("agent_name", ""),
     getSetting("default_role", ""),
   ]);
-  const depth: NativeContextDepth = ["quick", "standard", "deep"].includes(configuredDepth)
-    ? configuredDepth as NativeContextDepth
-    : "standard";
+  const depth = nativeDepthFromSetting(configuredDepth);
   const projects = [...new Set(configuredProjects.split(",").map((project) => project.trim()).filter(Boolean))];
   const configuredGreetingName = sanitizeNativeIdentity(agentName);
   const greetingName = configuredGreetingName
@@ -2380,7 +2511,7 @@ export async function sessionBootstrapHandler(
     : "developer";
   const role = sanitizeNativeIdentity(defaultRole) || "global";
   const manifestSnapshot = await resolveNativeSkillManifestSnapshot(skillSyncResult);
-  const systemReadyBlock = await buildNativeSystemReadyBlock(manifestSnapshot, depth);
+  const { text: systemReadyBlock, floorDigestChars } = await buildNativeSystemReadyBlock(manifestSnapshot, depth);
   // First run = the dashboard has never been touched: no agent identity AND no
   // projects. Measured 2026-08-05: a brand-new free-tier install was greeted
   // with "Welcome back", three "Not loaded" rows, a warning, and three
@@ -2442,7 +2573,8 @@ export async function sessionBootstrapHandler(
         content: [{
           type: "text",
           text: capNativeStartupText(firstRunText, depth, undefined,
-            `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth, first_run: true })}`),
+            `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth, first_run: true })}`,
+            floorDigestChars),
         }],
         isError: false,
       };
@@ -2456,13 +2588,18 @@ export async function sessionBootstrapHandler(
       content: [{
         type: "text",
         text: capNativeStartupText(noProjectsText, depth, undefined,
-          `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth })}`),
+          `\n\n${buildSessionFactsLine({ conversation_id: conversationId, projects: "", depth })}`,
+          floorDigestChars),
       }],
       isError: false,
     };
   }
 
-  const startupMaxChars = NATIVE_STARTUP_MAX_CHARS[depth];
+  // The digest is additive: the project/session share is computed against
+  // the same budget it had before the digest existed, at every depth. Round-7
+  // review measured deep losing 5,630 chars of ledger/handoff per bootstrap
+  // when only standard had been raised to cover it.
+  const startupMaxChars = NATIVE_STARTUP_MAX_CHARS[depth] + floorDigestChars;
   let renderedProjectCount = projects.length;
   let omittedProjectsText = "";
   let perProjectMaxChars = 0;
