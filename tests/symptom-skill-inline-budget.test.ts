@@ -101,12 +101,27 @@ describe('routeOffload writer', () => {
 
   it('never throws when the directory cannot be created', async () => {
     const { writeRouteOffload } = await import('../src/utils/routeOffload.js');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    // The unwritable "home" is a regular FILE, so mkdir under it fails with
+    // ENOTDIR at once on every OS. The previous fixture, `/proc/nonexistent-
+    // unwritable`, never returned on Linux: Node's recursive mkdirSync loops
+    // forever when a path under /proc keeps answering ENOENT (reproduced in
+    // node:20-alpine, killed by a 20s timeout), which hung "Run Unit Tests"
+    // on both ubuntu CI legs for the full 6h job limit on every main run
+    // from 523aac8d2 on. macOS and Windows have no /proc and failed fast.
+    const home = join(mkdtempSync(join(tmpdir(), 'offload-unwritable-')), 'not-a-dir');
+    writeFileSync(home, '');
     const prev = process.env.HOME;
-    process.env.HOME = '/proc/nonexistent-unwritable';
+    const prevProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
-      expect(() => writeRouteOffload('x', 'test')).not.toThrow();
+      expect(writeRouteOffload('x', 'test')).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     }
   });
 });
