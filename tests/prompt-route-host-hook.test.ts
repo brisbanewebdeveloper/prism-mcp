@@ -125,10 +125,188 @@ describe("install", () => {
     expect((ours[0] as { additionalContextLimit?: number }).additionalContextLimit).toBe(0);
   });
 
+  it("registers a SessionStart entry matched on `compact` for BOTH hosts — the post-compaction floor re-injection", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    for (const [host, cfg] of [["claude", claudeConfig()], ["codex", codexConfig()]] as const) {
+      const ours = (cfg.hooks.SessionStart as Array<{ matcher?: string; hooks: Array<Record<string, unknown>> }>)
+        .filter((e) => JSON.stringify(e).replace(/\\+/g, "/").includes("prism-route/on_prompt.py"));
+      expect(ours, host).toHaveLength(1);
+      // Startup/resume/clear must NOT fire it: the bootstrap already carries
+      // the digest there and a second copy is pure cost.
+      expect(ours[0]!.matcher, host).toBe("compact");
+      expect(ours[0]!.hooks).toHaveLength(1);
+      const hook = ours[0]!.hooks[0]!;
+      expect(hook.type).toBe("command");
+      expect(hook.timeout).toBe(15);
+      expect(String(hook.command)).toContain(`--v${PROMPT_ROUTE_HOOK_VERSION}`);
+      // Same shape rules as the prompt entry: codex needs the limit lifted,
+      // claude must not see an unknown key.
+      expect("additionalContextLimit" in hook, host).toBe(host === "codex");
+      if (host === "codex") expect(hook.additionalContextLimit).toBe(0);
+    }
+  });
+
+  it("a pre-SessionStart install (v3 config) gains the entry on refresh without duplicating the prompt entry", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    for (const cfgPath of [join(home, ".claude", "settings.json"), join(home, ".codex", "hooks.json")]) {
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+      delete cfg.hooks.SessionStart;
+      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    }
+    const results = ensurePromptRouteHook({ homeDir: home, env: {} });
+    expect(results.map((r) => r.config).sort()).toEqual(["registered", "registered"]);
+    for (const cfg of [claudeConfig(), codexConfig()]) {
+      const prompt = JSON.stringify(cfg.hooks.UserPromptSubmit).match(/prism-route/g) ?? [];
+      const start = JSON.stringify(cfg.hooks.SessionStart).match(/prism-route/g) ?? [];
+      expect(prompt).toHaveLength(1);
+      expect(start).toHaveLength(1);
+    }
+    // And a third run is a no-op again.
+    expect(ensurePromptRouteHook({ homeDir: home, env: {} }).every((r) => r.config === "unchanged")).toBe(true);
+  });
+
+  it("preserves a foreign SessionStart hook next to ours", () => {
+    writeFileSync(
+      join(home, ".claude", "settings.json"),
+      JSON.stringify({ hooks: { SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "/z/banner.sh" }] }] } }),
+    );
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const entries = claudeConfig().hooks.SessionStart as Array<{ matcher?: string }>;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.matcher).toBe("startup");
+    expect(JSON.stringify(entries[0])).toContain("banner.sh");
+  });
+
   it("codex results carry the approval hint — registered is NOT active", () => {
     const results = ensurePromptRouteHook({ homeDir: home, env: {} });
     expect(results.find((r) => r.host === "codex")?.codexApproval).toBe("pending-or-unknown");
     expect(results.find((r) => r.host === "claude")?.codexApproval).toBeUndefined();
+  });
+
+  it("a rewritten codex hooks.json VOIDS detected trust — approvals are keyed by definition hash", () => {
+    // Round-7 review: a v3 machine whose config.toml already trusts the
+    // prompt hook gains a brand-new SessionStart definition on refresh. The
+    // old detector still said "detected", so connect printed a green ✓ for a
+    // hook Codex would silently skip — the "configured and inert" lie again.
+    const codexApproval = () => ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "codex")!;
+    const command = `python3 ${home}/.codex/hooks/prism-route/on_prompt.py --v${PROMPT_ROUTE_HOOK_VERSION}`;
+    writeFileSync(
+      join(home, ".codex", "config.toml"),
+      `[hooks.state]\n"abc123" = { command = "${command}", approved = true }\n"def456" = { command = "${command}", approved = true }\n`,
+    );
+
+    const first = codexApproval();
+    expect(first.config).toBe("registered");
+    expect(first.codexApproval).toBe("pending-or-unknown");
+
+    // Untouched config on the next run: prior trust may now apply.
+    const second = codexApproval();
+    expect(second.config).toBe("unchanged");
+    expect(second.codexApproval).toBe("detected");
+
+    // Drop our SessionStart entry (the v3 shape) — the refresh that restores
+    // it is a rewrite, and the trust is void again.
+    const cfgPath = join(home, ".codex", "hooks.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    delete cfg.hooks.SessionStart;
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    const third = codexApproval();
+    expect(third.config).not.toBe("unchanged");
+    expect(third.codexApproval).toBe("pending-or-unknown");
+  });
+
+  it("trust on file for an OLDER hook version never reads as detected — the command is the key, version included", () => {
+    // Round-8 review: the signature was version-agnostic, so a v3 approval
+    // read as "detected" from the second connect after every bump — the
+    // rewrite voided it for exactly one invocation.
+    const codexApproval = () => ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "codex")!;
+    const script = `${home}/.codex/hooks/prism-route/on_prompt.py`;
+    const state = (...commands: string[]) =>
+      `[hooks.state]\n${commands.map((c, i) => `"h${i}" = { command = "${c}", approved = true }`).join("\n")}\n`;
+    const current = `python3 ${script} --v${PROMPT_ROUTE_HOOK_VERSION}`;
+    const tomlPath = join(home, ".codex", "config.toml");
+
+    // Stale: previous version, or the pre-version bare path — positive
+    // evidence the trust is for a definition Codex will not honour now.
+    for (const stale of [`python3 ${script} --v3`, `python3 ${script}`]) {
+      rmSync(join(home, ".codex", "hooks.json"), { force: true });
+      writeFileSync(tomlPath, state(stale, stale));
+      expect(codexApproval().config).toBe("registered");
+      expect(codexApproval().codexApproval, stale).toBe("pending-or-unknown");
+      expect(codexApproval().codexApproval, stale).toBe("pending-or-unknown");
+    }
+
+    // One of two entries trusted under the current definition: cannot say
+    // which — never "detected", never a false AWAITING either.
+    writeFileSync(tomlPath, state(current));
+    expect(codexApproval().codexApproval).toBe("state-present-unverifiable");
+
+    // Trust state that never names our script at all (hash-only entries):
+    // unverifiable, not stale.
+    writeFileSync(tomlPath, `[hooks.state]\n"zzz" = { approved = true }\n`);
+    expect(codexApproval().codexApproval).toBe("state-present-unverifiable");
+
+    // Both current entries: detected.
+    writeFileSync(tomlPath, state(current, current));
+    expect(codexApproval().codexApproval).toBe("detected");
+
+    // No state section at all.
+    writeFileSync(tomlPath, `model = "o3"\n`);
+    expect(codexApproval().codexApproval).toBe("pending-or-unknown");
+  });
+
+  it("matches a Windows approval whose path is TOML-escaped — a run of backslashes is one separator", () => {
+    // Round-10 review: Codex writes the command into a TOML basic string, so
+    // a Windows path arrives as `C:\\Users\\…`. One-for-one replacement made
+    // that `C://Users//…`, which never equals the forward-slash form of the
+    // command we register — every Windows operator read as AWAITING TRUST
+    // forever. Simulated here by writing the POSIX path with each separator
+    // as an escaped backslash pair, and as a single backslash (literal string).
+    const codexApproval = () => ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "codex")!;
+    const current = `python3 ${home}/.codex/hooks/prism-route/on_prompt.py --v${PROMPT_ROUTE_HOOK_VERSION}`;
+    const tomlPath = join(home, ".codex", "config.toml");
+    for (const separator of ["\\\\", "\\"]) {
+      const escaped = current.replace(/\//g, separator);
+      expect(escaped).not.toBe(current);
+      writeFileSync(tomlPath, `[hooks.state]\n"a" = { command = "${escaped}", approved = true }\n"b" = { command = "${escaped}", approved = true }\n`);
+      codexApproval(); // registers (or leaves unchanged) — approval is read on the unchanged pass
+      expect(codexApproval().codexApproval, JSON.stringify(separator)).toBe("detected");
+    }
+  });
+
+  it("leaves an unparseable host config byte-identical and registers nothing there — the other host still installs", () => {
+    // Round-8 review: a settings.json with a trailing comma was REPLACED by
+    // {hooks: …} — model, env and permissions gone with the syntax slip.
+    const corrupt = `{\n  "model": "opus",\n  "env": { "A": "1" },\n  "permissions": { "allow": ["Bash"] },\n}\n`;
+    const settingsPath = join(home, ".claude", "settings.json");
+    writeFileSync(settingsPath, corrupt);
+
+    const results = ensurePromptRouteHook({ homeDir: home, env: {} });
+    const claude = results.find((r) => r.host === "claude")!;
+    expect(claude.config).toBe("skipped-unparseable");
+    expect(claude.script).toBe("installed"); // the script is ours to write; the config is not
+    expect(readFileSync(settingsPath, "utf8")).toBe(corrupt);
+    expect(results.find((r) => r.host === "codex")?.config).toBe("registered");
+
+    // A JSON document that is not an object is the same case.
+    writeFileSync(settingsPath, `[1, 2]\n`);
+    expect(ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "claude")!.config).toBe("skipped-unparseable");
+    expect(readFileSync(settingsPath, "utf8")).toBe(`[1, 2]\n`);
+
+    // Codex: same rule, and trust can never be "detected" for a hook that
+    // was not registered.
+    const hooksPath = join(home, ".codex", "hooks.json");
+    writeFileSync(hooksPath, `{"hooks": {}`);
+    writeFileSync(join(home, ".codex", "config.toml"), `[hooks.state]\n"h" = { command = "python3 ${home}/.codex/hooks/prism-route/on_prompt.py --v${PROMPT_ROUTE_HOOK_VERSION}", approved = true }\n`);
+    const codex = ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "codex")!;
+    expect(codex.config).toBe("skipped-unparseable");
+    expect(codex.codexApproval).toBe("pending-or-unknown");
+    expect(readFileSync(hooksPath, "utf8")).toBe(`{"hooks": {}`);
+
+    // Fixed file: registration proceeds on the next connect.
+    writeFileSync(settingsPath, `{ "model": "opus" }\n`);
+    expect(ensurePromptRouteHook({ homeDir: home, env: {} }).find((r) => r.host === "claude")!.config).toBe("registered");
+    expect(claudeConfig().model).toBe("opus");
   });
 
   it("refreshes the script when the version marker is older", () => {
@@ -236,19 +414,27 @@ describe.skipIf(process.platform === "win32")("the hook script — never breaks 
     script = join(hookDir, "on_prompt.py");
     writeFileSync(script, PROMPT_ROUTE_HOOK_SCRIPT);
     chmodSync(script, 0o755);
-    // Stub prism CLI: routes when --loaded is empty, dedupes when not.
+    // Stub prism CLI: routes when --loaded is empty, dedupes when not;
+    // answers floor-digest with a fixed digest; logs every invocation so a
+    // test can assert the CLI was NOT called.
     stub = join(home, "stub-prism");
     writeFileSync(
       stub,
       `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then echo '{"names":["prime-directive","ask-first"],"text":"Prism: context was compacted.\\n- floor line"}'; exit 0; fi
 if [ "$1" != "route-prompt" ]; then echo '{"names":[],"text":""}'; exit 0; fi
 if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":"SKILL BODY HERE"}'; else echo '{"names":[],"text":""}'; fi
 `,
     );
     chmodSync(stub, 0o755);
   });
+  const stubCalls = (): string[] => {
+    const log = join(home, "stub-calls.log");
+    return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : [];
+  };
 
-  const run = (payload: unknown): { continue: boolean; hookSpecificOutput?: { additionalContext?: string } } =>
+  const run = (payload: unknown): { continue: boolean; suppressOutput?: boolean; hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } } =>
     JSON.parse(
       execFileSync("python3", [script], {
         input: JSON.stringify(payload),
@@ -300,6 +486,99 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
     chmodSync(stub, 0o755);
     const out = run({ prompt: "the totals are not sticky", session_id: "s9" });
     expect(out.hookSpecificOutput?.additionalContext).toBe("BODY");
+  });
+
+  describe("SessionStart — the floor comes back after a compaction, and only then", () => {
+    it("re-injects the floor digest on source=compact, tagged for the SessionStart event", () => {
+      const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact" });
+      expect(out.continue).toBe(true);
+      expect(out.hookSpecificOutput?.hookEventName).toBe("SessionStart");
+      expect(out.hookSpecificOutput?.additionalContext).toBe("Prism: context was compacted.\n- floor line");
+      expect(stubCalls()).toEqual(["floor-digest"]);
+    });
+
+    it("forgets the session's dedupe list on compaction so the routed skills can come back", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-compact-2" });
+      const state = join(hookDir, "state", "s-compact-2.json");
+      expect(existsSync(state)).toBe(true);
+      run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-2" });
+      expect(existsSync(state)).toBe(false);
+      // The next matching prompt routes again instead of being deduped away.
+      const out = run({ prompt: "the totals are not sticky", session_id: "s-compact-2" });
+      expect(out.hookSpecificOutput?.additionalContext).toBe("SKILL BODY HERE");
+    });
+
+    it.each(["startup", "resume", "clear", ""])("passes through on source=%j without invoking the CLI — the bootstrap already carries the digest", (source) => {
+      const out = run({ hook_event_name: "SessionStart", source, session_id: "s-start" });
+      expect(out).toEqual({ continue: true, suppressOutput: true });
+      expect(stubCalls()).toEqual([]);
+    });
+
+    it("passes through when the CLI has no floor to offer (free tier, no manifest)", () => {
+      writeFileSync(stub, `#!/bin/bash\necho '{"names":[],"text":""}'\n`);
+      chmodSync(stub, 0o755);
+      const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-free" });
+      expect(out).toEqual({ continue: true, suppressOutput: true });
+    });
+
+    it("passes through when the CLI is missing or fails — a compaction must never break the session", () => {
+      const python3 = execFileSync("which", ["python3"], { encoding: "utf8" }).trim();
+      const out = JSON.parse(
+        execFileSync(python3, [script], {
+          input: JSON.stringify({ hook_event_name: "SessionStart", source: "compact" }),
+          env: { ...process.env, PRISM_ROUTE_CLI: "/does/not/exist", PATH: "/nonexistent", HOME: home },
+          encoding: "utf8",
+        }).trim(),
+      );
+      expect(out).toEqual({ continue: true, suppressOutput: true });
+      writeFileSync(stub, `#!/bin/bash\nexit 3\n`);
+      chmodSync(stub, 0o755);
+      expect(run({ hook_event_name: "SessionStart", source: "compact" })).toEqual({ continue: true, suppressOutput: true });
+    });
+
+    it("a SessionStart payload never routes as a prompt, even when it carries prompt-like fields", () => {
+      const out = run({ hook_event_name: "SessionStart", source: "startup", prompt: "the totals are not sticky" });
+      expect(out.hookSpecificOutput).toBeUndefined();
+      expect(stubCalls()).toEqual([]);
+    });
+
+    // Codex's hook payloads are documented as Claude-COMPATIBLE, and the
+    // prompt lookup already hedges three spellings for that reason. The event
+    // and source lookups read exactly one spelling each (round-11 review), so
+    // a Codex payload spelled hookEventName/trigger fell to the prompt path
+    // and passed through — no digest, no signal.
+    it.each([
+      [{ hookEventName: "SessionStart", source: "compact" }],
+      [{ event: "session_start", trigger: "compaction" }],
+      [{ event_name: "session-start", reason: "compacted" }],
+      [{ eventName: "sessionstart", source: "Compact" }],
+    ])("recognises the compaction fire under alternative payload spellings: %j", (payload) => {
+      const out = run({ ...payload, session_id: "s-alias" });
+      expect(out.hookSpecificOutput?.hookEventName).toBe("SessionStart");
+      expect(out.hookSpecificOutput?.additionalContext).toBe("Prism: context was compacted.\n- floor line");
+      expect(stubCalls()).toEqual(["floor-digest"]);
+    });
+
+    it.each([
+      [{ hookEventName: "SessionStart", trigger: "startup" }],
+      [{ event: "SessionStart", reason: "resume" }],
+      [{ event: "SessionStart", prompt: "the totals are not sticky" }],
+      // Round-12 review: a non-string event is not an event (dropping the
+      // isinstance guard made this one fire), and PreCompact is a real host
+      // event — "pre-compact" must not read as a compaction (`in` vs prefix).
+      [{ event: ["SessionStart"], source: "compact" }],
+      [{ hook_event_name: "SessionStart", source: "pre-compact" }],
+      [{ hook_event_name: "SessionStart", source: 5 }],
+    ])("an aliased SessionStart that is not a compaction still passes through without routing: %j", (payload) => {
+      const out = run({ ...payload, session_id: "s-alias-start" });
+      expect(out).toEqual({ continue: true, suppressOutput: true });
+      expect(stubCalls()).toEqual([]);
+    });
+
+    it("an aliased event that is NOT SessionStart still routes the prompt", () => {
+      const out = run({ hookEventName: "UserPromptSubmit", prompt: "the totals are not sticky", session_id: "s-alias-prompt" });
+      expect(out.hookSpecificOutput?.additionalContext).toBe("SKILL BODY HERE");
+    });
   });
 
   it("passes through on garbage stdin", () => {

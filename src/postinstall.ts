@@ -23,10 +23,18 @@ try {
   // approval impossible to miss. Approval is per hook-version, not per
   // release: it recurs only when the hook script itself changes.
   const codex = results.find((r) => r.host === "codex");
-  if (codex && codex.codexApproval === "pending-or-unknown") {
+  if (codex && codex.config === "skipped-unparseable") {
+    // Nothing was registered, so there is nothing to trust: telling the
+    // operator to press t in /hooks would send them looking for an entry
+    // that does not exist. The file was left byte-identical on purpose.
+    console.error(
+      `\n[prism] Codex ${codex.configPath} is not valid JSON — prism-route hooks NOT registered.\n` +
+      "[prism]   Fix the file, then run: prism connect --host codex\n",
+    );
+  } else if (codex && codex.codexApproval === "pending-or-unknown") {
     console.error(
       "\n[prism] Codex hook installed but NOT yet trusted — Codex silently skips it until you approve it once:\n" +
-      "[prism]   codex  ->  /hooks  ->  entry ending prism-route/on_prompt.py  ->  press t\n",
+      "[prism]   codex  ->  /hooks  ->  BOTH entries ending prism-route/on_prompt.py (UserPromptSubmit + SessionStart)  ->  press t\n",
     );
   }
 } catch {

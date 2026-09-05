@@ -42,6 +42,9 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
   offline last-good recovery.
 - **Hook-free startup** — MCP metadata and native instructions request Prism's
   startup context without requiring lifecycle hooks or a Prism-owned launcher.
+  Where a host offers hooks (Claude Code, Codex), `prism connect` adds two
+  small ones on top: mid-session prompt routing, and a post-compaction
+  re-injection of the protected-floor digest.
 - **Safe escalation and observability** — inference outcomes are explicit,
   reserved content remains fail-closed, and local/cloud usage is recorded for
   review.
@@ -137,6 +140,58 @@ or by re-enabling after each run.
 
 <details>
 <summary>Release history (optional)</summary>
+
+## What's New in v20.18.0
+
+### The protected floor rides the bootstrap — and survives compaction
+
+- **`session_bootstrap` now inlines a digest of the protected floor** on
+  paid tiers at standard and deep depth: one inert line per rule, derived
+  from each skill's first paragraph (or its pinned `digest:`), plus its
+  section map, ~5.6K chars for the full floor. Small-context hosts such as
+  Codex were re-reading the sixteen SKILL.md files every session (median 8
+  re-reads / 36KB, worst 823 / 5.1MB in rollout logs) because the bootstrap
+  only *named* them. The digest is paid for on top of the context budget, so
+  the ledger/handoff share at every depth is byte-identical to before. Quick
+  depth stays names-only — the opt-out.
+- **A second hook re-injects the digest after compaction.** `prism connect`
+  registers the prism-route script on `SessionStart` matched to `compact`
+  (Claude Code and Codex); it runs `prism floor-digest`, which applies the
+  same tier and depth decisions as the bootstrap, and adds nothing on
+  startup/resume/clear. Hosts without hooks (Gemini, Cursor) still get the
+  digest on every bootstrap. **Codex: UNVERIFIED against a live compaction.**
+  The hook is registered and the script accepts the documented payload
+  spellings, but no Codex compaction has been observed end-to-end; on a
+  payload it does not recognise it re-injects nothing rather than something
+  wrong. If the digest comes from a generation whose skill files never
+  finished syncing, the re-injected block carries the same STALE warning the
+  bootstrap shows.
+- **Codex trust is reported honestly after a hook rewrite.** Approvals are
+  keyed by definition hash, so a rewritten `hooks.json` — this release adds
+  the SessionStart entry — voids prior trust: connect prints AWAITING TRUST
+  for both entries instead of a green ✓ for a hook Codex would silently skip,
+  and trust recorded for an older hook version is never mistaken for current.
+- **A host config that no longer parses is left alone.** If
+  `~/.claude/settings.json` or `~/.codex/hooks.json` exists but is not valid
+  JSON, connect keeps it byte-identical, registers no hook there, and says so
+  — it no longer replaces the file with a minimal hooks-only one. The npm
+  postinstall notice says the same, instead of asking you to trust a Codex
+  hook it never registered.
+- Fixed: a symptom-routed skill whose closing frontmatter fence is its last
+  line was inlined with its YAML (triggers included) as if it were the rule.
+- Fixed: a digest line that crosses into a new section keeps that section's
+  heading in front of it — whatever opened the section (an H2, a mid-document
+  H1, an empty heading, a setext underline) — so "Delegate to" / "Do NOT
+  delegate" rules cannot read with the wrong polarity once joined. A skill
+  file on disk is used only when it digests: empty, cut off inside its
+  frontmatter, or frontmatter-only files fall back to the stored copy instead
+  of rendering YAML as the rule.
+- Fixed: on Windows, a Codex hook approval is recognised even though Codex
+  stores the path with escaped backslashes.
+- The publish gate now refuses release notes that run *ahead* of the package
+  version (CHANGELOG, README, translated READMEs) — reading the newest
+  version on the heading line, so a `v20.17.3 – v20.18.0` range counts as
+  20.18.0, and surviving a typographic apostrophe or a BOM.
 
 ## What's New in v20.17.3
 
@@ -579,8 +634,8 @@ the host's final verification responsibility are unchanged.
 materializes entitled packages in the native `~/.agents/skills` directory
 before the command exits. Codex therefore sees the current skillset on its
 first launch instead of requiring a second restart. Prism rechecks the same
-snapshot at MCP startup, session load, and every five minutes—without host
-lifecycle hooks.
+snapshot at MCP startup, session load, and every five minutes—skill delivery
+never depends on a host lifecycle hook.
 
 On the first user turn, Prism's native skill, MCP metadata, and managed host
 instructions request one `session_bootstrap({})` call. Prism then uses the
@@ -613,7 +668,10 @@ sections from `~/CLAUDE.md`, preserves every other instruction, and installs a
 small ownership-marked native block that selects `session_bootstrap({})` on the
 first turn. User hooks, custom instruction sections, and near matches remain
 untouched; native skills and server-side reminders preserve those Prism
-features without host lifecycle hooks. Because hosts expose no native
+features without depending on host lifecycle hooks. On Claude Code and Codex
+connect additionally registers the prism-route script twice: on every prompt
+(mid-session skill routing) and on `SessionStart` matched to `compact` only
+(post-compaction protected-floor digest). Because hosts expose no native
 session-end callback, handoff at shutdown is instruction-driven rather than a
 guaranteed lifecycle event.
 

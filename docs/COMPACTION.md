@@ -43,9 +43,28 @@ depth. The same canonical display is available without MCP through:
 prism bootstrap
 ```
 
-`prism connect` provisions native startup instructions for supported hosts. It
-does not install lifecycle hooks. The first user turn activates the bootstrap;
-after a host-driven compaction, the same call reconstructs durable state.
+`prism connect` provisions native startup instructions for supported hosts.
+The first user turn activates the bootstrap. On Claude Code and Codex, connect
+also registers one `SessionStart` hook matched on `compact` only: when the host
+compacts the context, `prism floor-digest` re-injects the protected-floor
+digest (one line per rule, tier- and depth-gated exactly like the bootstrap)
+so the rules stay in force without a second bootstrap. Durable state itself is
+never in the window — it is reconstructed from the store on the next
+`session_bootstrap`, and any host without hooks (Gemini, Cursor) still gets the
+digest on every startup.
+
+Verification status: the Claude Code payload shape (`hook_event_name:
+"SessionStart"`, `source: "compact"`) is pinned by test and the live check is
+part of the release procedure. **The Codex half is UNVERIFIED against a live
+compaction** — the entry is registered in `~/.codex/hooks.json` and its trust
+state is reported by connect, and the script accepts the event under
+`hook_event_name`/`hookEventName`/`event_name`/`eventName`/`event` and the trigger under
+`source`/`trigger`/`reason` (any value starting `compact`), but no Codex
+compaction has been observed end-to-end. On any SessionStart it does not
+recognise as a compaction the hook emits nothing, so the failure mode is a
+missing re-injection, never a wrong one. When the digest was rendered from a
+generation whose files never finished reaching the skill roots, the hook
+payload carries the same `Skill files are STALE` warning the bootstrap shows.
 
 If a client advertises the tool but does not expose a working direct or
 deferred call route to its model, it continues silently without bootstrap. It

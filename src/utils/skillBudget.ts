@@ -58,8 +58,13 @@ export type SkillBudgetLevel = "quick" | "standard" | "deep";
  * skills inline even when the budget is already blown (assembleSkillBlock), and
  * the repo-measured v26 floor is ~39k chars on its own — so the ceiling here is
  * roughly 87k - 39k - memory. `standard` matches the 8,400-char tranche the
- * existing v26 shape test already treats as the standard budget (60% of 14k
- * tokens); `deep` doubles it and still leaves headroom for deep history.
+ * existing v26 shape test already treats as the standard budget — the 60%
+ * share of a 4k-token response at 3.5 chars/token, i.e. exactly
+ * `resolveSkillBudgetChars(4_000)` below (~2,400 tokens, NOT 8,400: an
+ * earlier version of this comment called it "60% of 14k tokens", which is
+ * the same arithmetic in tokens instead of chars — 14k tokens would be a
+ * 29,400-char tranche); `deep` doubles it and still leaves headroom for
+ * deep history.
  *
  * `quick` is deliberately near-nothing — it is the setting a caller picks to
  * minimize context, and before this it still inlined the full skill payload,

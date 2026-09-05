@@ -177,6 +177,16 @@ describe('resolveSkillBudgetChars', () => {
     expect(resolveSkillBudgetChars(10_000, 'standard')).toBe(Math.floor(10_000 * 3.5 * 0.6));
   });
 
+  it('the standard default IS the 60% tranche of a 4k-token response — the comment\'s derivation, executable', () => {
+    // DEFAULT_SKILL_BUDGET_CHARS documents its 8,400 as "60% of a 4k-token
+    // response at 3.5 chars/token". An earlier comment said "60% of 14k
+    // tokens" — that arithmetic is in tokens, and resizing the constant to
+    // match it would have tripled the tranche (29,400 chars). Pin the units.
+    expect(resolveSkillBudgetChars(4_000, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
+    expect(resolveSkillBudgetChars(14_000, 'standard')).not.toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
+    expect(resolveSkillBudgetChars(14_000, 'standard')).toBe(29_400);
+  });
+
   it('falls back to the standard tranche for a non-positive or junk max_tokens', () => {
     expect(resolveSkillBudgetChars(0, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);
     expect(resolveSkillBudgetChars(-1, 'standard')).toBe(DEFAULT_SKILL_BUDGET_CHARS.standard);

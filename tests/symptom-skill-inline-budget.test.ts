@@ -101,12 +101,27 @@ describe('routeOffload writer', () => {
 
   it('never throws when the directory cannot be created', async () => {
     const { writeRouteOffload } = await import('../src/utils/routeOffload.js');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    // The unwritable "home" is a regular FILE, so mkdir under it fails with
+    // ENOTDIR at once on every OS. The previous fixture, `/proc/nonexistent-
+    // unwritable`, never returned on Linux: Node's recursive mkdirSync loops
+    // forever when a path under /proc keeps answering ENOENT (reproduced in
+    // node:20-alpine, killed by a 20s timeout), which hung "Run Unit Tests"
+    // on both ubuntu CI legs for the full 6h job limit on every main run
+    // from 523aac8d2 on. macOS and Windows have no /proc and failed fast.
+    const home = join(mkdtempSync(join(tmpdir(), 'offload-unwritable-')), 'not-a-dir');
+    writeFileSync(home, '');
     const prev = process.env.HOME;
-    process.env.HOME = '/proc/nonexistent-unwritable';
+    const prevProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
-      expect(() => writeRouteOffload('x', 'test')).not.toThrow();
+      expect(writeRouteOffload('x', 'test')).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     }
   });
 });
@@ -168,7 +183,14 @@ describe('routeOffload prune — round-2 coverage', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const home = mkdtempSync(join(tmpdir(), 'offload-'));
-    const prev = process.env.HOME; process.env.HOME = home;
+    // os.homedir() reads USERPROFILE on Windows and HOME elsewhere — setting
+    // only HOME left the module writing under the real profile while the
+    // test wrote its stale files under the temp dir, so every Windows CI leg
+    // failed here with ENOENT on the first stale file.
+    const prev = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const dir = join(home, '.prism-mcp', 'route-context');
       const { writeRouteOffload } = await import('../src/utils/routeOffload.js');
@@ -184,6 +206,7 @@ describe('routeOffload prune — round-2 coverage', () => {
       expect(left.length, `stale left after 2 bounded calls: ${left.length}`).toBe(0);
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     }
   });
 });

@@ -55,6 +55,9 @@ vi.mock("../../src/skillManifestSync.js", () => ({
   // Real export: bootstrap resolves the local skills root through it rather
   // than hardcoding a path (enforced by the skill-routing architecture guard).
   resolveCanonicalSkillsDir: () => "/nonexistent-skills-root",
+  // Floor-digest source: null = nothing on disk, so the bootstrap falls back
+  // to the manifest DB body under `skill:<name>` (or renders the bare name).
+  readNativeSkillBody: vi.fn(() => Promise.resolve(null)),
   awaitSkillManifestSync: vi.fn(() => Promise.resolve({
     status: "unchanged",
     installed: [],
@@ -214,7 +217,8 @@ import {
 import { resolveProject } from "../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../src/storage/interface.js";
 import { getLLMProvider } from "../../src/utils/llm/factory.js";
-import { awaitSkillManifestSync } from "../../src/skillManifestSync.js";
+import { awaitSkillManifestSync, readNativeSkillBody } from "../../src/skillManifestSync.js";
+import { SKILL_DIGEST_UNAVAILABLE } from "../../src/utils/skillDigest.js";
 import {
   collectSkillTriggersOnThisMachine,
   sessionSaveLedgerHandler,
@@ -222,6 +226,8 @@ import {
   sessionSaveExperienceHandler,
   sessionLoadContextHandler,
   sessionBootstrapHandler,
+  capNativeStartupText,
+  renderProtectedFloorDigestForHook,
   sessionForgetMemoryHandler,
   sessionExportMemoryHandler,
   memoryHistoryHandler,
@@ -229,7 +235,7 @@ import {
   sessionViewImageHandler,
   sanitizeMemoryInput,
 } from "../../src/tools/ledgerHandlers.js";
-import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
+import { FREE_NATIVE_SKILL_NAMES, REQUIRED_NATIVE_SKILL_NAMES, REQUIRED_PROTECTED_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 import {
   registerContextLoaded,
   requireContextLoadedForProject,
@@ -252,6 +258,7 @@ const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockResolveProject = vi.mocked(resolveProject);
 const mockRefreshConfigStorageCache = vi.mocked(refreshConfigStorageCache);
 const mockAwaitSkillManifestSync = vi.mocked(awaitSkillManifestSync);
+const mockReadNativeSkillBody = vi.mocked(readNativeSkillBody);
 const mockRegisterContextLoaded = vi.mocked(registerContextLoaded);
 const mockRequireContextLoadedForProject = vi.mocked(requireContextLoadedForProject);
 const mockGetLLMProvider = vi.mocked(getLLMProvider);
@@ -1185,6 +1192,46 @@ describe("ledgerHandlers", () => {
       expect(miss).not.toContain("Symptom-triggered skills:");
     });
 
+    it("never inlines the frontmatter of a scoped skill whose closing fence is its last line", async () => {
+      // Round-7 review: the inline path had its own fence parser that returned
+      // the WHOLE document when nothing followed the closing fence (indexOf of
+      // the next newline → -1 → slice(0)). A frontmatter-only skill then
+      // rendered its YAML — triggers included — as if it were the rule.
+      const frontmatterOnly = [
+        "---",
+        "name: acme-billing",
+        "description: scoped skill",
+        "prompt_triggers:",
+        '  - "\\bNorthwind Payments\\b"',
+        "---",
+      ].join("\n");
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "alpha",
+        default_context_depth: "standard",
+        "skill_manifest:tier": "enterprise",
+        "skill_manifest:names": JSON.stringify(["acme-billing"]),
+        "skill:acme-billing": frontmatterOnly,
+      }[key] ?? fallback));
+      mockGetAllSettings.mockResolvedValue({ "skill:acme-billing": frontmatterOnly });
+      mockReadNativeSkillBody.mockResolvedValue(frontmatterOnly);
+      const storage = makeStorageStub();
+      storage.loadContext.mockResolvedValue({ last_summary: "ctx", version: 1 });
+      vi.mocked(getStorage).mockResolvedValue(storage as never);
+
+      try {
+        const hit = (await sessionBootstrapHandler({ prompt: "how do I submit the Northwind Payments invoice?" }))
+          .content[0].text as string;
+        expect(hit).toContain("Symptom-triggered skills:");
+        expect(hit).toContain("acme-billing");
+        expect(hit).not.toContain("--- acme-billing ---");
+        expect(hit).not.toContain("prompt_triggers");
+        expect(hit).not.toContain("description: scoped skill");
+      } finally {
+        mockReadNativeSkillBody.mockReset();
+        mockReadNativeSkillBody.mockResolvedValue(null);
+      }
+    });
+
     it("delivers skills AND the facts line together when a project payload is huge", async () => {
       // Asserts co-existence under pressure, not anti-truncation: the allocator
       // reserves both systemReadyBlock and SESSION_FACTS_RESERVE out of the
@@ -1207,7 +1254,7 @@ describe("ledgerHandlers", () => {
       expect(text).toContain("Prism System Ready");
       expect(text).toContain("<prism_session ");
       expect(sessionFacts(text).conversation_id).toMatch(/^[0-9a-f-]{36}$/);
-      expect(text.length).toBeLessThanOrEqual(8_256);   // budget + the reserved facts line
+      expect(text.length).toBeLessThanOrEqual(8_256);  // budget + the reserved facts line
     });
 
     it("renders the STALE warning under the header when a committed generation never materialized", async () => {
@@ -1811,6 +1858,344 @@ describe("ledgerHandlers", () => {
       expect(text).toContain("Context depth");
       expect(text).toContain("Skill sync");
       expect(text).toContain("more provisioned");
+    });
+
+    describe("protected-floor digest — the rules ride the bootstrap, not a re-read", () => {
+      // Measured 2026-09-01 on Codex rollout logs: with names only, the model
+      // re-read SKILL.md files to recover the floor (median 8 reads / 36KB per
+      // session; 823 reads / 5.1MB across 498 compactions in the worst). One
+      // digest line per rule, from the same bodies the host reads.
+      const floorBody = (name: string) =>
+        `---\nname: ${name}\nprotected: true\n---\n# ${name}\n\nRULE-OF-${name}: verify before claiming.\n\n## Rules\n\n- Rule one of ${name}.\n- Rule two of ${name}.\n\n## Scope\n\ntext`;
+      const floorSettings = Object.fromEntries(
+        REQUIRED_PROTECTED_SKILL_NAMES.map((name) => [`skill:${name}`, floorBody(name)]),
+      );
+      // clearAllMocks keeps implementations; the disk-copy test below must
+      // not bleed into the rest of the file.
+      afterEach(() => { mockReadNativeSkillBody.mockReset(); mockReadNativeSkillBody.mockResolvedValue(null); });
+
+      it.each(["standard", "deep"] as const)(
+        "renders one digest line per entitled floor skill at %s depth, inside the System Ready block, within the cap",
+        async (depth) => {
+          mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+            autoload_projects: "prism-mcp",
+            default_context_depth: depth,
+            agent_name: "Dmitri",
+            "skill_manifest:tier": "enterprise",
+            "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+            ...floorSettings,
+          }[key] ?? fallback));
+          storage.loadContext.mockResolvedValue({ last_summary: "Current work", version: 3 });
+
+          const text = (await sessionBootstrapHandler({})).content[0].text as string;
+          const lines = text.split("\n");
+          const header = lines.findIndex((line) => line.includes("Protected floor — rules in force this session"));
+          const ready = lines.findIndex((line) => line.includes("Prism System Ready"));
+          expect(header).toBeGreaterThan(ready);
+          expect(lines[header]).toContain("/nonexistent-skills-root/‹name›/SKILL.md");
+          for (const name of REQUIRED_PROTECTED_SKILL_NAMES) {
+            const own = lines.filter((line) => line.startsWith(`>   - ${name} — `));
+            expect(own, name).toHaveLength(1);
+            expect(own[0]).toContain(`RULE-OF-${name}: verify before claiming. Rules: Rule one of ${name}.`);
+          }
+          // prism-startup is free chrome, never a rule line.
+          expect(lines.some((line) => line.startsWith(">   - prism-startup"))).toBe(false);
+          // Digest lines stay inside the blockquote, and the block itself is
+          // still the bounded list the tests above pin.
+          expect(text).toContain("Core/protected skills provisioned");
+          expect(text.length).toBeLessThanOrEqual({ standard: 8_000, deep: 30_000 }[depth] + 6_000);
+          // No body leaked whole.
+          expect(text).not.toContain("protected: true");
+        },
+      );
+
+      it.each(["standard", "deep"] as const)(
+        "pays for the digest on top of the %s budget — the project/session share is byte-identical with and without it",
+        async (depth) => {
+          // Round-7 review: only standard had been raised to cover the digest,
+          // so deep lost 5,630 chars of ledger/handoff per bootstrap.
+          // Per-field limits keep one project small, so the budget only bites
+          // when it is divided: twenty rich projects put every depth under
+          // pressure, and the bootstrap then drops projects and truncates the
+          // survivors against the per-project share.
+          const settings = (withBodies: boolean) => async (key: string, fallback = "") => ({
+            autoload_projects: Array.from({ length: 20 }, (_, i) => `proj-${i}`).join(","),
+            default_context_depth: depth,
+            "skill_manifest:tier": "enterprise",
+            "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+            ...(withBodies ? floorSettings : {}),
+          }[key] ?? fallback);
+          storage.loadContext.mockResolvedValue({
+            last_summary: "context ".repeat(6_000),
+            pending_todo: Array.from({ length: 12 }, (_, i) => `todo ${i} ${"detail ".repeat(40)}`),
+            decisions: Array.from({ length: 8 }, (_, i) => `decision ${i} ${"reason ".repeat(40)}`),
+            version: 3,
+          });
+          const projectPart = (text: string) => text.slice(0, text.indexOf("> **Prism System Ready**"));
+
+          mockGetSetting.mockImplementation(settings(true));
+          const withDigest = (await sessionBootstrapHandler({})).content[0].text as string;
+          mockGetSetting.mockImplementation(settings(false));
+          const withoutDigest = (await sessionBootstrapHandler({})).content[0].text as string;
+
+          expect(withDigest).toContain("Protected floor — rules in force");
+          expect(withoutDigest).not.toContain("Protected floor — rules in force");
+          // The fixture really is under pressure — otherwise this proves nothing.
+          expect(withoutDigest).toContain(`Additional ${depth} context omitted to keep native startup within its display budget`);
+          expect(projectPart(withDigest)).toBe(projectPart(withoutDigest));
+          expect(withoutDigest.length).toBeLessThanOrEqual({ standard: 8_000, deep: 30_000 }[depth]);
+          expect(withDigest.length).toBeGreaterThan(withoutDigest.length);
+        },
+      );
+
+      it.each([
+        ["first-run", { }, "Welcome to Prism"],
+        ["no-projects", { agent_name: "Dmitri", first_bootstrap_at: "2026-08-01T00:00:00.000Z" }, "No Auto-Load Projects are configured"],
+      ] as const)(
+        "pays for the digest on top of the budget on the %s path too — the System Ready tail and facts line survive",
+        async (_path, extra, marker) => {
+          // Round-8 review: only the projects path added the digest to its
+          // allowance; these two paths capped at the bare depth budget, so a
+          // big System Ready block plus a 5.6K digest lost its tail — the
+          // sync-conflict warning and the facts line the host is told to
+          // reuse. Every bounded list filled (480 long names, 20 conflicts,
+          // a stale-generation warning) plus sixteen full-length digests is
+          // ~10K: the bare 8K budget bites unless the digest is additive.
+          const longNames = Array.from({ length: 480 }, (_, i) => `tier-${String(i).padStart(3, "0")}-${"y".repeat(104)}`);
+          const manifestNames = [...REQUIRED_NATIVE_SKILL_NAMES, ...longNames];
+          const richFloor = Object.fromEntries(REQUIRED_PROTECTED_SKILL_NAMES.map((name) =>
+            [`skill:${name}`, `---\nname: ${name}\n---\n# ${name}\n\nRULE-OF-${name}: ${"verify before claiming; ".repeat(30)}`]));
+          mockAwaitSkillManifestSync.mockResolvedValueOnce({
+            status: "unchanged", tier: "enterprise", generation: "c".repeat(64),
+            entitledNames: manifestNames, installed: [], updated: [], pruned: [],
+            conflicts: longNames.slice(0, 20),
+          });
+          mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+            default_context_depth: "standard",
+            "skill_manifest:tier": "enterprise",
+            "skill_manifest:names": JSON.stringify(manifestNames),
+            "skill_manifest:generation": "c".repeat(64),
+            "skill_manifest:materialized_generation": "b".repeat(64),
+            ...richFloor,
+            ...extra,
+          }[key] ?? fallback));
+
+          const text = (await sessionBootstrapHandler({})).content[0].text as string;
+          const digestLines = text.split("\n").filter((line) => REQUIRED_PROTECTED_SKILL_NAMES.some((n) => line.startsWith(`>   - ${n} — `)));
+          expect(digestLines).toHaveLength(REQUIRED_PROTECTED_SKILL_NAMES.length);
+          expect(text).toContain(marker);
+          expect(text).toContain("Protected floor — rules in force");
+          // Under pressure: the block plus digest would not fit the bare
+          // budget, and nothing was cut.
+          expect(text.length).toBeGreaterThan(8_000);
+          expect(text).not.toContain("Additional standard context omitted");
+          expect(text).toContain("SKILLS NOT UPDATING");
+          expect(text).toContain("Skill files are STALE");
+          expect(sessionFacts(text)).toMatchObject({ depth: "standard", projects: "" });
+        },
+      );
+
+      it("the allowance is exactly the digest's length on top of the depth budget — never open-ended, never negative", () => {
+        // The bounded System Ready block cannot push a bootstrap past base +
+        // digest, so the ceiling is pinned on the capper itself.
+        const long = "x".repeat(40_000);
+        expect(capNativeStartupText(long, "standard").length).toBe(8_000);
+        expect(capNativeStartupText(long, "standard", undefined, "", 1_234).length).toBe(8_000 + 1_234);
+        expect(capNativeStartupText(long, "deep", undefined, "", 5_646).length).toBe(30_000 + 5_646);
+        expect(capNativeStartupText(long, "standard", undefined, "", -500).length).toBe(8_000);
+        // A requested cap below the depth budget is still honoured underneath.
+        expect(capNativeStartupText(long, "standard", 1_000, "", 300).length).toBe(1_300);
+      });
+
+      it("prefers the body on disk — what the host itself reads — over the manifest DB copy", async () => {
+        mockReadNativeSkillBody.mockImplementation(async (name: string) =>
+          name === "prime-directive" ? "---\nname: prime-directive\n---\n# PD\n\nDISK-COPY of prime-directive." : null);
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "standard",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+
+        const text = (await sessionBootstrapHandler({})).content[0].text as string;
+        expect(text).toContain(">   - prime-directive — DISK-COPY of prime-directive.");
+        expect(text).not.toContain("RULE-OF-prime-directive");
+        expect(text).toContain("RULE-OF-ask-first");
+      });
+
+      it("an empty file on disk does not shadow the DB copy — a truncated materialization is not a body", async () => {
+        // Round-9 LOW: readNativeSkillBody returns "" (not null) for a
+        // zero-byte SKILL.md, and `??` only falls through on nullish, so the
+        // line rendered "digest unavailable" and pointed the model at the
+        // empty file while the manifest DB held the full rule.
+        mockReadNativeSkillBody.mockImplementation(async (name: string) =>
+          name === "prime-directive" ? "" : name === "ask-first" ? "  \n\t\n" : null);
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "standard",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+
+        const text = (await sessionBootstrapHandler({})).content[0].text as string;
+        expect(text).toContain(">   - prime-directive — RULE-OF-prime-directive");
+        expect(text).toContain(">   - ask-first — RULE-OF-ask-first");
+        expect(text).not.toContain(SKILL_DIGEST_UNAVAILABLE);
+      });
+
+      it("a file cut off inside its frontmatter, or holding only frontmatter, does not shadow the DB copy either", async () => {
+        // Round-10 review, reproduced end to end: a materialization truncated
+        // mid-header is non-empty, so the empty-file guard let it through, and
+        // with no closing fence the splitter handed the YAML back as the body —
+        // the digest line read `name: prime-directive … prompt_triggers:
+        // "screenshot"` while the DB held the rule. Same for a header-only
+        // file: nothing to digest is not a body. The source is chosen by
+        // whether it DIGESTS, not by whether it has bytes.
+        mockReadNativeSkillBody.mockImplementation(async (name: string) =>
+          name === "prime-directive"
+            ? '---\nname: prime-directive\ndescription: "Non-negotiable rules"\nprotected: true\nprompt_triggers: "screenshot"'
+            : name === "ask-first" ? "---\nname: ask-first\nprotected: true\n---\n" : null);
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "standard",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+
+        const text = (await sessionBootstrapHandler({})).content[0].text as string;
+        expect(text).toContain(">   - prime-directive — RULE-OF-prime-directive");
+        expect(text).toContain(">   - ask-first — RULE-OF-ask-first");
+        expect(text).not.toContain("prompt_triggers");
+        expect(text).not.toContain("Non-negotiable rules");
+        expect(text).not.toContain(SKILL_DIGEST_UNAVAILABLE);
+        // The hook renders from the same selection.
+        const hook = await renderProtectedFloorDigestForHook();
+        expect(hook.text).toContain("prime-directive — RULE-OF-prime-directive");
+        expect(hook.text).not.toContain("prompt_triggers");
+      });
+
+      it("stays names-only at quick depth — a 4K budget cannot carry sixteen honest lines", async () => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "quick",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+
+        const text = (await sessionBootstrapHandler({})).content[0].text as string;
+        expect(text).toContain("Core/protected skills provisioned");
+        expect(text).not.toContain("Protected floor — rules in force");
+        expect(text).not.toContain("RULE-OF-");
+        expect(text.length).toBeLessThanOrEqual(4_000);
+      });
+
+      // Each case is wrapped ONCE MORE than it looks: it.each spreads an inner
+      // array as the callback's arguments, so `[["prism-startup"], NAMES]`
+      // delivered the STRINGS "prism-startup" / "prime-directive" and the
+      // JSON.stringify below produced a non-array the name parser rejected —
+      // the run fell to tier fallback and the test passed with the tier
+      // filter deleted (round-10 review, mutant-proven inert). The outer
+      // wrapper makes the whole array the single argument.
+      it.each([[["prism-startup"]], [[...REQUIRED_NATIVE_SKILL_NAMES]]])(
+        "renders no digest for a free tier, on the bootstrap AND the hook, even when paid names sit in the manifest (%j)",
+        async (committedNames: string[]) => {
+          expect(Array.isArray(committedNames)).toBe(true);
+          // Round-7 review: the hook read the committed names raw and injected
+          // sixteen paid rules from a DB whose bootstrap said "free, 1 skill".
+          mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+            default_context_depth: "standard",
+            "skill_manifest:tier": "free",
+            "skill_manifest:names": JSON.stringify(committedNames),
+            ...floorSettings,
+          }[key] ?? fallback));
+
+          const text = (await sessionBootstrapHandler({})).content[0].text as string;
+          expect(text).not.toContain("Protected floor — rules in force");
+          expect(text).not.toContain("RULE-OF-");
+          expect(await renderProtectedFloorDigestForHook()).toEqual({ names: [], text: "" });
+        },
+      );
+
+      it("the hook honours the configured depth — quick is names-only there too", async () => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "quick",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+        expect(await renderProtectedFloorDigestForHook()).toEqual({ names: [], text: "" });
+      });
+
+      it("renders the same digest for the post-compaction hook, unquoted, behind a one-line lead-in", async () => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          default_context_depth: "deep",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          ...floorSettings,
+        }[key] ?? fallback));
+
+        const { names, text } = await renderProtectedFloorDigestForHook();
+        expect(names).toEqual([...REQUIRED_PROTECTED_SKILL_NAMES]);
+        const lines = text.split("\n");
+        expect(lines[0]).toBe("Prism: context was compacted. The protected floor below is still in force for the rest of this session.");
+        expect(lines[1]).toContain("Protected floor — rules in force this session");
+        expect(lines[1].startsWith("- ")).toBe(true);
+        for (const name of REQUIRED_PROTECTED_SKILL_NAMES) {
+          expect(lines.filter((line) => line.startsWith(`  - ${name} — RULE-OF-${name}`)), name).toHaveLength(1);
+        }
+        expect(text).not.toContain("> ");
+        // Under Claude Code's ~10K-char hook context cap with room to spare.
+        expect(text.length).toBeLessThanOrEqual(6_200);
+      });
+
+      it("the hook payload carries the STALE marker when the committed generation never materialized — the bootstrap's line is gone after a compaction", async () => {
+        const settings = {
+          default_context_depth: "deep",
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(REQUIRED_NATIVE_SKILL_NAMES),
+          "skill_manifest:generation": "a".repeat(64),
+          "skill_manifest:materialized_generation": "b".repeat(64),
+          ...floorSettings,
+        };
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") =>
+          (settings as Record<string, string>)[key] ?? fallback);
+
+        const { names, text } = await renderProtectedFloorDigestForHook();
+        expect(names).toEqual([...REQUIRED_PROTECTED_SKILL_NAMES]);
+        const lines = text.split("\n");
+        expect(lines[0]).toBe("Prism: context was compacted. The protected floor below is still in force for the rest of this session.");
+        // Directly under the lead-in, above the digest, naming the generation.
+        expect(lines[1]).toContain("Skill files are STALE");
+        expect(lines[1]).toContain(`\`${"a".repeat(12)}…\``);
+        expect(lines[2]).toContain("Protected floor — rules in force this session");
+        expect(text).not.toContain("> ");
+        expect(text.length).toBeLessThanOrEqual(6_500);
+
+        // Same generation on both sides → no marker, byte-for-byte the plain payload.
+        settings["skill_manifest:materialized_generation"] = "a".repeat(64);
+        const fresh = await renderProtectedFloorDigestForHook();
+        expect(fresh.text).not.toContain("STALE");
+        expect(fresh.text.split("\n")[1]).toContain("Protected floor — rules in force this session");
+      });
+
+      it("answers the hook with an empty payload when nothing is entitled — never a partial floor", async () => {
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          "skill_manifest:tier": "enterprise",
+          "skill_manifest:names": JSON.stringify(["prism-startup"]),
+        }[key] ?? fallback));
+        expect(await renderProtectedFloorDigestForHook()).toEqual({ names: [], text: "" });
+
+        // Unparseable names fall back to the TIER's default set — for free
+        // that is prism-startup alone, so nothing is entitled. (At enterprise
+        // the same fallback entitles the whole floor; the round-10 review
+        // caught this case passing only because no bodies were seeded.)
+        mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+          "skill_manifest:tier": "free",
+          "skill_manifest:names": "not json",
+          ...floorSettings,
+        }[key] ?? fallback));
+        expect(await renderProtectedFloorDigestForHook()).toEqual({ names: [], text: "" });
+      });
     });
 
     it("rejects malformed bootstrap arguments before touching storage", async () => {

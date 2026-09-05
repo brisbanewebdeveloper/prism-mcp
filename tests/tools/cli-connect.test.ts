@@ -1940,21 +1940,22 @@ it("reports the Claude project migration on default and refresh dry runs only af
           : join(xdgConfigHome, "Claude", "skills");
       expect(existsSync(claudeDesktopSkillsDir)).toBe(false);
 
+      const promptRouteHook = {
+        type: "command",
+        command: `python3 ${join(homeDir, ".claude", "hooks", "prism-route", "on_prompt.py")} --v${PROMPT_ROUTE_HOOK_VERSION}`,
+        timeout: 15,
+      };
       expect(readConfig(claudeSettings).hooks).toEqual({
-        SessionStart: ["user-owned-claude-hook"],
+        // The user's own SessionStart hook survives; ours is appended after
+        // it and fires ONLY on `compact` — the post-compaction protected-floor
+        // re-injection (startup/resume already carry it in the bootstrap).
+        SessionStart: ["user-owned-claude-hook", { matcher: "compact", hooks: [promptRouteHook] }],
         // Installed by connect AFTER a successful sync — the prism-route
         // mid-session routing hook. A failed or disabled sync must NOT
         // produce this entry; the two tests above pin that.
-        UserPromptSubmit: [{
-          matcher: "*",
-          hooks: [{
-            type: "command",
-            command: `python3 ${join(homeDir, ".claude", "hooks", "prism-route", "on_prompt.py")} --v${PROMPT_ROUTE_HOOK_VERSION}`,
-            timeout: 15,
-          }],
-        }],
+        UserPromptSubmit: [{ matcher: "*", hooks: [promptRouteHook] }],
       });
-      expect(result.stdout).toContain("prism-route prompt hook installed");
+      expect(result.stdout).toContain("prism-route hooks installed — prompt routing + post-compaction floor");
       // Codex gets the same hook in its own hooks.json (CODEX_HOME-aware).
       expect(readFileSync(join(codexHome, "hooks.json"), "utf8").replace(/\\+/g, "/")).toContain("prism-route/on_prompt.py");
       expect(readConfig(claudeSettings).env.CLAUDE_CODE_SUBAGENT_MODEL).toBe("sonnet");
@@ -2075,6 +2076,66 @@ it("reports the Claude project migration on default and refresh dry runs only af
     expect(readFileSync(instructionPath, "utf8")).toBe(original);
     expect(readFileSync(agentsPath, "utf8")).toBe(agents);
     expect(result.stdout).not.toContain("native startup instructions");
+  });
+
+  it("warns and leaves a corrupt ~/.claude/settings.json byte-identical instead of registering the prism-route hooks over it", async () => {
+    // A trailing comma is the realistic shape: an operator hand-edited their
+    // settings and left the file unparseable. The old ensureRegistered would
+    // have treated the parse failure as "no config" and REPLACED the file
+    // with a minimal one — wiping their model/env/permissions along with the
+    // syntax error. Connect must say so on stdout and touch nothing.
+    const homeDir = makeHome();
+    const codexHome = join(homeDir, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    const claudeSettings = join(homeDir, ".claude", "settings.json");
+    mkdirSync(dirname(claudeSettings), { recursive: true });
+    const corrupt = '{\n  "model": "opus",\n  "env": { "KEEP": "me" },\n}\n';
+    writeFileSync(claudeSettings, corrupt);
+
+    const manifest = freeManifest();
+    const server = createServer((request, response) => {
+      if (request.url !== "/api/v1/prism/skill-manifest") {
+        response.writeHead(404).end();
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(manifest));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    try {
+      // `--host` targets one host; `--all` is the way to exercise both the
+      // Claude and the Codex hook installs in a single run.
+      const result = await runBuiltCli(["connect", "--all"], {
+        ...process.env,
+        HOME: homeDir,
+        USERPROFILE: homeDir,
+        APPDATA: join(homeDir, "appdata"),
+        XDG_CONFIG_HOME: join(homeDir, "xdg-config"),
+        CODEX_HOME: codexHome,
+        PRISM_CONFIG_PATH: join(homeDir, "prism-config.db"),
+        PRISM_SKILL_SYNC_DISABLED: "false",
+        PRISM_SYNALUX_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        PRISM_SYNALUX_API_KEY: "",
+      });
+
+      expect(result.stdout).toContain(
+        `⚠ claude: ${claudeSettings} is not valid JSON — prism-route hooks NOT registered; fix the file and re-run prism connect`,
+      );
+      expect(result.stdout).not.toContain("claude: prism-route hooks installed");
+      expect(readFileSync(claudeSettings, "utf8")).toBe(corrupt);
+      // The other host is independent: its hooks still land.
+      expect(readFileSync(join(codexHome, "hooks.json"), "utf8").replace(/\\+/g, "/")).toContain("prism-route/on_prompt.py");
+      // And connect as a whole fails loudly on the same file rather than
+      // reporting success around it — the legacy-hook migration that follows
+      // refuses to guess at an unparseable settings file.
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Could not parse Claude hook settings");
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
   });
 });
 
