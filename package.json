@@ -1,6 +1,6 @@
 {
   "name": "prism-mcp-server",
-  "version": "20.18.0",
+  "version": "20.18.1",
   "mcpName": "io.github.dcostenco/prism-coder",
   "description": "Persistent session memory for AI coding agents that never leaves your machine — including the on-device model that reasons over it. Restores your prior decisions, open TODOs, and changed files across sessions; adds associative recall of related past work, semantic drift detection, and local inference. Local-first by default. Works with Claude Code, Cursor, and Codex.",
   "module": "index.ts",
@@ -109,7 +109,7 @@
     "p-limit": "^7.3.0",
     "postcss": "8.5.23",
     "quickjs-emscripten": "^0.32.0",
-    "smol-toml": "^1.7.0",
+    "smol-toml": "^1.7.1",
     "stream-chain": "^4.2.5",
     "stream-json": "^3.6.0",
     "tldts": "^7.0.27",
