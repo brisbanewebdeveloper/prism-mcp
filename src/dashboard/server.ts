@@ -25,7 +25,8 @@ import * as fs from "fs";
 
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createServer, getAllPossibleTools } from "../server.js";
-import { getStorage } from "../storage/index.js";
+import { getStorage, activeStorageBackend } from "../storage/index.js";
+import { readDashboardLedger } from "./ledgerReader.js";
 import { PRISM_DASHBOARD_PORT, PRISM_USER_ID, SERVER_CONFIG } from "../config.js";
 import { renderDashboardHTML } from "./ui.js";
 import { computeIntentHealth } from "./intentHealth.js";
@@ -41,6 +42,7 @@ import {
   resolveDashboardToken,
   requestHasToken,
   buildTokenCookie,
+  dashboardTokenCookieName,
 } from "./dashboardToken.js";
 import {
   safeCompare,
@@ -342,7 +344,7 @@ return false;}
         reqUrl.searchParams.delete("token");
         const cleanTarget = reqUrl.pathname + (reqUrl.search ? reqUrl.search : "");
         res.writeHead(302, {
-          "Set-Cookie": buildTokenCookie(DASHBOARD_TOKEN, SESSION_TTL_MS, COOKIE_SECURE),
+          "Set-Cookie": buildTokenCookie(DASHBOARD_TOKEN, SESSION_TTL_MS, COOKIE_SECURE, dashboardTokenCookieName(req.socket.localPort!)),
           Location: cleanTarget,
         });
         return res.end();
@@ -357,6 +359,7 @@ return false;}
           },
           qToken,
           DASHBOARD_TOKEN,
+          dashboardTokenCookieName(req.socket.localPort!),
         )
       ) {
         res.writeHead(401, { "Content-Type": "application/json" });
@@ -469,7 +472,7 @@ return false;}
               firecrawlApiKey: {
                 type: "string",
                 title: "Firecrawl API Key",
-                description: "Optional: API key for Firecrawl (enables Web Scholar pipeline). Get one at https://www.firecrawl.dev/"
+                description: "Optional and currently unused: Web Scholar scrapes locally, and its discovery is selected by BRAVE_API_KEY or a Synalux portal login. Get one at https://www.firecrawl.dev/"
               },
               braveAnswersApiKey: {
                 type: "string",
@@ -604,11 +607,7 @@ return false;}
         const s = await getStorageSafe();
         if (!s) { res.writeHead(503, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "Storage initializing..." })); }
         const context = await s.loadContext(projectName, "deep", PRISM_USER_ID);
-        const ledger = await s.getLedgerEntries({
-          project: `eq.${projectName}`,
-          order: "created_at.desc",
-          limit: "20",
-        });
+        const ledger = await readDashboardLedger(s, activeStorageBackend, projectName, "created_at.desc", 20);
         let history: unknown[] = [];
         try {
           history = await s.getHistory(projectName, PRISM_USER_ID, 10);
@@ -1008,11 +1007,7 @@ return false;}
 
           // Gather data (mirrors sessionExportMemoryHandler)
           const ctx = await s.loadContext(projectName, "deep", PRISM_USER_ID) as Record<string, unknown> | null;
-          const rawLedger = await s.getLedgerEntries({
-            project: `eq.${projectName}`,
-            order: "created_at.asc",
-            limit: "1000",
-          }) as Array<Record<string, unknown>>;
+          const rawLedger = await readDashboardLedger(s, activeStorageBackend, projectName, "created_at.asc", 1000) as Array<Record<string, unknown>>;
 
           // Strip binary embedding fields
           const cleanLedger = rawLedger.map(({ embedding: _e, embedding_compressed: _ec, ...rest }) => rest);

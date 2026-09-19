@@ -86,7 +86,7 @@ export interface LegacyProjectMcpMigration {
 
 export interface NativeStartupConfiguration {
   path: string;
-  status: "unchanged" | "would-install" | "would-refresh" | "installed" | "refreshed";
+  status: "unchanged" | "would-install" | "would-refresh" | "installed" | "refreshed" | "unmanaged";
 }
 
 export type NativeAgentPolicyConfiguration = NativeStartupConfiguration;
@@ -115,6 +115,8 @@ interface HostDefinition {
   label: string;
   format: "json" | "codex-toml";
   configPath: string;
+  /** Additional host-owned config paths that use the same JSON MCP schema. */
+  additionalConfigPaths?: string[];
   detectionPaths: string[];
   executables: string[];
   configurationError?: string;
@@ -778,6 +780,12 @@ export function configureClaudeNativeStartup(
   homeDir = homedir(),
   dryRun = false,
   beforeCommit?: (path: string) => void,
+  /** Refresh an existing managed block and nothing else. With this set the
+   *  install branch is unreachable, so a caller that did not receive the
+   *  operator's consent (the unattended startup refresh) cannot create a
+   *  block — not through a marker that only appears in prose, and not through
+   *  a marker removed between a caller's check and this read. */
+  refreshOnly = false,
 ): NativeStartupConfiguration {
   const instructionPath = join(homeDir, ".claude", "CLAUDE.md");
   let writePath = instructionPath;
@@ -801,6 +809,11 @@ export function configureClaudeNativeStartup(
   const newline = currentText.includes("\r\n") ? "\r\n" : "\n";
   const startRanges = findExactLineRanges(currentText, CLAUDE_STARTUP_MANAGED_START);
   const endRanges = findExactLineRanges(currentText, CLAUDE_STARTUP_MANAGED_END);
+  // Not ours: no opening marker at all. Under refreshOnly that is the ordinary
+  // case (a host the operator never connected), not an ambiguity to shout about.
+  if (refreshOnly && startRanges.length === 0) {
+    return { path: instructionPath, status: "unmanaged" };
+  }
   if (startRanges.length !== endRanges.length || startRanges.length > 1) {
     throw new Error(`Claude instructions contain ambiguous Prism startup ownership markers: ${instructionPath}`);
   }
@@ -819,6 +832,7 @@ export function configureClaudeNativeStartup(
     nextText = currentText.slice(0, startRanges[0].start) + managedBlock + currentText.slice(managedEnd);
     action = "refresh";
   } else {
+    if (refreshOnly) return { path: instructionPath, status: "unmanaged" };
     const separator = currentText.length === 0
       ? ""
       : currentText.endsWith("\n") || currentText.endsWith("\r")
@@ -884,6 +898,8 @@ export function configureGeminiNativeStartup(
   homeDir = homedir(),
   dryRun = false,
   beforeCommit?: (path: string) => void,
+  /** See configureClaudeNativeStartup. */
+  refreshOnly = false,
 ): NativeStartupConfiguration {
   const instructionPath = join(homeDir, ".gemini", "GEMINI.md");
   let writePath = instructionPath;
@@ -907,6 +923,11 @@ export function configureGeminiNativeStartup(
   const newline = currentText.includes("\r\n") ? "\r\n" : "\n";
   const startRanges = findExactLineRanges(currentText, GEMINI_STARTUP_MANAGED_START);
   const endRanges = findExactLineRanges(currentText, GEMINI_STARTUP_MANAGED_END);
+  // Not ours: no opening marker at all. Under refreshOnly that is the ordinary
+  // case (a host the operator never connected), not an ambiguity to shout about.
+  if (refreshOnly && startRanges.length === 0) {
+    return { path: instructionPath, status: "unmanaged" };
+  }
   if (startRanges.length !== endRanges.length || startRanges.length > 1) {
     throw new Error(`Gemini instructions contain ambiguous Prism startup ownership markers: ${instructionPath}`);
   }
@@ -925,6 +946,7 @@ export function configureGeminiNativeStartup(
     nextText = currentText.slice(0, startRanges[0].start) + managedBlock + currentText.slice(managedEnd);
     action = "refresh";
   } else {
+    if (refreshOnly) return { path: instructionPath, status: "unmanaged" };
     const legacyBlock = legacyGeminiStartupBlock(newline);
     if (currentText.startsWith(legacyBlock)) {
       nextText = managedBlock + newline + currentText.slice(legacyBlock.length);
@@ -961,6 +983,8 @@ export function configureCodexNativeStartup(
   dryRun = false,
   beforeCommit?: (path: string) => void,
   env: NodeJS.ProcessEnv = homeDir === undefined ? process.env : {},
+  /** See configureClaudeNativeStartup. */
+  refreshOnly = false,
 ): NativeStartupConfiguration {
   const userHome = homeDir ?? homedir();
   const configuredCodexHome = env.CODEX_HOME?.trim();
@@ -987,6 +1011,11 @@ export function configureCodexNativeStartup(
   const newline = currentText.includes("\r\n") ? "\r\n" : "\n";
   const startRanges = findExactLineRanges(currentText, CODEX_STARTUP_MANAGED_START);
   const endRanges = findExactLineRanges(currentText, CODEX_STARTUP_MANAGED_END);
+  // Not ours: no opening marker at all. Under refreshOnly that is the ordinary
+  // case (a host the operator never connected), not an ambiguity to shout about.
+  if (refreshOnly && startRanges.length === 0) {
+    return { path: instructionPath, status: "unmanaged" };
+  }
   if (startRanges.length !== endRanges.length || startRanges.length > 1) {
     throw new Error(`Codex instructions contain ambiguous Prism startup ownership markers: ${instructionPath}`);
   }
@@ -1005,6 +1034,7 @@ export function configureCodexNativeStartup(
     nextText = currentText.slice(0, startRanges[0].start) + managedBlock + currentText.slice(managedEnd);
     action = "refresh";
   } else {
+    if (refreshOnly) return { path: instructionPath, status: "unmanaged" };
     const separator = currentText.length === 0
       ? ""
       : currentText.endsWith("\n") || currentText.endsWith("\r")
@@ -1066,6 +1096,146 @@ function configureJsonAgentPolicy(
 }
 
 /** Configure Claude Code's economy fallback model; policy text prevents routine fan-out. */
+/** One host's managed startup block, as the self-heal sees it. */
+export interface ManagedStartupRefresh {
+  host: "claude-code" | "gemini" | "codex";
+  path: string;
+  /** `unmanaged` — no instruction file, or no exact opening marker line: the
+   *  operator never ran connect for this host, so nothing is written.
+   *  `unchanged` — a managed block already matches this binary.
+   *  `refreshed` — a managed block differed and was replaced.
+   *  `would-refresh` — a dry run found a stale block; nothing was written.
+   *  `failed` — malformed markers (unpaired, duplicated, out of order), a file
+   *  shared with another host, or an I/O or write failure. Reported, never
+   *  thrown. */
+  status: "unmanaged" | "unchanged" | "refreshed" | "would-refresh" | "failed";
+  detail?: string;
+}
+
+/** Rewrite a managed startup block whose content differs from what THIS binary
+ *  writes, and nothing else. Not "older": there is no version ordering in the
+ *  block, so a pinned older install can rewrite what a newer one wrote.
+ *
+ *  The instruction files are the one delivery channel that does not travel with
+ *  the package: the MCP `initialize` instructions and every tool description
+ *  update the moment the server binary does, but a native instruction file keeps
+ *  whatever text `prism connect` last wrote. Released 20.21.0 changed that text —
+ *  it used to tell hosts to pass `cloud_fallback: false`, which made a paid
+ *  plan's escalation unreachable — and a machine that never re-runs connect keeps
+ *  telling its host the retracted thing. `prism update` deliberately never
+ *  touches host configuration, autoupdate runs `update`, and npm's ignore-scripts
+ *  blocks the postinstall refresh, so on an ordinary machine nothing heals it.
+ *
+ *  This is the narrow, safe subset of connect, and the narrowness is the point:
+ *
+ *  - MARKER-GATED. A file without the ownership marker is left byte-for-byte
+ *    alone. Connect is still the only thing that can FIRST install a block;
+ *    consent is never inferred from a server start.
+ *  - Startup blocks ONLY. It never touches MCP host registration — that is what
+ *    connect's "close target hosts before registration" warning is about, since
+ *    a live host rewrites its own config. These files DO have another writer —
+ *    Gemini CLI writes GEMINI.md on a remember request, Claude Code writes
+ *    CLAUDE.md on /init — so only the marker-delimited block is replaced,
+ *    marker lines included, and the file is re-checked immediately before
+ *    committing; a write landing inside that final window would still be
+ *    lost.
+ *  - Content-addressed, so it is a no-op once current: the block is compared
+ *    byte-for-byte and only a difference writes.
+ *
+ *  The host reads its instruction file when a session starts, so a refresh made
+ *  during this session lands on the NEXT one. That is the cost of healing
+ *  without asking, and it is one session. */
+export function refreshManagedStartupBlocks(options: {
+  homeDir?: string;
+  dryRun?: boolean;
+  env?: NodeJS.ProcessEnv;
+} = {}): ManagedStartupRefresh[] {
+  const homeDir = options.homeDir ?? homedir();
+  const env = options.env ?? process.env;
+  // The opt-out lives here, next to the writing, so it is one decision and a
+  // test can exercise it without starting a server.
+  if (env.PRISM_NO_STARTUP_REFRESH === "1") return [];
+  const dryRun = !!options.dryRun;
+  const codexHome = env.CODEX_HOME?.trim() ? resolve(env.CODEX_HOME.trim()) : join(homeDir, ".codex");
+  const targets: Array<{ host: ManagedStartupRefresh["host"]; path: string; configure: () => NativeStartupConfiguration }> = [
+    { host: "claude-code", path: join(homeDir, ".claude", "CLAUDE.md"), configure: () => configureClaudeNativeStartup(homeDir, dryRun, undefined, true) },
+    { host: "gemini", path: join(homeDir, ".gemini", "GEMINI.md"), configure: () => configureGeminiNativeStartup(homeDir, dryRun, undefined, true) },
+    { host: "codex", path: join(codexHome, "AGENTS.md"), configure: () => configureCodexNativeStartup(homeDir, dryRun, undefined, env, true) },
+  ];
+  const results: ManagedStartupRefresh[] = [];
+  // Two hosts can resolve to ONE file — GEMINI.md symlinked to CLAUDE.md is a
+  // common single-file setup — and Claude and Gemini serialize the SAME
+  // ownership marker, so without this each start rewrote that file twice and
+  // never converged: two "refreshed" lines on every start, forever. Whoever
+  // gets there first owns it; the second reports it as already handled.
+  // Identity is the FILE, not the path: statSync follows symlinks, and dev:ino
+  // is shared by hard links too, which a path comparison misses entirely (an
+  // atomic replace would then break the link and hand both hosts a "refreshed"
+  // they should never have got). Resolved ONCE per target and reused, so the
+  // decision below is the one that was actually measured; a target retargeted
+  // after this point is the same inherent window as the compare-to-rename one
+  // documented on writeTextAtomically.
+  const identityOf = (path: string): string => {
+    try {
+      const info = statSync(path);
+      return `${info.dev}:${info.ino}`;
+    } catch {
+      return `path:${path}`;   // absent or unreadable: the path itself is identity enough
+    }
+  };
+  const resolved = targets.map(target => ({ target, identity: identityOf(target.path) }));
+  const shared = new Map<string, ManagedStartupRefresh["host"][]>();
+  for (const { target, identity } of resolved) {
+    shared.set(identity, [...(shared.get(identity) ?? []), target.host]);
+  }
+  for (const { target, identity } of resolved) {
+    const sharing = shared.get(identity) ?? [target.host];
+    if (sharing.length > 1) {
+      // One file, two hosts. Claude and Gemini serialize the SAME ownership
+      // marker but DIFFERENT instructions (the tool is named differently for
+      // each), so there is no content that satisfies both: healing it would
+      // hand one host the other's block, and before this check each start
+      // rewrote the file once per host, forever. Whose block it should be is
+      // the operator's call, not a background process's.
+      results.push({
+        host: target.host,
+        path: target.path,
+        status: "failed",
+        detail: `shared with ${sharing.filter(h => h !== target.host).join(", ")} (one file cannot hold both blocks); run: prism connect`,
+      });
+      continue;
+    }
+    try {
+      // No independent pre-read. The configurator's own exact-line marker
+      // recognition decides, from ONE snapshot: a second, weaker check here
+      // (a substring scan) would call a file managed because the marker
+      // appears in its prose, and the window between two reads is a way to
+      // lose the marker after the check. With refreshOnly the install branch
+      // is unreachable either way.
+      const outcome = target.configure();
+      results.push({
+        host: target.host,
+        path: outcome.path,
+        // A dry run must not claim a write it did not make: would-refresh is
+        // carried through as itself. installed/would-install are unreachable
+        // under refreshOnly, so anything else is a completed refresh.
+        status: outcome.status === "unchanged" || outcome.status === "unmanaged" || outcome.status === "would-refresh"
+          ? outcome.status
+          : "refreshed",
+      });
+    } catch (error) {
+      // A self-heal must never be the reason a server fails to start.
+      results.push({
+        host: target.host,
+        path: target.path,
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return results;
+}
+
 export function configureClaudeAgentPolicy(
   homeDir = homedir(),
   dryRun = false,
@@ -1365,6 +1535,7 @@ function getHostDefinitions(
       label: "Gemini CLI",
       format: "json",
       configPath: join(homeDir, ".gemini", "settings.json"),
+      additionalConfigPaths: antigravityMcpConfigPaths(homeDir),
       detectionPaths: [join(homeDir, ".gemini")],
       executables: ["gemini"],
     },
@@ -1429,6 +1600,23 @@ function executableExists(name: string, platform: NodeJS.Platform, pathEnv: stri
   return false;
 }
 
+/**
+ * Antigravity has used three user-level MCP locations across releases. Keep
+ * the Gemini CLI settings registration as the primary result, and converge
+ * only Antigravity paths whose parent directory already exists. That avoids
+ * creating an unrelated host config on a Gemini-CLI-only installation while
+ * repairing an existing Antigravity installation, including the legacy IDE
+ * path that can otherwise continue launching an old server indefinitely.
+ */
+function antigravityMcpConfigPaths(homeDir: string): string[] {
+  const geminiDir = join(homeDir, ".gemini");
+  return [
+    join(geminiDir, "config", "mcp_config.json"),
+    join(geminiDir, "antigravity", "mcp_config.json"),
+    join(geminiDir, "antigravity-ide", "mcp_config.json"),
+  ].filter((configPath) => existsSync(configPath) || existsSync(dirname(configPath)));
+}
+
 function buildMcpEntry(nodePath: string, serverPath: string, env: NodeJS.ProcessEnv): JsonObject {
   const storage = env.PRISM_STORAGE ?? "auto";
   if (!CONNECT_STORAGE_BACKENDS.includes(storage as (typeof CONNECT_STORAGE_BACKENDS)[number])) {
@@ -1443,6 +1631,9 @@ function buildMcpEntry(nodePath: string, serverPath: string, env: NodeJS.Process
     PRISM_SYNALUX_BASE_URL: env.PRISM_SYNALUX_BASE_URL || "https://synalux.ai",
     PRISM_STORAGE: storage,
   };
+  // process.env is hydrated from the settings store before connect runs, so a
+  // machine that logged in once keeps its subscription across re-registration
+  // instead of silently dropping to unauthenticated search.
   if (env.PRISM_SYNALUX_API_KEY) {
     serverEnv.PRISM_SYNALUX_API_KEY = env.PRISM_SYNALUX_API_KEY;
   }
@@ -1464,10 +1655,42 @@ function registerHost(
   if (definition.configurationError) {
     return result(definition, "error", definition.configurationError);
   }
-  if (definition.format === "codex-toml") {
-    return registerCodexTomlHost(definition, entry, dryRun, refresh, beforeCommit);
+  const configDefinitions = [
+    definition,
+    ...(definition.additionalConfigPaths ?? []).map((configPath) => ({ ...definition, configPath })),
+  ];
+  const registerOne = (configDefinition: HostDefinition): ConnectResult => {
+    if (configDefinition.format === "codex-toml") {
+      return registerCodexTomlHost(configDefinition, entry, dryRun, refresh, beforeCommit);
+    }
+    return registerJsonHost(configDefinition, entry, dryRun, refresh, beforeCommit);
+  };
+  const primary = registerOne(configDefinitions[0]);
+  if (primary.status === "error") return primary;
+  const registrations = [primary, ...configDefinitions.slice(1).map(registerOne)];
+  const failures = registrations.slice(1).filter((registration) => registration.status === "error");
+  if (failures.length > 0) {
+    return {
+      ...primary,
+      status: "error",
+      startupCompatible: false,
+      message: `additional config registration failed: ${failures.map((failure) => `${failure.path}: ${failure.message || "unknown error"}`).join("; ")}`,
+    };
   }
-  return registerJsonHost(definition, entry, dryRun, refresh, beforeCommit);
+
+  const additionalChanges = registrations.slice(1).filter((registration) => registration.status !== "existing");
+  const incompatible = registrations.filter((registration) => !registration.startupCompatible);
+  const additionalMessage = additionalChanges.length > 0
+    ? `also ${additionalChanges.map((registration) => `${registration.status} ${registration.path}`).join(", ")}`
+    : undefined;
+  const incompatibleMessage = incompatible.length > 0
+    ? `retained incompatible or unmanaged registration(s): ${incompatible.map((registration) => registration.path).join(", ")}`
+    : undefined;
+  return {
+    ...primary,
+    startupCompatible: registrations.every((registration) => registration.startupCompatible),
+    message: [primary.message, additionalMessage, incompatibleMessage].filter(Boolean).join("; ") || undefined,
+  };
 }
 
 function registerJsonHost(

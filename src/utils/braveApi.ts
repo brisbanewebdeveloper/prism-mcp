@@ -40,16 +40,46 @@ import {
   type GoogleSearchCredentialSelectionStrategy,
 } from "../config.js";
 import {
-  SYNALUX_SEARCH_AVAILABLE,
+  synaluxSearchAvailable,
   synaluxWebSearch,
   synaluxWebSearchRaw,
   synaluxLocalSearch,
   synaluxLocalSearchRaw,
   synaluxBraveAnswers,
 } from "./synaluxSearch.js";
+import { debugLog } from "./logger.js";
+import { isPortalPlanRefusal } from "./portalError.js";
+
 function requireBraveApiKey(): string {
   if (!BRAVE_API_KEY) throw new Error("BRAVE_API_KEY is not configured");
   return BRAVE_API_KEY;
+}
+
+function hasLocalBraveProvider(): boolean {
+  return Boolean(BRAVE_API_KEY);
+}
+
+/**
+ * Keep configured portal search as the privacy boundary. Only a plan refusal
+ * may fall back to a locally configured provider; outages and auth failures do
+ * not replay the query outside the portal.
+ */
+async function portalFirst<T>(
+  viaPortal: () => Promise<T>,
+  hasLocalProvider: boolean,
+  viaLocalProvider: () => Promise<T>
+): Promise<T> {
+  try {
+    return await viaPortal();
+  } catch (error) {
+    if (hasLocalProvider && isPortalPlanRefusal(error)) {
+      debugLog(
+        "[braveApi] portal refused this plan; using the locally configured provider instead"
+      );
+      return viaLocalProvider();
+    }
+    throw error;
+  }
 }
 
 // ─── TypeScript Interfaces for Brave API Responses ────────────
@@ -78,6 +108,9 @@ export interface BraveLocation {
   id: string;
   name?: string;
   title?: string;
+  postal_address?: { displayAddress?: string };
+  contact?: { telephone?: string; email?: string };
+  opening_hours?: { current_day?: Array<{ opens?: string; closes?: string }> };
   address: {
     streetAddress?: string;
     addressLocality?: string;
@@ -92,8 +125,10 @@ export interface BraveLocation {
   rating?: {
     ratingValue?: number;
     ratingCount?: number;
+    reviewCount?: number;
   };
   openingHours?: string[];
+  price_range?: string;
   priceRange?: string;
 }
 
@@ -214,17 +249,32 @@ function selectGoogleSearchCredentials(
   return [firstCredential ?? credentials[0], ...randomized];
 }
 
+function configuredGoogleSearchCredentials(): GoogleSearchCredential[] {
+  try {
+    return GOOGLE_SEARCH_CREDENTIALS ?? [];
+  } catch {
+    // Some embedders and focused tests provide a partial config module.
+    return [];
+  }
+}
+
 // Brave Answers API call (AI Grounding/OpenAI-compatible)
 export async function performBraveAnswers(
   query: string,
   model: string = "brave"
 ) {
-  if (SYNALUX_SEARCH_AVAILABLE) {
-    // A configured portal is a privacy boundary. Do not replay its query to a
-    // direct provider if the portal request fails.
-    return synaluxBraveAnswers(query, model);
+  if (synaluxSearchAvailable()) {
+    return portalFirst(
+      () => synaluxBraveAnswers(query, model),
+      Boolean(BRAVE_ANSWERS_API_KEY),
+      () => braveAnswersDirect(query, model)
+    );
   }
 
+  return braveAnswersDirect(query, model);
+}
+
+async function braveAnswersDirect(query: string, model: string): Promise<string> {
   if (!BRAVE_ANSWERS_API_KEY) {
     throw new Error("BRAVE_ANSWERS_API_KEY is not configured");
   }
@@ -269,7 +319,7 @@ export async function performWebSearchRawWithCredentials(
   query: string,
   count: number = 10,
   offset: number = 0,
-  credentials: GoogleSearchCredential[] = GOOGLE_SEARCH_CREDENTIALS ?? [],
+  credentials: GoogleSearchCredential[] = configuredGoogleSearchCredentials(),
   strategy: GoogleSearchCredentialSelectionStrategy =
     GOOGLE_SEARCH_CREDENTIAL_SELECTION_STRATEGY ?? "failover"
 ): Promise<string> {
@@ -357,42 +407,29 @@ async function performBraveWebSearchRaw(
   return await response.text();
 }
 
-export async function performWebSearchRaw(
-  query: string,
-  count: number = 10,
-  offset: number = 0
-): Promise<string> {
-  if (SYNALUX_SEARCH_AVAILABLE) {
-    if (offset !== 0) {
-      throw new Error("Configured Synalux search does not support search offsets");
-    }
-    return synaluxWebSearchRaw(query, count);
-  }
+function hasLocalWebProvider(): boolean {
+  return configuredGoogleSearchCredentials().length > 0 || Boolean(BRAVE_API_KEY);
+}
 
-  if ((GOOGLE_SEARCH_CREDENTIALS ?? []).length > 0) {
+async function performLocalWebSearchRaw(
+  query: string,
+  count: number,
+  offset: number
+): Promise<string> {
+  if (configuredGoogleSearchCredentials().length > 0) {
     return performWebSearchRawWithCredentials(query, count, offset);
   }
 
   return performBraveWebSearchRaw(query, count, offset);
 }
 
-// Web search API call
-export async function performWebSearch(
+async function performLocalWebSearch(
   query: string,
-  count: number = 10,
-  offset: number = 0
-) {
-  if (SYNALUX_SEARCH_AVAILABLE) {
-    if (offset !== 0) {
-      throw new Error("Configured Synalux search does not support search offsets");
-    }
-    return synaluxWebSearch(query, count);
-  }
-
-  const textData = await performWebSearchRaw(query, count, offset);
+  count: number,
+  offset: number
+): Promise<string> {
+  const textData = await performLocalWebSearchRaw(query, count, offset);
   const data = JSON.parse(textData) as BraveWeb;
-
-  // Extract just web results
   const results = (data.web?.results || []).map((result) => ({
     title: result.title || "",
     description: result.description || "",
@@ -401,9 +438,49 @@ export async function performWebSearch(
 
   return results
     .map(
-      (r) => `Title: ${r.title}\nDescription: ${r.description}\nURL: ${r.url}`
+      (result) =>
+        `Title: ${result.title}\nDescription: ${result.description}\nURL: ${result.url}`
     )
     .join("\n\n");
+}
+
+export async function performWebSearchRaw(
+  query: string,
+  count: number = 10,
+  offset: number = 0
+): Promise<string> {
+  if (synaluxSearchAvailable()) {
+    if (offset !== 0) {
+      throw new Error("Configured Synalux search does not support search offsets");
+    }
+    return portalFirst(
+      () => synaluxWebSearchRaw(query, count),
+      hasLocalWebProvider(),
+      () => performLocalWebSearchRaw(query, count, offset)
+    );
+  }
+
+  return performLocalWebSearchRaw(query, count, offset);
+}
+
+// Web search API call
+export async function performWebSearch(
+  query: string,
+  count: number = 10,
+  offset: number = 0
+) {
+  if (synaluxSearchAvailable()) {
+    if (offset !== 0) {
+      throw new Error("Configured Synalux search does not support search offsets");
+    }
+    return portalFirst(
+      () => synaluxWebSearch(query, count),
+      hasLocalWebProvider(),
+      () => performLocalWebSearch(query, count, offset)
+    );
+  }
+
+  return performLocalWebSearch(query, count, offset);
 }
 
 // Get POI details
@@ -469,10 +546,21 @@ export async function performLocalSearchRaw(
   query: string,
   count: number = 5
 ): Promise<string> {
-  if (SYNALUX_SEARCH_AVAILABLE) {
-    return synaluxLocalSearchRaw(query, count);
+  if (synaluxSearchAvailable()) {
+    return portalFirst(
+      () => synaluxLocalSearchRaw(query, count),
+      hasLocalBraveProvider(),
+      () => performBraveLocalSearchRaw(query, count)
+    );
   }
 
+  return performBraveLocalSearchRaw(query, count);
+}
+
+async function performBraveLocalSearchRaw(
+  query: string,
+  count: number = 5
+): Promise<string> {
   const braveApiKey = requireBraveApiKey();
   // Initial search to get location IDs
   const webUrl = new URL("https://api.search.brave.com/res/v1/web/search");
@@ -504,7 +592,8 @@ export async function performLocalSearchRaw(
       .map((r) => r.id) || [];
 
   if (locationIds.length === 0) {
-    const fallback = await performWebSearch(query, count);
+    // Stay on the direct-provider path after a portal plan refusal.
+    const fallback = await performLocalWebSearch(query, count, 0);
     return JSON.stringify({
       source: "web_fallback",
       query,
@@ -543,13 +632,24 @@ export async function performLocalSearchRaw(
   });
 }
 
-// Local search API call with poi details
+// Local search API call with POI details
 export async function performLocalSearch(query: string, count: number = 5) {
-  if (SYNALUX_SEARCH_AVAILABLE) {
-    return synaluxLocalSearch(query, count);
+  if (synaluxSearchAvailable()) {
+    return portalFirst(
+      () => synaluxLocalSearch(query, count),
+      hasLocalBraveProvider(),
+      () => performBraveLocalSearch(query, count)
+    );
   }
 
-  const rawData = await performLocalSearchRaw(query, count);
+  return performBraveLocalSearch(query, count);
+}
+
+async function performBraveLocalSearch(
+  query: string,
+  count: number
+): Promise<string> {
+  const rawData = await performBraveLocalSearchRaw(query, count);
   const parsed = JSON.parse(rawData) as {
     source: "local" | "web_fallback";
     formattedText?: string;
@@ -575,23 +675,32 @@ export function formatLocalResults(
   return (
     (poisData.results || [])
       .map((poi) => {
+        const today = poi.opening_hours?.current_day?.[0];
+        const hours =
+          (poi.openingHours || []).join(", ") ||
+          (today?.opens && today?.closes
+            ? `${today.opens}-${today.closes}`
+            : "") ||
+          "N/A";
         const address =
+          poi.postal_address?.displayAddress ||
           [
-            poi.address?.streetAddress ?? "",
-            poi.address?.addressLocality ?? "",
-            poi.address?.addressRegion ?? "",
-            poi.address?.postalCode ?? "",
-          ]
-            .filter((part) => part !== "")
-            .join(", ") || "N/A";
+              poi.address?.streetAddress ?? "",
+              poi.address?.addressLocality ?? "",
+              poi.address?.addressRegion ?? "",
+              poi.address?.postalCode ?? "",
+            ]
+              .filter((part) => part !== "")
+              .join(", ") ||
+          "N/A";
 
-        return `Name: ${poi.name || poi.title || "N/A"}
+        return `Name: ${poi.title || poi.name || "N/A"}
 Address: ${address}
-Phone: ${poi.phone || "N/A"}
-Rating: ${poi.rating?.ratingValue ?? "N/A"} (${poi.rating?.ratingCount ?? 0
+Phone: ${poi.contact?.telephone || poi.phone || "N/A"}
+Rating: ${poi.rating?.ratingValue ?? "N/A"} (${poi.rating?.reviewCount ?? poi.rating?.ratingCount ?? 0
           } reviews)
-Price Range: ${poi.priceRange || "N/A"}
-Hours: ${(poi.openingHours || []).join(", ") || "N/A"}
+Price Range: ${poi.price_range || poi.priceRange || "N/A"}
+Hours: ${hours}
 Description: ${descData.descriptions[poi.id] || "No description available"}
 `;
       })

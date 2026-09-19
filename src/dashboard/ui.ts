@@ -713,6 +713,7 @@ export function renderDashboardHTML(version: string): string {
         <button class="settings-btn" onclick="openSettings()" title="Settings">⚙️</button>
       </div>
     </header>
+    <p id="projectLoadError" role="alert" style="display:none; color:var(--accent-rose);"></p>
 
     <div class="main-tabs" style="display:flex; gap: 1rem; border-bottom: 1px solid var(--border-glass); margin-bottom: 1.5rem; padding-bottom: 0;">
       <button class="s-tab active" id="mtab-project" onclick="switchMainTab('project')" style="font-size: 1rem;">📁 Project View</button>
@@ -2051,6 +2052,7 @@ function loadIdentityChip() {
                     return [4 /*yield*/, res.json()];
                 case 2:
                     data = _a.sent();
+                    if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
                     select = document.getElementById('projectSelect');
                     if (data.projects && data.projects.length > 0) {
                         select.innerHTML = '<option value="">— Select a project —</option>' +
@@ -2099,6 +2101,8 @@ function loadIdentityChip() {
                 case 3:
                     e_2 = _a.sent();
                     document.getElementById('projectSelect').innerHTML = '<option value="">Error loading projects</option>';
+                    document.getElementById('projectLoadError').textContent = e_2.message || 'Error loading projects';
+                    document.getElementById('projectLoadError').style.display = 'block';
                     return [3 /*break*/, 4];
                 case 4:
                     // Load identity chip once settings are available
@@ -2976,7 +2980,9 @@ function loadGraph() {
                     }
                     MAX_NODES = 200;
                     if (data.nodes.length > MAX_NODES) {
-                        priority = { project: 0, category: 1, keyword: 2 };
+                        // Keep the project/category/keyword ordering truthy because the
+                        // comparator falls back with a high priority for unknown groups.
+                        priority = { project: 1, category: 2, keyword: 3 };
                         data.nodes.sort(function (a, b) { return (priority[a.group] || 9) - (priority[b.group] || 9); });
                         kept = new Set(data.nodes.slice(0, MAX_NODES).map(function (n) { return n.id; }));
                         data.nodes = data.nodes.slice(0, MAX_NODES);

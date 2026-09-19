@@ -2,6 +2,689 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.21.7 — 2026-09-18
+
+### Cloud dashboards show the state the agent actually saved
+
+Paid clients authenticate through the Synalux Portal, but the Mind Palace
+dashboard still used direct Supabase reads for its checkpoint ledger and neural
+graph. Those credentials are deliberately absent on the thin client. The
+project selector could succeed while the selected project showed an old
+handoff, an empty graph, or a generic load failure.
+
+The dashboard now reads both views through bounded, authenticated Portal
+contracts. The recent-checkpoint reader locates the actual tail of a paginated
+ledger and retries if a checkpoint completes during the read, so a successful
+save cannot be hidden behind the export window. Graph filters are validated
+before they reach the Portal, and the 200-node display cap retains project hubs
+before trimming lower-priority nodes.
+
+Multiple local dashboards now use port-scoped cookies, so opening one IDE's
+instance does not overwrite another instance's credential. Project-list errors
+are displayed instead of being rendered as “No projects found.” `prism
+connect` also refreshes the active Antigravity MCP configuration locations
+when those host directories already exist, without creating them on a
+Gemini-only installation or taking over unmanaged entries.
+
+This release also corrects the multi-turn benchmark graders that miscounted
+abbreviations, incomplete prose, and fabricated numeric answers. The local CI
+script is now checked against every portable GitHub workflow step so a local
+pass cannot silently omit a remote gate.
+
+## 20.21.6 — 2026-09-17
+
+### A stale startup block heals itself when a session starts
+
+20.21.0 corrected the text `prism connect` writes into host instruction files:
+the old wording told hosts to pass `cloud_fallback: false`, which is what made
+a paid plan's escalation unreachable. Nothing on an ordinary machine rewrites
+that text. `prism update` never touches host configuration by design,
+`autoupdate` runs `update`, and the `postinstall` upgrade path is both limited
+to the prompt-routing hook and routinely disabled by npm's ignore-scripts,
+which blocked it again while publishing 20.21.0. So the fix shipped and the
+instruction that defeats it stayed on disk.
+
+The server now refreshes a managed startup block once its transport is
+connected. It is the narrowest useful subset of connect, and the narrowness is
+the contract:
+
+- **It can only refresh, never install.** The install branch is unreachable
+  from this path, so a file without exactly one ordered pair of Prism ownership
+  markers is left byte-for-byte alone and an absent file is never created. Only
+  `prism connect` can first install a block; consent is never inferred from a
+  server start. An opening marker without a valid pair is reported, not
+  repaired, and a closing marker alone is simply not ours.
+- **Startup blocks only.** MCP host registration is never touched, which is
+  what connect's "close your hosts first" warning is about.
+- **Content-addressed**, so a current block is not rewritten on every start.
+  Two hosts that resolve to one file (a `GEMINI.md` symlinked to `CLAUDE.md` is
+  a common single-file setup, or a hard link) are reported rather than healed:
+  they share an ownership marker but serialize different instructions, so no
+  content satisfies both, and whose block it should be is the operator's call.
+  Sameness is the file's inode, not its path, so a hard link counts. Before
+  this the file was rewritten once per host on every start, forever.
+- **Never fatal.** A failure is reported and the server starts. A file whose
+  own mode is read-only is still replaced when its directory is writable,
+  because the write is an atomic rename: `chmod` is not the opt-out,
+  `PRISM_NO_STARTUP_REFRESH=1` is.
+
+Two limits worth stating plainly. Gemini CLI writes `GEMINI.md` itself when you
+ask it to remember something, and Claude Code writes `CLAUDE.md` on `/init`, so
+these files do have another writer: the refresh replaces only its own
+marker-delimited block, marker lines included, and re-checks the file
+immediately before committing, but a write that lands inside that final window
+would be overwritten. And "stale"
+means "differs from what this binary writes", not "older", so a pinned older
+install can rewrite a block a newer one wrote.
+
+The host reads its instruction file when a session begins, so a refresh lands
+on the next one either way. It therefore runs on a short unref'd timer rather
+than in the startup path: loading the connect module is synchronous work that
+would otherwise compete with the first tool call, which on a cold host is the
+one doing a storage round trip. `PRISM_NO_STARTUP_REFRESH=1` opts out.
+
+## 20.21.5 — 2026-09-17
+
+### Generated TypeScript is type checked, not pattern matched
+
+The regex gate added in 20.21.4 catches one defect class. The next sample
+defeated it: a doubly-linked-list splice written `node.next?.prev = head`, which
+is TS2779 and does not compile. Extending the regex per error code is an arms
+race the compiler already wins, so the compiler now runs — in process, on
+TypeScript blocks only, at about 160 ms against a local call that takes twenty
+seconds.
+
+Checking a fragment is not the same as checking a project. A generated snippet
+has no tsconfig, no resolved imports, and no way to say whether it targets the
+browser or Node, so a naive check reports the harness rather than the code —
+pointing one at the DOM library made a snippet's own `Node` class collide with
+the DOM's and produce twelve extra diagnostics. A gate that fails correct code
+gets switched off, so only an allowlist of codes is ever reported: a generic
+with no type argument, optional chaining on the left of an assignment, a return
+value that does not match its declaration, and an implicitly `any` parameter.
+Everything else is logged and discarded.
+
+### A counter that never counts
+
+One rule no type checker can express, added because the AST was already loaded:
+a value mutated inside a `then`, `catch` or timer callback and then returned
+synchronously. The callback runs later, so the returned value never includes it.
+From the first multi-turn benchmark, where `emit()` returned 1 for three
+listeners. It is scoped to the enclosing function, because without that a nested
+helper's mutation was credited to its caller and flagged correct code.
+
+`typescript` becomes a declared dependency. It was previously present but listed
+in neither `dependencies` nor `devDependencies`, resolving only through the
+lockfile.
+
+## 20.21.4 — 2026-09-17
+
+### A generic with no type argument is repaired instead of shipped
+
+`prism-coder:9b` writes `Map<string, Array>` — observed in four separate
+generations of the same task, including through the live server. It is TS2314,
+so nothing it produces compiles. The coding gate carried three static passes for
+Python and none for TypeScript, so this shipped every time.
+
+Detection needs no TypeScript dependency; the shape is unambiguous when a bare
+generic sits inside a type-argument list or directly after a type annotation.
+The deterministic repair parameterises it — `Array<any>`, not `Array<unknown>`,
+because `unknown` trades one compile error for one at every use site — and the
+existing repair machinery serves the corrected code without a second generation.
+Verified against real model output: one substitution and the file compiles clean
+under `--strict`.
+
+This makes the code build. It does not make it well typed, and it does not
+address defects that need real type checking, such as a method returning
+`PromiseSettledResult[]` under a `Promise<void>` signature.
+
+### Plan requests carry the section list they will be measured against
+
+A behaviour-plan request now receives a system instruction naming every required
+section, generated from the same list the census verifies, so the list that
+instructs is the list that verifies. Measured on the live 9b: the same request
+scored 7 of 10 unscaffolded and 10 of 10 scaffolded, in fewer characters — it
+restructured rather than padded, and the previously absent sections returned
+with substantive content, including non-examples and a correctly worded review
+statement. A caller's own `system` always wins, including an explicit empty one.
+
+The cost is recorded rather than hidden: once the model is told the list, the
+census confirms that an instruction was followed rather than independently
+finding that a plan is complete. A scaffolded 10 of 10 is weaker evidence than
+an unscaffolded one.
+
+
+### The clinical census credited only its own vocabulary
+
+The section check shipped in 20.21.3 reported seven sections missing from a real
+behaviour plan. Four of those were present: antecedent strategies under the
+heading "Pre-Work Strategies", consequence strategies under "Response to
+Behavior", caregiver training as "All staff will be trained on the plan", and
+decision rules as "Evaluation Criteria: ... the plan will be adjusted". The true
+count was 7 of 10, not 3.
+
+The patterns required canonical ABA phrasing. Plans written in plain language —
+which is what a model actually produces — read as missing sections they
+contained. A raise-only check that is wrong four times in seven gets ignored,
+which costs more than the check earns.
+
+Four patterns now match the concept rather than the term. The fixtures were
+rebuilt from verbatim model output instead of authored prose: the previous
+fixture scored 10 of 10 because it had been written in the matcher's own
+vocabulary, so it measured the fixture rather than the gate. A sparse plan that
+genuinely lacks those sections is pinned alongside it, because widening a
+pattern to remove a false positive can silence a real gap.
+
+## 20.21.3 — 2026-09-16
+
+### A behaviour plan is now censused against its required sections
+
+The quality gate carried three static passes for Python and none for clinical
+output, so a behaviour plan missing its decision rules or its data-collection
+procedure was served exactly like a complete one. A structural check now runs in
+every mode whenever the request is behaviour-analytic, and the response reports
+what it found: `clinical_sections=3/10 missing:operational_definition,...`.
+
+Measured on local output during development: a plan request produced 1,716
+tokens covering three of ten required sections, and an operational-definition
+request produced 920 tokens with no non-examples. Neither was previously visible
+to the caller.
+
+Two limits are deliberate and worth stating plainly. The census **raises and
+never certifies** — it counts sections, and a section can be present and still
+be clinically wrong, so nothing it reports may be read as an endorsement; a
+credentialed BCBA decides whether a plan is adequate. And it does **not** widen
+what runs locally: crisis, restraint and self-injury content is refused upstream
+before any model sees it, and that boundary is untouched. In practice a plan
+request framed around aggression is refused before this check is reached, so it
+governs the routine band only.
+
+An incomplete plan is reported, never suppressed. The draft is still served,
+carrying its census, because a clinician is better served by a plan labelled
+`3/10` than by silence — an earlier revision failed the quality gate on a
+missing section, and a request that could not escalate returned no output at
+all. Two findings do fail, because they are defects rather than gaps: AAC
+access restricted as a consequence, and an operational definition written
+without non-examples.
+
+Nothing here is auto-repaired. Re-prompting the same local model to invent a
+missing decision-rules section produces plausible unratified clinical text,
+which is worse than a visible gap.
+
+
+### `prism_infer` now tells you how much history it received
+
+The tool's documentation has promised since multi-turn shipped that "every
+entitlement-resolved result reports `multi_turn` (your plan's caps) and
+`history_turns` (what was sent)". Both values were computed and recorded
+internally, but neither was ever rendered into the response, so the only way to
+learn what a call actually carried was to read the local metrics database.
+
+That gap is easy to fall into and hard to notice. A caller that intends to send
+conversation history but omits `messages` — a typo, a dropped parameter, a host
+that compacted the schema — gets a plausible-looking answer produced from the
+current turn alone, with nothing in the response indicating the history never
+arrived. Follow-up answers degrade exactly the way a weak model would degrade,
+and the cause is invisible.
+
+Every response header now ends with `history_turns=N`, including
+`history_turns=0`, plus `multi_turn=<turns>/<chars>` for the plan's caps, or
+`multi_turn=off` where the plan has no multi-turn. The zero case is reported
+deliberately: an omitted field is what made this silent.
+
+No behavior other than the header changed. The header builder is now a pure
+exported function, `inferResponseHeader`, so the reporting contract is covered
+by tests rather than by a live call.
+
+## 20.21.2 — 2026-09-16
+
+### Local results carried names and nothing else
+
+A live search for libraries returned three venue names and eighteen `N/A`s. The
+formatter read `name`, `address.streetAddress`, `phone`, `openingHours` and
+`rating.ratingCount`; Brave sends `title`, `postal_address.displayAddress`,
+`contact.telephone`, `opening_hours` and `rating.reviewCount`. Only the name
+survived, because it happened to fall back to `title`. The same query now
+returns the street address, the phone number and today's opening hours. Legacy
+shapes remain as fallbacks so an older cached payload still renders.
+
+- **A remote portal is never addressed in the clear.** Startup hydration
+  published the stored base URL without the plaintext upgrade the storage layer
+  applies, so a self-hosted `http://` portal would have received the query and
+  a bearer token over cleartext. That control now lives in one place and every
+  path that yields a transport URL uses it. Loopback is unchanged.
+- **Search and entitlements resolve the portal identically.** They did not:
+  entitlements ignored the legacy `SYNALUX_BASE_URL` alias, accepted an
+  unexpanded `${...}` template and never checked the value parsed as a URL.
+  Four environments disagreed, the worst giving a paying subscriber working
+  search and a free-tier plan.
+- **A malformed base URL falls through instead of disabling search.** One
+  character wrong in a host config used to route every query to the direct
+  provider in silence.
+
+## 20.21.1 — 2026-09-16
+
+### Search asked for a Brave key from subscribers who had already paid
+
+A paying subscriber's every web search failed with `BRAVE_API_KEY is not
+configured`, while the same account's entitlements correctly reported its plan.
+Portal search availability was a module-load constant derived from
+`SYNALUX_CONFIGURED`, which reads `process.env` at import time. `prism connect`
+copies `PRISM_SYNALUX_API_KEY` into a host's MCP env block only when that key
+already happens to be in the environment; a machine that signed in through
+Prism's settings store got a base URL and no key. The key did reach
+`process.env` later during startup, which is why entitlements resolved the paid
+plan — but the search constant had already frozen `false` for the life of the
+process, so every query skipped the portal and fell back to a provider key in
+the server's own environment. A host launched from the graphical shell carries
+none, so the search failed outright.
+
+- **Portal search availability is resolved per call, from the live
+  environment.** `fetchEntitlements()` now calls the same two helpers, so the
+  two cannot disagree about whether the portal is usable. Four environments
+  disagreed before that, including a host where the legacy `SYNALUX_BASE_URL`
+  alias arrived after module load: search worked and the plan read as free.
+  An unexpanded `${...}` template is treated as no credential, matching how
+  `config.ts` has always sanitised these values.
+- **The portal request builder resolves its base URL the same way.** It read the
+  module-load constant behind a non-null assertion, which would have thrown a
+  `TypeError` on a host whose credentials arrive only from the settings store.
+- **A remote portal is never addressed in the clear.** Hydration published the
+  stored base URL without the plaintext upgrade the storage layer applies, so a
+  self-hosted `http://` portal would have received the query and a bearer JWT
+  over cleartext. That control now lives in one place and both paths use it.
+  Loopback is unchanged.
+- **The server hydrates the subscription key before it connects the
+  transport**, from the settings cache that startup has already warmed. No new
+  I/O on the Initialize handshake.
+- **`prism connect` hydrates before it writes host config**, so a machine that
+  signed in once keeps its subscription across re-registration instead of
+  silently dropping to unauthenticated search. A stored value that is not a URL
+  is never published to `process.env`, which storage and entitlements share.
+
+Nothing changes for an account with no subscription: search still uses
+`BRAVE_API_KEY`, and still says so when there is none.
+
+## 20.21.0 — 2026-09-16
+
+### The multi-turn screen refused real work
+
+The first organic multi-turn call after 20.20.0 shipped was refused, and it
+was ordinary engineering talk. Replaying it with the real classifier showed
+why: every turn read alone was clean, and the joined read hedged. Remove the
+history and the identical prompt is served locally. The benchmark that
+approved the release attributed no refusals to the context layer, because its
+fixtures were short and synthetic.
+
+- **Behaviour change for paid plans — cloud fallback follows the plan.** A
+  paid-plan host that omitted `cloud_fallback` used to get no cloud inference fallback and now
+  escalates an uncertain, reserved or failed local call to the Synalux cloud,
+  sending the prompt and the accepted turns. Free plans are unaffected: they
+  have no cloud to reach. An omitted `cloud_fallback` used to
+  mean "no cloud", so a paid entitlement sat unused and an uncertain verdict
+  dead-ended. It now means "whatever my plan gives me". Explicit `false` still
+  forbids cloud inference fallback, which the clinical delegation rules depend
+  on (the route guard and grounding verifier keep their own switches); explicit
+  `true` still needs a plan with cloud. The default is image-aware, because
+  cloud can never serve an image request and turning it on for one would only
+  convert a usable local answer into a hard failure. The task router no longer
+  sends the argument: `prism_infer` resolves it from entitlements, and pinning
+  it in the recommendation made a paid plan's escalation unreachable for any
+  host that copied those arguments.
+- **Refusals name the layer.** `infer_metrics` gains the turn count and the
+  screen layer that decided the call (rules, isolated, prompt, context,
+  budget, backstop), so "how often is history passed" and "which layer refused
+  this" are queries. Both took a scan of host transcripts when it mattered.
+- **The context layer is unchanged, on evidence.** A candidate that built
+  context windows from user turns only cleared every false positive, and an
+  adversarial pass found the hole the live classifier then confirmed: a cloud
+  answer fed back as history, then "turn that into numbered steps", each clean
+  alone, is the reserved request, and it was served. Windows keep both roles.
+  The classifier's hedging on joined engineering text is a calibration gap,
+  not closed here: on a paid plan it is routed to cloud instead of refused,
+  which is what this release fixes. On the realistic fixtures that is one
+  conversation in four, and the same one is still refused by a caller that
+  passes `cloud_fallback: false` with history (free plans cannot reach it:
+  the portal has multi-turn off for them, so they never carry history). The
+  live suite pins both counts so either can only regress loudly. The durable
+  fix is classifier calibration, with these fixtures as its regression set.
+
+`tests/live` now carries realistic-size conversations run end to end on a paid
+plan; the exit criterion is "answered, never refused".
+
+## 20.20.0 — 2026-09-16
+
+### `prism_infer` takes the conversation, not just the last line
+
+`prism_infer` was single-shot: one optional system message and exactly one
+user message, whatever the host had said to the worker before. Without the
+earlier turns the larger tiers do not decline a follow-up they cannot answer,
+they fabricate — probed 2026-09-15, the 9b answered "what is my codename?"
+with a confident invented name when the turn that set it was missing.
+
+An optional `messages` array now carries prior turns, oldest first, each
+`{role: "user" | "assistant", content}`; `prompt` stays the current turn. The
+host curates the history (send only turns you accepted, as a brief, not a
+transcript); Prism bounds, screens, counts and forwards it, and never stores
+it:
+
+- **A paid-plan feature, bounded by the plan, rejected not trimmed.** Whether
+  multi-turn is available and its turn and character caps are entitlements
+  set in the portal's plan table (the portal's companion change — deploy it BEFORE this
+  release, or every plan is refused with `multi_turn_not_in_plan`), not decisions the client makes: Prism is a
+  thin client. It enforces whatever the portal says, refuses an over-cap call
+  naming the caps (`history_over_plan_cap`), and refuses outright on a free
+  plan, a host with no portal, or a portal that says nothing
+  (`multi_turn_not_in_plan`, with the upgrade URL) — the client's own default
+  is OFF, so no one gets a paid feature without an account. An absolute
+  ceiling of 49 turns / 128,000 characters of history (49 prior turns plus the current one meet the
+  portal's 50-message cap exactly), with the current prompt capped at 128,000 characters alongside it,
+  bounds any plan. User and assistant roles only, text only; a `system` turn or
+  an image fails validation. Silently dropping the turn that mattered is the
+  truncation class the context gate exists to prevent.
+- **Screened alone, then in context.** Every history turn is classified alone
+  (in ≤3,600-char windows overlapping by 200, so nothing shorter than that
+  hides in the middle of a long turn; the deterministic rules overlap by
+  3,800), the
+  current prompt alone through the classifier's own call unless it is at most
+  4,000 chars and the deterministic rules call it routine, and every verdict
+  from a read alone is kept: reserved is final (nothing written later can lower
+  it); uncertain goes to the cloud when the plan allows it and is refused
+  otherwise, never served locally (a request carrying an image keeps the
+  existing image policy: local only, never cloud); an error takes the path a
+  single-prompt error always took: cloud when it is allowed and answers,
+  otherwise the keyword net over the whole conversation decides and keyword-
+  clean text is served locally (the one path that is not fail-closed, an
+  availability policy kept from single turns), and three errors in a row are
+  treated as uncertain. Then each turn and the current prompt are classified
+  in context (the tail of the role-labelled transcript ending at that turn),
+  which can only raise the verdict: intent spread across turns that each read
+  clean alone is caught there when both parts fall inside one window, the
+  last 3,600 chars of the transcript up to the end of the later part's turn;
+  windows exist only at turn ends, so a later part at the start of a long
+  turn, or parts further apart than that, are never in one read (the
+  window's size and placement are the limit). The deterministic rules run per turn (the
+  operational ones on user turns only), the keyword floor and
+  reserved-category attribution over the whole conversation. A reserved
+  phrase in a user turn is handled exactly as in a single prompt: refused for
+  a text call, the image policy for a call with an image. In the model's own
+  earlier answer the operational rules do not run; the clinical rules, the
+  keyword floor and the semantic reads do.
+- **Counted.** Every turn, plus per-message template framing, is charged to the
+  tier's context window, so the 4,096-token tiers are skipped rather than
+  truncated.
+- **Forwarded on escalation.** The portal's inference route already accepts a
+  `messages` array; the cloud client now sends the whole conversation instead
+  of the bare prompt, and refuses locally with `history_over_cloud_cap` before
+  any network call when the flattened transcript would exceed the portal's
+  32 KB limit.
+
+Every installed tier reads role-structured history correctly, including a
+turn another tier wrote (five writer/reader pairs probed, all recalled). A
+call without `messages` is byte-for-byte the call the handler made before.
+
+35 tests in `tests/tools/prismInferMultiTurn.test.ts`, nine of them proven
+to fail against the previous handler for the named reason: no history reached
+the model, the validator ignored it, the safety screen saw only the current
+turn (the reserved history was served by the 9b), the context gate did not
+count it, escalation dropped it.
+
+### The host is told the worker can hold a conversation, and what it costs
+
+A feature the host is instructed not to use is invisible. Four surfaces now
+carry it: the `prism_infer` description says follow-ups need `messages` and
+that a stateless follow-up fabricates; every entitlement-resolved result reports `multi_turn`
+(the plan's caps) and `history_turns` (a count, never content), so the host
+learns its budget from the first call instead of from a refusal; the startup
+display prints one line — on with the caps, or off on this plan — whenever the
+entitlements cache is warm, read from the cache only, never a portal fetch on
+the startup path (a cold cache prints nothing; the first `prism_infer` result
+carries the policy); and
+`session_task_route` returns `needs_history: true` when a task reads as a
+follow-up ("now…", "the same…", "your previous answer"), with the shared
+local-first policy telling every host to attach the accepted prior turns when
+it does. The router holds no turns; attaching them stays the host's job. Bare
+pronouns are deliberately not cues, so "fix it" stays a standalone task.
+
+35 tests in `tests/tools/prismInferMultiTurn.test.ts` (nine proven to
+fail against the previous handler, one compatibility baseline, two guards, nine
+regression cases for the caps, retries, verdict severity and escalation
+payload, 8 for the entitlement-ruled policy), plus an opt-in live suite in `tests/live/multiTurn.live.test.ts` (`PRISM_LIVE_TESTS=1`) that runs
+only when a local Ollama serves the tiers and pins what was verified by hand:
+every tier reads role history through the real local call, a no-history
+control fails, and the 9b recalls the first turn across a history past its
+old window.
+
+### The 9b context pin survives `prism update-models`
+
+`scripts/prism-coder-9b.Modelfile` rebuilds `prism-coder:9b` FROM the same
+weights with `PARAMETER num_ctx 32768` — the manifest digest changes and
+nothing else. Convergence judged an alias stale by digest, so the next
+`prism update-models` would have `ollama cp`'d the unpinned upstream over the
+pinned tag and silently undone the pin. Found before it happened.
+
+Stale now means OLD WEIGHTS. Convergence reads each tag's `FROM` blob and
+`num_ctx` from `/api/show`; a pin on the same weights is left alone
+(`up_to_date`, `locally_pinned`), and a pin on superseded weights is rebuilt
+with the lost pin announced together with the exact re-adopt command
+(`pin_dropped_readopt`). Hosts whose Ollama cannot answer `/api/show` keep the
+digest rule. Four regression tests, the first proven to fail before the fix.
+
+Two context-gate tests that asserted the table's 4,096-token window read
+`num_ctx` from the live daemon instead of injecting a probe, so they passed on
+CI and failed on a host with the pin adopted. They now inject the probe.
+
+### Hardened by twenty-three adversarial review rounds before merge
+
+Two independent reviewers (Codex CLI and a verifier agent that reverted each fix and
+confirmed its regression test failed) reviewed the feature and then each round of fixes.
+Every bullet below carries a test that failed on the code before it.
+
+- `prism_infer`'s input schema now stays under Codex's 5,000-byte schema-compaction budget (was ~5,800), so Codex sees every parameter description including the `messages` contract; the description no longer claims Codex drops parameter text unconditionally. Regression: `tests/tools/prismInferSchemaBudget.test.ts`.
+- Multi-turn hardening from the pre-merge adversarial review: history turns longer than the Layer-1 full-read limit are classified in overlapping windows, so no region of a turn goes unscreened; a call carrying history is always screened, whatever `mode`/`max_tokens` pair it uses; the silent-truncation backstop counts the whole input (prompt plus history), not the current prompt alone; the code-repair retry carries the same images and history as the first call; and the cloud cap now mirrors the portal byte-for-byte (50 messages including the current turn, portal-exact flattening), so nothing the client accepts is refused with 413 upstream.
+- Second review round: the deterministic crisis/medical intercept now reads every user history turn, not only the current prompt (user turns only as of the fourth round) (the portal already screened the flattened conversation; the client was weaker than the server it forwards to); Layer-1 screening of history stops at the first OBVIOUS_RESERVED verdict and caches window verdicts by content hash (no turn text retained), so a follow-up no longer re-screens every prior turn; a portal outage is reported as `entitlements_source=fallback_free`, not as "not in the free plan", to a paying customer; an over-ceiling or malformed `messages` is refused with the ceiling named; `session_task_route` no longer flags "Next.js 15 migration plan" or "Also fix the typo in README" as follow-ups (a leading connective needs an anaphor), and the delegation-disabled route carries `needs_history` like every other; the startup line honours the entitlement cache TTL; a converge run says when `/api/show` facts are unavailable and the digest rule applies. Unchanged by design and now documented: a reserved history turn with an image is served local-only with cloud pinned off, per the 2026-08-18 clinical-image ruling.
+- Third review round: the caller-controlled Layer-1 skip (`mode: route` + `max_tokens <= 16`, the classifier's old signature) is gone — the classifier never re-enters `prism_infer`, so it only ever served as a bypass; every call is screened. History-window verdicts expire after 15 minutes so a classifier alias rebuilt in place cannot keep a stale clearance; windows never cut a surrogate pair; the crisis intercept checks each turn separately so adjacent turns cannot synthesise a phrase; the code-repair retry is sized like the first call (history, images, effective system prompt, live window); `prism update-models` leaves an alias alone, and says so, when `/api/show` cannot tell a local pin from stale weights; a bare "continue" / "keep going" is a follow-up cue; the live suite no longer probes Ollama unless opted in. Documented and unchanged: the `system` argument is not screened (a clinical system prompt would false-positive the crisis intercept); last-known-good entitlements persist through a portal outage (the fail-closed safety controls depend on it); the half-window truncation signature keeps its ±8-token band.
+- Fourth review round (measured by the second reviewer): a whitespace-only window inside a long history turn no longer returns an ERROR verdict that pushed a benign conversation to the cloud; the deterministic Layer-1 rules run over each WHOLE turn as well as its windows, so a co-occurrence split across two windows still fires (superseded in the sixth round: 7,200-char proximity windows); the crisis intercept screens user turns only (the worker's own prior answer is not a first-person disclosure); the absolute turn ceiling is 49 so that 49 prior turns plus the current one meet the portal's 50-message cap exactly; the single-prompt cloud path fails fast above the portal's 32 KB body cap (`prompt_over_cloud_cap`) instead of a doomed 413 round trip; "redo that" / "do it again" are follow-up cues. Release note: the half-window truncation signature (±8 tokens of num_ctx/2) can, about once in two thousand long calls, abandon a conversation that genuinely fits; with a single installed tier that is a hard failure, not a downgrade.
+- Fifth and sixth rounds: `prism update-models` exits non-zero when any installed tier failed to converge; the verdict cache keeps monotonic time; the deterministic co-occurrence floor over history runs in 7,200-char proximity windows rather than over a whole turn, after a measured false positive refused a 20 KB pasted source file ("diagnose" and "determine" 14k chars apart) and, on a cloud plan, shipped it off-device; "a jumping off point for the refactor" no longer trips the crisis intercept; the bare "continue" cue matches only the bare verb, so "Continue integration tests for the parser" and "Go on-call rotation doc" are standalone (superseded in the eighteenth round: a "please/now/ok" prefix makes any continuation a cue again); three regression tests that stayed green with their fix reverted now fail.
+- Seventh and eighth rounds: the deterministic floor's windows advance by the classifier stride, so any two terms up to 3,800 chars apart share a window wherever they sit; the crisis exemption is the "jumping off point" idiom only, as whole words, mirrored into the portal's copy of the list. **The deterministic operational rules are role-aware:** a user turn is a request and gets them; an assistant turn is the worker's own prior output and does not (clinical rules, the semantic classifier and the keyword net still run on every turn) — measured, the operational rules (write/add/fix × auth/token/session × verify/handler) describe ordinary code and refused half of this repo's files and the worker's own code answers when re-sent as history. The non-operational artifact exemption is decided over the whole turn, so a window that lost its "test fixture" context cannot out-rank its turn. (Superseded in the tenth round: decided per proximity slice.)
+- Ninth round, measured live against the real classifier through the real handler: screened turn by turn, the 4b refused 4 of 12 benign follow-ups from the benchmark (2 UNCERTAIN on context-free snippets such as "Which ticket is this bug filed under?", 2 false RESERVED on "We deploy to eu-west-3" and "Steps: plan, build, test, deploy"), and neither the benchmark nor the live suite had exercised that path. The semantic screen now runs over 3,600-char windows of the role-labelled transcript with the current prompt as the last user turn, so every window carries its context: 0 of 12 refused live. Windows are aligned from the start, so a follow-up re-uses the cached verdicts of every window but the last; a single-turn call is the exact classifier call it always was. (Superseded: from the twelfth round the transcript is a raise-only context layer; from the twenty-second, the one context read is the prompt's own window.) The per-turn role-aware deterministic floor, the crisis intercept per user turn and the keyword net are unchanged.
+- Tenth round: the artifact exemption is scoped to the 7,200-char proximity slice (an exemption thousands of chars away from a trigger is not the same clause); the crisis exemption is the idiom as a noun phrase only (a determiner + "jump(ing) off point(s)"), so "I plan to jump off point of the roof" intercepts again, mirrored into the portal; the bare "continue" cue is anchored on both branches, so "Please continue integration tests for the parser" is standalone like its unprefixed form; tests pin a middle-window ERROR followed by a reserved window, no reuse of a no-image verdict for an image call, and that roles come from the message field rather than from "Assistant:" text. Documented trade-off: the deterministic operational rules trust the host's role labels; the semantic classifier reads every window regardless.
+- Eleventh round: the crisis pattern reads the hyphenated spelling too ("jump-off the roof" intercepts, "a jumping-off point" is exempt), mirrored into the portal; "Now, continue." is a follow-up cue; the middle-window ERROR test proves the window is classified again on the next call.
+- Twelfth round (the verifier's blocker): the transcript-window screen let a classifier-directed note in a LATER prompt clear a reserved earlier turn — measured, the 9b then served a self-injury protocol the previous commit refused; the same note inside the turn or in a single prompt did not fool the classifier, so per-turn isolation is a real property. The screen is now three layers: the deterministic floor per turn; each turn classified ALONE, where OBVIOUS_RESERVED is final; then the transcript in context, which can only raise. The clinical self-injury rule now reads "bites his own arm" (the payload's wording) deterministically. Live end-to-end through the handler with the real classifier: 10 of 13 benchmark follow-ups served locally (the three refusals are the classifier's own reserved categories: an auth-middleware answer and two deploy-related snippets), and all four injection variants refused. Also: "Now,continue" is a cue; the description says entitlement-resolved results report `multi_turn`. (Superseded: the context layer became per-turn windows in the eighteenth round and raise-only reads in the twenty-second.)
+- Thirteenth round: an ERROR from a turn read alone is kept (the single-prompt ERROR path: cloud when it answers, else the keyword net decides, as before); only UNCERTAIN alone defers to context — a documented policy change: a turn UNCERTAIN alone but clean in context is served, where any UNCERTAIN used to refuse. With history the current prompt is capped at 128,000 chars structurally, so the transcript screen has a hard ceiling of classifier work. (Superseded in the twenty-second round: an UNCERTAIN read alone no longer defers to context.)
+- Fourteenth and fifteenth rounds: the history screen has an aggregate classifier-call budget as a safety net at the structural maximum (170 uncached calls per request; every shape the plan caps allow fits under it, so a paid call never trips it), beyond which it fails closed as UNCERTAIN with the attempt named (text calls; a call with an image keeps the image policy); and a consecutive-ERROR breaker: after three uncached windows in a row answer ERROR (a dead or stalled classifier), the rest are UNCERTAIN without a call — fail-closed: cloud when the plan allows it, else refused — instead of minutes of timeouts; marking them ERROR would have handed windows the classifier never read to the regex-only keyword net (sixteenth round). An explicit empty `messages: []` is single-turn for the prompt cap too.
+- Eighteenth round (the verifier's retry): the context layer reads one window per turn, the transcript's tail ending at that turn, instead of start-aligned windows over the whole transcript, so a note in the current prompt can never be part of an earlier turn's context read (the UNCERTAIN whitewash it measured is closed), and evicting the oldest turn at the plan cap invalidates one or two windows for turns as long as the measured fixture's (~2,900 chars) instead of every one (measured before: 26 uncached calls, 13.6 s per follow-up at cap); short turns shift every window that held the evicted turn — all of them while the whole transcript fits in one window. A reserved verdict on the worker's own ASSISTANT turn read alone now floors at UNCERTAIN (cloud when allowed, else refused; never lowered by context) instead of a final refusal that broke ordinary coding conversations (10 of 13 served, versus 12 of 13 before the isolation layer). A budget or breaker trip is merged fail-closed whatever the cache held. The prompt's deterministic floor runs in proximity slices like a turn. The "please/now/ok, continue …" cues are back (they had been narrowed away; "Continue integration tests …" without a prefix stays standalone). The crisis pattern is now the private repo's pattern manifest entry (a bounded lookbehind, so the Swift copy compiles); its generator output still drifts from the hand-maintained portal copy in other patterns, which is pre-existing and reported, not fixed here. (Superseded in the twenty-second round: the per-turn context windows and the assistant-turn floor are gone; every isolated verdict is kept.)
+- Nineteenth round: the prompt-alone classifier call no longer runs the classifier's own whole-prompt deterministic pass (it undid the proximity slicing: words 14k chars apart fired one rule); the routine fast path is kept explicitly — a prompt every slice of which the rules call routine, with no images, skips the model. An UNCERTAIN read of a long turn's head is kept fail-closed, since only the turn's last window is inside its context read. The UNCERTAIN-defers-to-context policy has a measured, narrow residual involving content the classifier finds only UNCERTAIN alone; per the project's disclosure rule the detail is kept in the private repo. Later text can never affect an earlier turn's read. (The residual named here is closed in the twenty-second round: no isolated UNCERTAIN defers to context any more.)
+- Twentieth round: the explicit routine fast path applies only to prompts of at most 4,000 chars, the entry point's own boundary; a longer routine-shaped prompt always reaches the entry point, whose full-text keyword floor must run (the previous round's fast path skipped it for oversize prompts).
+- Twenty-second round (two verifier reports): every verdict from a turn read alone is now kept — OBVIOUS_RESERVED final, UNCERTAIN fail-closed (cloud when the plan allows it, else refused; with an image, the image policy), ERROR on the single-prompt error path as before — and a context read can raise the verdict but never clear one. Four shapes of "an UNCERTAIN read alone defers to context" were each measured bypassable by a classifier-directed note in whichever window decided; there is no window a caller can shape that is safe to make the adjudicator. The assistant-turn UNCERTAIN floor (which changed no outcome downstream and cost extra calls) is gone with them. (This round also cut the context reads to the prompt's own window; the twenty-third restored them.) Live counts on the benchmark are reported in the PR. The budget/breaker trip merge is now pinned by a test. Public text that quoted the exact wording of a closed injection now describes the class.
+- Twenty-third round (verifier and Codex on the twenty-second): cutting the context reads to the prompt's own window left everything earlier than its last 3,600 chars unscreened for intent spread across turns — measured live, the two halves of a restraint request in separate user turns, clean apart, reserved together, followed by four benign turns, were served where the previous head refused. The per-turn context windows are back as raise-only reads (they were removed for cost, not safety: nothing defers to them any more, so they cannot reopen the whitewash), skipped once the verdict is already uncertain or reserved (and the isolated reads are skipped once the deterministic floor has refused); the structural maximum is 137 calls again. The consecutive-ERROR breaker now trips on the read that reaches the threshold, not only before the next one: a third ERROR on the last read left the aggregate on the ERROR path. With the context windows back, even a one-turn history makes three screen reads, so a classifier that is down now trips the breaker on the smallest conversation and refuses (cloud when allowed) instead of falling to the keyword net as the twenty-second round did. The overview's claim that a reserved phrase in the model's own answer is handled exactly as in a single prompt was false for the operational rules (user turns only) and is corrected; the isolated windows' 200-char overlap is stated next to the claim it bounds.
+
+### Fixed
+
+- Handoff history snapshots now retain the effective role and active branch,
+  and save responses distinguish a durable primary handoff from a failed
+  optional time-travel snapshot.
+
+### The MCP registry listing can actually publish
+
+`registry-publish.yml` ran on any push to main touching `server.json`, which
+meant it fired the moment a release PR merged. The npm publishes fire only on
+a `v*` tag, and the registry refuses to list a version whose npm package does
+not exist yet:
+
+```
+registry validation failed for package 0 (prism-mcp-server): NPM package
+'prism-mcp-server' exists, but version '20.19.0' was not found (404)
+```
+
+So the job could never succeed on a real release. It failed exactly that way
+for 20.18.2 and 20.19.0 while the public listing sat two releases behind at
+20.18.1 — the drift this workflow was written to prevent.
+
+It now runs on the release tag, and waits for npm to actually serve the
+package coordinates the registry validates (read from `server.json`, so the
+probe cannot drift from what is sent) for up to ten minutes before
+publishing. `workflow_dispatch` stays as the recovery path for a listing that
+missed its tag.
+
+## 20.19.0 — 2026-09-15
+
+### Paid users get the search they are paying for
+
+Web Scholar chose its discovery source by asking whether **this machine held a
+key**, rather than whether a search was possible:
+
+```ts
+const useBraveFirecrawl = !!(BRAVE_API_KEY && FIRECRAWL_API_KEY);
+```
+
+`performWebSearchRaw` already serves portal users from Synalux-side credentials
+and everyone else from their own `BRAVE_API_KEY`. The gate never consulted that,
+so a **portal-configured user holding no local key was silently demoted to the
+free academic path** — paying for web search and getting the free-tier sources.
+A user who set only `BRAVE_API_KEY` was demoted too, for want of a Firecrawl key
+that nothing spends.
+
+The gate now asks the same question the transport answers:
+
+```ts
+const useWebSearch = SYNALUX_SEARCH_AVAILABLE || !!BRAVE_API_KEY;
+```
+
+Which credential is used remains the transport's decision — portal first, so
+credentials and query redaction stay server-side. `FIRECRAWL_API_KEY` is now
+unused everywhere (scraping has always been the local scraper); it stays
+exported so existing `.env` files do not break, and the config warning it drove
+— which claimed Scholar would "fall back to free search" without it — now names
+the credentials Scholar actually needs.
+
+Five tests pin the matrix: portal-only, local-key-only, Brave-without-Firecrawl,
+both, and neither. Fail-before verified — the old gate fails the portal-only and
+Brave-alone cases with "expected to be called 1 times, but got 0 times".
+
+Routing a signed-in account to web search exposed a second gap: the portal
+answers a **free plan's** search with `403 Cloud Search requires Standard plan
+or higher`, and before this change such an account never reached the portal
+from Scholar, so it had been getting academic results. Scholar now treats a
+failed web search — portal refusal, expired login, rejected Brave key — as a
+reason to continue on the free academic path, never as a reason to end the
+run, and the returned report opens with a note saying which sources it used.
+The stored ledger entry stays clean. Scholar itself adds no second attempt;
+whether the user's own key may answer a refusal is the transport's decision
+(next section). Three more tests pin this (portal 403 → academic results
+saved; exactly one transport call; no note in the ledger).
+
+### A free account uses its own key when the portal refuses the plan
+
+`SYNALUX_SEARCH_AVAILABLE` is true for every `prism connect` login, and every
+search tool went portal-first with no way back, so a **free** account that had
+configured its own `BRAVE_API_KEY` could never use it while signed in: the
+portal's 403 was the answer. Now, when the portal refuses the *plan* — 403
+with `upgrade_url` or "plan" in the body — and the user configured their own
+key, the same request is made on that key, exactly as it would be for a user
+who never signed in. This applies to `brave_web_search`, `brave_local_search`,
+`brave_answers`, their code-mode variants, `query_memory_natural`'s grounded
+search, and Web Scholar.
+
+The privacy boundary is otherwise unchanged: an outage (5xx), a quota (429,
+even though it also carries `upgrade_url`), an expired login (401), or a 403
+that is not a plan refusal still never turns into a direct provider call with
+the original query. Without an own key the refusal
+propagates as before. Portal HTTP errors are now a typed `PortalHttpError`
+(same message) so the transport can tell these apart without parsing text.
+
+Nine tests pin the matrix in `tests/braveApiPlanRefusal.test.ts`; fail-before
+verified against the previous transport (the four own-key cases reject with
+`HTTP 403`, the five no-escape cases already passed).
+
+The docs had kept describing a client-side auto-scheduler (`Every 5 Minutes`,
+`Web Scholar: 🟢 Enabled (every 5m)`) that was retired in v18.0.0, and a
+Firecrawl key that nothing spends. WEB_SCHOLAR.md, ARCHITECTURE.md,
+`.env.example` and the `scholar_research` tool description now describe the
+pipeline that ships.
+
+### Web Scholar drops the search API Google is switching off
+
+- Removes the Google Custom Search discovery path (`GOOGLE_SEARCH_API_KEY` +
+  `GOOGLE_SEARCH_CX`). Google closed that API to new customers in 2025 and
+  discontinues it for existing customers on 2027-01-01, and its recommended
+  successor — Vertex AI Search — is site search over up to 50 domains, not full
+  web search. The branch was already unreachable for anyone without a legacy
+  key.
+- **Behaviour change:** a run that set both Google variables now uses Brave, or
+  the free academic path when Brave is unconfigured. The path was opt-in and
+  undocumented; nothing else moves.
+- Removes the Tavily remnants in `.env.example` and `docs/ARCHITECTURE.md`. The
+  Tavily integration itself was deleted long ago (`PROVENANCE.md`), but the docs
+  still advertised it as a Brave+Firecrawl replacement.
+
+### Web Scholar documentation now matches the code
+
+`docs/WEB_SCHOLAR.md` carried three claims the code contradicts:
+
+- *"All three keys are required; if any are missing the pipeline fails silently
+  and the dashboard shows Disabled."* It does not. Missing search keys select
+  the free academic path (PubMed + ERIC + Semantic Scholar, then Yahoo), which
+  needs no key at all. Only a text-provider key is genuinely required.
+- *"Brave Search → Firecrawl Scrape."* Firecrawl is never called; scraping is
+  always the built-in local scraper. `FIRECRAWL_API_KEY` acts only as a
+  companion flag that selects the Brave branch — so setting `BRAVE_API_KEY`
+  alone silently leaves you on the free path, which is now documented.
+- *"Scheduled — runs automatically at a configurable interval."* Not locally:
+  the client-side scheduler was retired in v18.0.0 and `startScholarScheduler()`
+  has no caller, so `PRISM_SCHOLAR_INTERVAL_MS` does nothing on a local install.
+  Scheduled runs happen server-side via portal cron.
+
+Also documents that discovery has no cross-provider failover, and that
+`GOOGLE_API_KEY` is the AI Studio synthesis key rather than a search key.
+
+## 20.18.2 — 2026-09-14
+
+### Regenerable junk no longer freezes a skill out of sync
+
+- Deletes machine-generated artifacts from Prism-owned skill directories before
+  the integrity check reads them. `isPristineMarkedSkill` compares the full
+  recursive file list against the ownership marker, so a single untracked file
+  classified a skill as locally modified and every later sync silently skipped
+  it — the marker was valid and every digest matched.
+- Covers CPython's `__pycache__` and `*.pyc`/`*.pyo`, written beside any skill
+  script that is imported rather than executed, and the file-browser artifacts
+  `.DS_Store`, `Thumbs.db` and `desktop.ini`. On macOS and Windows, opening a
+  managed skill folder in a file browser was enough to stop it updating.
+- Applies at all three sites that consult the pristine check, including
+  `enforceNativeEntitlements`, where the same misread parked a now-unentitled
+  skill in `.prism-skill-quarantine` instead of removing it.
+- Purges rather than exempting these paths from the integrity walk. An ignored
+  `.pyc` is attacker-chosen bytecode that CPython loads in preference to its
+  source whenever the header's recorded source mtime and size match, so
+  skipping it would trade a false conflict for arbitrary code execution.
+  Deleting is also stricter than the previous behaviour, which left a tampered
+  cache on disk and merely froze the skill.
+- Touches nothing Prism does not own, nothing the manifest shipped, and never
+  follows a symlink out of the skill root. Any other untracked file still
+  conflicts and is still preserved. The purge is best effort: a delete that
+  cannot complete conflicts that one skill rather than failing the whole sync.
+
+### The skill-conflict warning names the condition, not a guessed cause
+
+- Replaces "local copy has no Prism ownership marker", which was one of several
+  causes and not the common one, and which routed the operator to
+  `prism connect` — rewriting host MCP configuration, with every host closed —
+  when the repair was deleting a regenerable cache directory.
+- States the procedure that reveals the actual cause instead of enumerating
+  possibilities: compare the directory's file list with the `files` keys in its
+  `.prism-managed.json`. An enumerated draft measured 858 characters, 21% of the
+  entire `quick` startup budget, and this block renders in the head that the
+  display cap keeps while cutting session context.
+
+### Documentation
+
+- Corrects the `config.ts` environment guide, which described a startup exit no
+  key has ever had and marked `BRAVE_API_KEY` required without noting that a
+  configured Synalux account supplies it portal-side instead. Exactly one of the
+  two is needed; the server starts either way and search tools error only when
+  called.
+
 ## 20.18.1 — 2026-09-12
 
 ### Task-skill continuity across compaction and manifest updates
@@ -1027,13 +1710,6 @@ search result. Upgrade if you use Web Scholar at all.
   queries (TPNs, function names) that embeddings blur. Results state how they
   were found (`hybrid retrieval`, per-hit `sem#/lex#`, `exact-term match`).
   Local SQLite installs keep pure vector search.
-
-## [Unreleased]
-
-### Fixed
-- Handoff history snapshots now retain the effective role and active branch,
-  and save responses distinguish a durable primary handoff from a failed
-  optional time-travel snapshot.
 
 ## [20.2.9] - 2026-07-26 — Reliable Releases and Sessions
 

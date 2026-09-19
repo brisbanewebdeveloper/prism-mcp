@@ -309,6 +309,7 @@ export interface HealthStats {
  * direct Supabase REST API calls.
  */
 export interface StorageBackend {
+  getDashboardLedger?(project: string, order: "created_at.asc" | "created_at.desc", limit: number): Promise<unknown[]>;
   updateLastAccessed(ids: string[]): Promise<void>;
   // ─── Lifecycle ─────────────────────────────────────────────
 
@@ -338,6 +339,19 @@ export interface StorageBackend {
    * Used by compaction to find candidates and by backfill to find missing embeddings.
    */
   getLedgerEntries(params: Record<string, any>): Promise<unknown[]>;
+
+  /**
+   * Optional authenticated graph read for cloud backends. The method keeps
+   * graph filters in the backend query so a bounded result is selected after
+   * user/deleted/filter predicates, rather than truncating before filtering.
+   */
+  getDashboardGraphEntries?(params: {
+    project?: string;
+    createdAfter?: string;
+    minImportance?: number;
+    keywords?: string[];
+    limit: number;
+  }): Promise<unknown[]>;
 
   /**
    * Delete ledger entries matching filter criteria.
