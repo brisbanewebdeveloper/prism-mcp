@@ -7,7 +7,7 @@ const {
   mockGetSetting,
   mockGetAllSettings,
   mockToKeywordArray,
-  mockGetLLMProvider,
+  mockGetEmbeddingProvider,
 } = vi.hoisted(() => ({
   mockSaveLedger: vi.fn(),
   mockPatchLedger: vi.fn(),
@@ -15,7 +15,7 @@ const {
   mockGetSetting: vi.fn(),
   mockGetAllSettings: vi.fn().mockResolvedValue({}),
   mockToKeywordArray: vi.fn(() => ["semantic", "search"]),
-  mockGetLLMProvider: vi.fn(),
+  mockGetEmbeddingProvider: vi.fn(),
 }));
 
 vi.mock("../../src/storage/index.js", () => ({
@@ -37,7 +37,7 @@ vi.mock("../../src/utils/keywordExtractor.js", () => ({
 }));
 
 vi.mock("../../src/utils/llm/factory.js", () => ({
-  getLLMProvider: mockGetLLMProvider,
+  getEmbeddingProvider: mockGetEmbeddingProvider,
 }));
 
 vi.mock("../../src/config.js", async (importOriginal) => {
@@ -78,7 +78,7 @@ describe("sessionSaveLedgerHandler embedding queue", () => {
 
   it("queues embeddings through the active provider even when GOOGLE_API_KEY is unset", async () => {
     const generateEmbedding = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
-    mockGetLLMProvider.mockReturnValue({ generateEmbedding });
+    mockGetEmbeddingProvider.mockReturnValue({ generateEmbedding });
     markContextLoaded("conv-1", "brain-health-test", "test");
 
     const patchCall = new Promise<[string, Record<string, unknown>]>((resolve) => {
@@ -96,7 +96,7 @@ describe("sessionSaveLedgerHandler embedding queue", () => {
 
     const [entryId, patch] = await patchCall;
 
-    expect(mockGetLLMProvider).toHaveBeenCalledOnce();
+    expect(mockGetEmbeddingProvider).toHaveBeenCalledOnce();
     expect(generateEmbedding).toHaveBeenCalledWith(
       "Captured a durable session summary.\nUsed the active embedding provider instead of a Gemini-only gate."
     );
@@ -111,7 +111,7 @@ describe("sessionSaveLedgerHandler embedding queue", () => {
   });
 
   it("rejects blank ledger entries before they can create unrepairable embedding gaps", async () => {
-    mockGetLLMProvider.mockReturnValue({
+    mockGetEmbeddingProvider.mockReturnValue({
       generateEmbedding: vi.fn(),
     });
 

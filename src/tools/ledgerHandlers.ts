@@ -29,7 +29,7 @@ import { debugLog } from "../utils/logger.js";
 import { FREE_ENTITLEMENTS, peekEntitlements, multiTurnPolicy } from "../utils/entitlements.js";
 import { getStorage, activeStorageBackend } from "../storage/index.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
-import { getLLMProvider } from "../utils/llm/factory.js";
+import { getEmbeddingProvider } from "../utils/llm/factory.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, setSetting, getAllSettings, refreshConfigStorageCache } from "../storage/configStorage.js";
 import { MATERIALIZED_GENERATION_KEY, type SkillSyncResult } from "../skillManifestSync.js";
@@ -824,7 +824,7 @@ import { filterPrismMemoryContext, isGreetingOnlyMemoryEntry } from "../utils/me
 
 function getEmbeddingProviderOrNull(context: string) {
   try {
-    return getLLMProvider();
+    return getEmbeddingProvider();
   } catch (err) {
     debugLog(
       `[${context}] Embedding generation unavailable (non-fatal): ` +
@@ -1288,7 +1288,7 @@ export async function sessionSaveHandoffHandler(args: unknown, notifyResourceUpd
 
     if (embeddingText.trim()) {
       try {
-        const embeddingPromise = getLLMProvider().generateEmbedding(embeddingText);
+        const embeddingPromise = getEmbeddingProvider().generateEmbedding(embeddingText);
         embeddingQueued = true;
         embeddingPromise
           .then(async (embedding) => {
@@ -2157,7 +2157,7 @@ export async function sessionLoadContextHandler(
       const activeText = [d.last_summary, d.key_context, ...(d.keywords || [])].filter(Boolean).join(" ");
       if (activeText.length > 10) {
         // v2.1 LLM factory handles the API call
-        const queryVector = await getLLMProvider().generateEmbedding(activeText);
+        const queryVector = await getEmbeddingProvider().generateEmbedding(activeText);
 
         // Lazy-load to avoid blocking server boot
         const { getSdmEngine } = await import("../sdm/sdmEngine.js");

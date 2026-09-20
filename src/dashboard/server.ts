@@ -32,10 +32,11 @@ import { renderDashboardHTML } from "./ui.js";
 import { computeIntentHealth } from "./intentHealth.js";
 import { getAllSettings, setSetting, getSetting, getSettingSync } from "../storage/configStorage.js";
 import { compactLedgerHandler } from "../tools/compactionHandler.js";
-import { getLLMProvider } from "../utils/llm/factory.js";
+import { getEmbeddingProvider } from "../utils/llm/factory.js";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { redactSettings } from "../tools/commonHelpers.js";
 import { handleGraphRoutes } from "./graphRouter.js";
+import { handleAccountRoutes } from "./accountRouter.js";
 import { isDashboardSettingKeyAllowed, isDashboardSettingValueAllowed } from "./settingsPolicy.js";
 import { isTrustedRequest, isRebindGuardedPath } from "./hostGuard.js";
 import {
@@ -829,6 +830,11 @@ return false;}
         return res.end(JSON.stringify({ ok: true, role, namespace: "user_skill" }));
       }
 
+      // ─── API: Synalux Account & Subscription ───
+      if (url.pathname.startsWith("/api/account")) {
+        if (await handleAccountRoutes(url, req, res)) return;
+      }
+
       // ─── API: Knowledge Graph (v6.2 — extracted to graphRouter.ts) ───
       if (url.pathname.startsWith("/api/graph")) {
         if (await handleGraphRoutes(url, req, res, getStorageSafe)) return;
@@ -1207,7 +1213,7 @@ return false;}
           // Check LLM provider availability before attempting embedding
           let llm;
           try {
-            llm = getLLMProvider();
+            llm = getEmbeddingProvider();
           } catch {
             res.writeHead(503, { "Content-Type": "application/json" });
             return res.end(JSON.stringify({ error: "Embedding provider not configured for semantic search. Configure one in AI Providers and restart the server." }));

@@ -51,6 +51,7 @@
 import { SupabaseStorage } from "./supabase.js";
 import { debugLog } from "../utils/logger.js";
 import { PRISM_SYNALUX_BASE_URL, PRISM_SYNALUX_API_KEY } from "../config.js";
+import { isSynaluxSignedOut } from "../utils/synaluxCredentialState.js";
 import { KnowledgeSearchRequestSchema, KnowledgeSearchResponseSchema } from "./portalContracts.js";
 import type {
   LedgerEntry,
@@ -62,6 +63,7 @@ import type {
   SpreadingActivationOptions,
   HistorySnapshot,
   HealthStats,
+  MemoryLink,
 } from "./interface.js";
 
 /**
@@ -109,6 +111,8 @@ export class SynaluxStorage extends SupabaseStorage {
   private cachedJwtExpiresAt = 0;
   private inflightExchange: Promise<string> | null = null;
   private readonly inflightContextLoads = new Map<string, Promise<ContextResult>>();
+  private readonly closeController = new AbortController();
+  private closed = false;
 
   constructor() {
     super();
@@ -135,7 +139,21 @@ export class SynaluxStorage extends SupabaseStorage {
   }
 
   async close(): Promise<void> {
-    debugLog("[SynaluxStorage] Closed (no-op for HTTP)");
+    this.closed = true;
+    this.cachedJwt = null;
+    this.cachedJwtExpiresAt = 0;
+    this.closeController.abort();
+    debugLog("[SynaluxStorage] Closed");
+  }
+
+  private assertUsable(): void {
+    if (this.closed || isSynaluxSignedOut()) {
+      throw new Error("[SynaluxStorage] Synalux account is signed out");
+    }
+  }
+
+  private requestSignal(timeoutMs: number): AbortSignal {
+    return AbortSignal.any([this.closeController.signal, AbortSignal.timeout(timeoutMs)]);
   }
 
   /**
@@ -144,6 +162,7 @@ export class SynaluxStorage extends SupabaseStorage {
    * inflight exchange so we don't trip the portal's 5s rate limit.
    */
   private async ensureJwt(): Promise<string> {
+    this.assertUsable();
     const now = Date.now();
     if (this.cachedJwt && now < this.cachedJwtExpiresAt - JWT_REFRESH_LEEWAY_MS) {
       return this.cachedJwt;
@@ -153,6 +172,7 @@ export class SynaluxStorage extends SupabaseStorage {
     }
 
     this.inflightExchange = (async () => {
+      this.assertUsable();
       const url = `${this.baseUrl}/api/v1/auth/jwt`;
       let res: Response;
       try {
@@ -162,7 +182,7 @@ export class SynaluxStorage extends SupabaseStorage {
             "Authorization": `Bearer ${this.refreshToken}`,
             "X-Prism-Client": "prism-mcp-thin-client",
           },
-          signal: AbortSignal.timeout(10_000),
+          signal: this.requestSignal(10_000),
         });
       } catch (err) {
         throw new Error(
@@ -183,6 +203,7 @@ export class SynaluxStorage extends SupabaseStorage {
         );
       }
 
+      this.assertUsable();
       this.cachedJwt = data.jwt;
       this.cachedJwtExpiresAt = Date.now() + (data.expires_in ?? 900) * 1000;
       debugLog(`[SynaluxStorage] JWT refreshed (expires in ${data.expires_in ?? 900}s)`);
@@ -205,6 +226,7 @@ export class SynaluxStorage extends SupabaseStorage {
   private async portalPost(path: string, body: Record<string, unknown>): Promise<PortalResponse> {
     const url = `${this.baseUrl}${path}`;
     const send = async (jwt: string): Promise<Response> => {
+      this.assertUsable();
       try {
         return await fetch(url, {
           method: "POST",
@@ -214,7 +236,7 @@ export class SynaluxStorage extends SupabaseStorage {
             "X-Prism-Client": "prism-mcp-thin-client",
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(30_000),
+          signal: this.requestSignal(30_000),
         });
       } catch (err) {
         throw new Error(
@@ -225,12 +247,14 @@ export class SynaluxStorage extends SupabaseStorage {
 
     let jwt = await this.ensureJwt();
     let res = await send(jwt);
+    this.assertUsable();
 
     if (res.status === 401) {
       this.cachedJwt = null;
       this.cachedJwtExpiresAt = 0;
       jwt = await this.ensureJwt();
       res = await send(jwt);
+      this.assertUsable();
     }
 
     let data: PortalResponse;
@@ -241,12 +265,57 @@ export class SynaluxStorage extends SupabaseStorage {
         `[SynaluxStorage] Invalid JSON from ${url} (status ${res.status})`
       );
     }
+    this.assertUsable();
 
     if (!res.ok || data.status === "error") {
       const msg = data?.error || `HTTP ${res.status}`;
       throw new Error(`[SynaluxStorage] ${path} failed: ${msg}`);
     }
 
+    return data;
+  }
+
+  /** GET through the same short-lived JWT boundary as portalPost. */
+  private async portalGet(path: string): Promise<Record<string, unknown>> {
+    const url = `${this.baseUrl}${path}`;
+    const send = async (jwt: string): Promise<Response> => {
+      this.assertUsable();
+      try {
+        return await fetch(url, {
+          headers: {
+            "Authorization": `Bearer ${jwt}`,
+            "X-Prism-Client": "prism-mcp-thin-client",
+          },
+          signal: this.requestSignal(30_000),
+          redirect: "error",
+        });
+      } catch (err) {
+        throw new Error(
+          `[SynaluxStorage] Network error calling ${url}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    };
+
+    let jwt = await this.ensureJwt();
+    let res = await send(jwt);
+    this.assertUsable();
+    if (res.status === 401) {
+      this.cachedJwt = null;
+      this.cachedJwtExpiresAt = 0;
+      jwt = await this.ensureJwt();
+      res = await send(jwt);
+      this.assertUsable();
+    }
+    let data: Record<string, unknown>;
+    try {
+      data = await res.json() as Record<string, unknown>;
+    } catch {
+      throw new Error(`[SynaluxStorage] Invalid JSON from ${url} (status ${res.status})`);
+    }
+    this.assertUsable();
+    if (!res.ok || data.status === "error") {
+      throw new Error(`[SynaluxStorage] ${path} failed: ${data.error || `HTTP ${res.status}`}`);
+    }
     return data;
   }
 
@@ -261,6 +330,7 @@ export class SynaluxStorage extends SupabaseStorage {
       decisions: entry.decisions,
       todos: entry.todos,
       files_changed: entry.files_changed,
+      keywords: entry.keywords,
       role: entry.role,
       event_type: entry.event_type,
       confidence_score: entry.confidence_score,
@@ -523,6 +593,7 @@ export class SynaluxStorage extends SupabaseStorage {
       action: "save_embedding",
       memory_id: id,
       embedding: vector,
+      ...(data.only_if_missing === true ? { only_if_missing: true } : {}),
     });
   }
 
@@ -596,6 +667,113 @@ export class SynaluxStorage extends SupabaseStorage {
       throw new Error("Dashboard graph contract drift: ledger[] is required");
     }
     return result.ledger;
+  }
+
+  async getDashboardMemoryGraph(params: {
+    project: string;
+    createdAfter?: string;
+    minImportance?: number;
+    includeEmbeddings?: boolean;
+    limit: number;
+  }): Promise<{ nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>; truncated: boolean }> {
+    const project = params.project.trim();
+    if (!project || project.length > 100) throw new Error("Invalid dashboard memory graph project");
+    if (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > 500) {
+      throw new Error("Invalid dashboard memory graph limit");
+    }
+    if (params.createdAfter !== undefined
+      && (Number.isNaN(new Date(params.createdAfter).getTime())
+        || new Date(params.createdAfter).toISOString() !== params.createdAfter)) {
+      throw new Error("Invalid dashboard memory graph timestamp");
+    }
+    if (params.minImportance !== undefined
+      && (!Number.isInteger(params.minImportance)
+        || params.minImportance < -2147483648 || params.minImportance > 2147483647)) {
+      throw new Error("Invalid dashboard memory graph importance");
+    }
+    const query = new URLSearchParams({ project, limit: String(params.limit) });
+    if (params.createdAfter !== undefined) query.set("created_after", params.createdAfter);
+    if (params.minImportance !== undefined) query.set("min_importance", String(params.minImportance));
+    if (params.includeEmbeddings === true) query.set("include_embeddings", "true");
+    const result = await this.portalGet(`/api/v1/prism/graph?${query.toString()}`);
+    if (!Array.isArray(result.nodes) || !Array.isArray(result.edges)) {
+      throw new Error("Dashboard memory graph contract drift: nodes[] and edges[] are required");
+    }
+    return {
+      nodes: result.nodes as Array<Record<string, unknown>>,
+      edges: result.edges as Array<Record<string, unknown>>,
+      truncated: result.truncated === true,
+    };
+  }
+
+  async getGraphSynthesisEntries(params: {
+    project: string;
+    limit: number;
+    randomize: boolean;
+  }): Promise<unknown[]> {
+    if (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > 200) {
+      throw new Error("Invalid graph synthesis limit");
+    }
+    const graph = await this.getDashboardMemoryGraph({
+      project: params.project,
+      limit: params.randomize ? 200 : params.limit,
+      includeEmbeddings: true,
+    });
+    const entries = graph.nodes.map(entry => ({
+      ...entry,
+      ...(Array.isArray(entry.embedding) ? { embedding: JSON.stringify(entry.embedding) } : {}),
+    }));
+    if (params.randomize) {
+      for (let index = entries.length - 1; index > 0; index--) {
+        const swap = Math.floor(Math.random() * (index + 1));
+        [entries[index], entries[swap]] = [entries[swap], entries[index]];
+      }
+    }
+    return entries.slice(0, params.limit);
+  }
+
+  async createLinks(links: MemoryLink[], _userId: string): Promise<void> {
+    if (links.length === 0) return;
+    const edges = links.map(link => {
+      let metadata: unknown = undefined;
+      if (link.metadata) {
+        try { metadata = JSON.parse(link.metadata); }
+        catch { throw new Error("createLinks: metadata must be valid JSON"); }
+      }
+      return {
+        source_id: link.source_id,
+        target_id: link.target_id,
+        link_type: link.link_type,
+        strength: Math.max(0, Math.min(1, link.strength)),
+        ...(metadata !== undefined ? { metadata } : {}),
+      };
+    });
+    await this.portalPost("/api/v1/prism/graph/edge", { edges });
+  }
+
+  async createLink(link: MemoryLink, userId: string): Promise<void> {
+    await this.createLinks([link], userId);
+  }
+
+  async getLinksFrom(sourceId: string, _userId: string, minStrength = 0, limit = 25): Promise<MemoryLink[]> {
+    const query = new URLSearchParams({
+      source_id: sourceId,
+      min_strength: String(minStrength),
+      limit: String(limit),
+    });
+    const result = await this.portalGet(`/api/v1/prism/graph/edge?${query.toString()}`);
+    if (!Array.isArray(result.links)) {
+      throw new Error("Graph links contract drift: links[] is required");
+    }
+    return result.links.map((row: any) => ({
+      source_id: row.source_id,
+      target_id: row.target_id,
+      link_type: row.link_type,
+      strength: row.strength,
+      metadata: row.metadata ? JSON.stringify(row.metadata) : undefined,
+      created_at: row.created_at,
+      last_traversed_at: row.last_traversed_at,
+    })) as MemoryLink[];
   }
 
   // ─── Project inventory + export ──────────────────────────────

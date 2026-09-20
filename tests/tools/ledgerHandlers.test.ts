@@ -90,11 +90,12 @@ vi.mock("../../src/utils/logger.js", () => ({
   debugLog: vi.fn(),
 }));
 
-vi.mock("../../src/utils/llm/factory.js", () => ({
-  getLLMProvider: vi.fn(() => ({
+vi.mock("../../src/utils/llm/factory.js", () => {
+  const provider = vi.fn(() => ({
     generateEmbedding: vi.fn(() => Promise.resolve(new Array(3072).fill(0.01))),
-  })),
-}));
+  }));
+  return { getLLMProvider: provider, getEmbeddingProvider: provider };
+});
 
 vi.mock("../../src/utils/git.js", () => ({
   getCurrentGitState: vi.fn(() => ({ isRepo: false })),
@@ -533,11 +534,11 @@ describe("ledgerHandlers", () => {
       expect(storage.decayImportance).toHaveBeenCalledWith("test-project", "test-user-id", 30);
     });
 
-    it("rejects project mismatches before writing the ledger", async () => {
+    it("warns about project mismatches without dropping the ledger write", async () => {
       mockResolveProject.mockResolvedValueOnce({
-        ok: false,
-        error: 'Project mismatch: declared "test-project" but files_changed indicate "other-project".',
-        hint: 'Re-issue the request with project="other-project".',
+        ok: true,
+        project: "test-project",
+        warning: 'Registry suggests these files belong to "other-project".',
       });
 
       const result = await sessionSaveLedgerHandler({
@@ -545,10 +546,9 @@ describe("ledgerHandlers", () => {
         files_changed: ["/repo/other-project/src/app.ts"],
       });
 
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("Project mismatch");
-      expect(result.content[0].text).toContain("No ledger entry was written");
-      expect(storage.saveLedger).not.toHaveBeenCalled();
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain('Registry suggests these files belong to "other-project"');
+      expect(storage.saveLedger).toHaveBeenCalledWith(expect.objectContaining({ project: "test-project" }));
     });
 
     it("mentions auto-created project registry entries", async () => {

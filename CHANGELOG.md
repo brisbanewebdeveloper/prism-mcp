@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.21.8 — 2026-09-19
+
+### The dashboard graph works without a Gemini key
+
+The Mind Palace dashboard previously built cloud graphs from ledger keywords and
+ran edge synthesis through a locally configured embedding provider. A project
+could load while showing one project bubble with no useful connections, and
+**Synthesize Edges** failed whenever the dashboard process did not inherit a
+Google or Gemini key.
+
+Cloud dashboards now read the selected project's real session nodes and stored
+links through the authenticated Synalux Portal. Edge synthesis sends bounded
+embedding requests through that same authenticated Portal contract, so Prism,
+Safari, and the local dashboard process do not receive or require the provider
+key. Stored vectors are reused, concurrent retries preserve an existing vector,
+and repeated synthesis skips links that already exist.
+
+The graph-link write path is tenant checked and atomic. Direct client table
+access is denied, request bodies and synthesis fan-out are bounded, and graph
+read/write errors remain visible instead of becoming an empty successful graph.
+
+### Account and subscription controls are available in the dashboard
+
+The dashboard Settings menu now shows the signed-in user's name, role, and
+effective Free, Standard, Advanced, or Enterprise plan. Signed-out users see a
+real Free state with direct sign-in and plan-discovery actions. One-time Portal
+codes connect the dashboard without exposing the issued credential, paid users
+can open Stripe's hosted billing portal, and sign-out revokes the current token
+while closing any client that captured it.
+
+The Portal checkout flow now preserves the selected plan across sign-in. Its
+Stripe catalog resolves the verified live and test Price/Product IDs for every
+paid tier, and non-USD checkout can no longer reuse a USD Price when it builds a
+localized subscription.
+
 ## 20.21.7 — 2026-09-18
 
 ### Cloud dashboards show the state the agent actually saved

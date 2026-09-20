@@ -3,14 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   mockGetLedgerEntries,
   mockPatchLedger,
-  mockGetLLMProvider,
+  mockGetEmbeddingProvider,
 } = vi.hoisted(() => ({
   mockGetLedgerEntries: vi.fn(),
   mockPatchLedger: vi.fn(),
-  mockGetLLMProvider: vi.fn(),
+  mockGetEmbeddingProvider: vi.fn(),
 }));
 
 vi.mock("../../src/storage/index.js", () => ({
+  activeStorageBackend: "local",
   getStorage: vi.fn(async () => ({
     getLedgerEntries: mockGetLedgerEntries,
     patchLedger: mockPatchLedger,
@@ -18,7 +19,7 @@ vi.mock("../../src/storage/index.js", () => ({
 }));
 
 vi.mock("../../src/utils/llm/factory.js", () => ({
-  getLLMProvider: mockGetLLMProvider,
+  getEmbeddingProvider: mockGetEmbeddingProvider,
 }));
 
 vi.mock("../../src/config.js", async (importOriginal) => {
@@ -60,7 +61,7 @@ describe("backfillEmbeddingsHandler", () => {
         decisions: ["  "],
       },
     ]);
-    mockGetLLMProvider.mockReturnValue({
+    mockGetEmbeddingProvider.mockReturnValue({
       generateEmbedding: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
     });
 
@@ -96,7 +97,7 @@ describe("backfillEmbeddingsHandler", () => {
         decisions: [],
       },
     ]);
-    mockGetLLMProvider.mockReturnValue({
+    mockGetEmbeddingProvider.mockReturnValue({
       generateEmbedding: vi.fn().mockRejectedValue(new Error("embedding quota exceeded")),
     });
 

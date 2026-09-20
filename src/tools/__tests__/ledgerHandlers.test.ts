@@ -72,6 +72,9 @@ vi.mock("../../../src/utils/llm/factory.js", () => ({
   getLLMProvider: vi.fn(() => ({
     generateEmbedding: vi.fn(() => Promise.resolve(new Array(3072).fill(0.01))),
   })),
+  getEmbeddingProvider: vi.fn(() => ({
+    generateEmbedding: vi.fn(() => Promise.resolve(new Array(3072).fill(0.01))),
+  })),
 }));
 
 vi.mock("../../../src/utils/git.js", () => ({
@@ -183,7 +186,7 @@ import { getStorage } from "../../../src/storage/index.js";
 import { getSetting, getAllSettings } from "../../../src/storage/configStorage.js";
 import { resolveProject } from "../../../src/utils/projectResolver.js";
 import type { HandoffEntry, HistorySnapshot, LedgerEntry, StorageBackend } from "../../../src/storage/interface.js";
-import { getLLMProvider } from "../../../src/utils/llm/factory.js";
+import { getEmbeddingProvider } from "../../../src/utils/llm/factory.js";
 import {
   registerContextLoaded,
   requireContextLoadedForProject,
@@ -205,7 +208,7 @@ const mockGetStorage = vi.mocked(getStorage);
 const mockGetSetting = vi.mocked(getSetting);
 const mockGetAllSettings = vi.mocked(getAllSettings);
 const mockResolveProject = vi.mocked(resolveProject);
-const mockGetLLMProvider = vi.mocked(getLLMProvider);
+const mockGetEmbeddingProvider = vi.mocked(getEmbeddingProvider);
 
 // ======================================================================
 // HELPERS — build a fresh storage stub per test
@@ -330,7 +333,7 @@ describe("ledgerHandlers", () => {
     });
 
     it("still returns persisted ledger success when optional embedding provider initialization throws", async () => {
-      mockGetLLMProvider.mockImplementationOnce(() => {
+      mockGetEmbeddingProvider.mockImplementationOnce(() => {
         throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
       });
 
@@ -431,11 +434,11 @@ describe("ledgerHandlers", () => {
       expect(storage.decayImportance).toHaveBeenCalledWith("test-project", "test-user-id", 30);
     });
 
-    it("rejects project mismatches before writing the ledger", async () => {
+    it("warns about project mismatches without dropping the ledger write", async () => {
       mockResolveProject.mockResolvedValueOnce({
-        ok: false,
-        error: 'Project mismatch: declared "test-project" but files_changed indicate "other-project".',
-        hint: 'Re-issue the request with project="other-project".',
+        ok: true,
+        project: "test-project",
+        warning: 'Registry suggests these files belong to "other-project".',
       });
 
       const result = await sessionSaveLedgerHandler({
@@ -443,10 +446,9 @@ describe("ledgerHandlers", () => {
         files_changed: ["/repo/other-project/src/app.ts"],
       });
 
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("Project mismatch");
-      expect(result.content[0].text).toContain("No ledger entry was written");
-      expect(storage.saveLedger).not.toHaveBeenCalled();
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain('Registry suggests these files belong to "other-project"');
+      expect(storage.saveLedger).toHaveBeenCalledWith(expect.objectContaining({ project: "test-project" }));
     });
 
     it("mentions auto-created project registry entries", async () => {
@@ -547,7 +549,7 @@ describe("ledgerHandlers", () => {
 
   describe("sessionSaveExperienceHandler", () => {
     it("still returns persisted experience success when optional embedding provider initialization throws", async () => {
-      mockGetLLMProvider.mockImplementationOnce(() => {
+      mockGetEmbeddingProvider.mockImplementationOnce(() => {
         throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
       });
 
@@ -852,7 +854,7 @@ describe("ledgerHandlers", () => {
 
     it("still returns persisted success when optional embedding provider initialization throws", async () => {
       storage.saveHandoff.mockResolvedValue({ status: "updated", version: 16 });
-      mockGetLLMProvider.mockImplementationOnce(() => {
+      mockGetEmbeddingProvider.mockImplementationOnce(() => {
         throw new Error("GeminiAdapter requires GOOGLE_API_KEY");
       });
 
