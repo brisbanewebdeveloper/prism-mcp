@@ -38,6 +38,7 @@ import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdt
 import { resolveProject } from "../utils/projectResolver.js";
 import { getUpdateNotice } from "../updateNotice.js";
 import type { StorageBackend } from "../storage/interface.js";
+import { findRunningDashboardAccessState } from "../dashboard/dashboardAccess.js";
 
 // The running server's own version, for the update-available notice. A read
 // failure must never affect startup: an empty string fails the notice's
@@ -705,19 +706,33 @@ function freeTierUpgradeLine(tier: string): string {
 }
 
 /**
- * Dashboard URL for startup output. The bound port is announced on stderr
- * only (MCP stdio owns stdout), so users never saw it; the dashboard also
- * writes the port to ~/.prism-mcp/dashboard.port — read that, then the env
- * override, then the default.
+ * Detect the local dashboard for startup output. The browser link may contain
+ * a private localhost capability, so startup advertises the local CLI opener
+ * rather than copying that link into agent context.
  */
-async function readDashboardUrl(): Promise<string | null> {
+export async function readDashboardUrlForStartup(home = os.homedir()): Promise<string | null> {
+  const explicitPort = (process.env.PRISM_DASHBOARD_PORT || "").trim();
+  // Current Prism versions keep one signed record per dashboard instance. The
+  // newest record may belong to a host that just stopped, so use the same
+  // verified fallback selection as `prism dashboard` before consulting legacy
+  // singleton state. An explicit port remains authoritative for this process.
+  if (!explicitPort) {
+    try {
+      const state = await findRunningDashboardAccessState(home);
+      return new URL(state.url).origin;
+    } catch {
+      // Continue into the legacy port probe for older installations and the
+      // startup instant before this process has written its registry record.
+    }
+  }
+
   // Precedence: explicit env override > recorded port file > default. The
   // file is written by whatever dashboard ran last and persists across boots,
   // so it must never outrank configuration the operator set for THIS process.
-  let port = (process.env.PRISM_DASHBOARD_PORT || "").trim();
+  let port = explicitPort;
   if (!port) {
     try {
-      const recorded = fs.readFileSync(nodePath.join(os.homedir(), ".prism-mcp", "dashboard.port"), "utf8").trim();
+      const recorded = fs.readFileSync(nodePath.join(home, ".prism-mcp", "dashboard.port"), "utf8").trim();
       if (/^\d{2,5}$/.test(recorded)) port = recorded;
     } catch {
       // port file absent — dashboard not started yet this boot; default holds
@@ -729,16 +744,25 @@ async function readDashboardUrl(): Promise<string | null> {
   // URL as the first-run headline action is worse than omitting it.
   //
   // A TCP connect is NOT sufficient: it proves something is listening, not
-  // that it is Prism. The default is 3000 — the single most commonly occupied
-  // port on a developer machine — so a bare liveness check would confidently
-  // point a first-run user at their own dev server. Hit the dashboard's
-  // /api/health instead, so identity is verified rather than assumed.
+  // that it is Prism. Probe the public PWA manifest instead of a token-gated API
+  // so an accountless install is detected without weakening dashboard access.
   const healthy = await new Promise<boolean>((resolveProbe) => {
     const request = http.get(
-      { host: "127.0.0.1", port: Number(port), path: "/api/health", timeout: 300 },
+      { host: "127.0.0.1", port: Number(port), path: "/manifest.json", timeout: 300 },
       (response) => {
-        response.resume(); // drain so the socket can close
-        resolveProbe(response.statusCode === 200);
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          if (body.length <= 4096) body += String(chunk);
+        });
+        response.on("end", () => {
+          try {
+            const parsed = JSON.parse(body) as { name?: string };
+            resolveProbe(response.statusCode === 200 && parsed.name === "Prism Mind Palace");
+          } catch {
+            resolveProbe(false);
+          }
+        });
       },
     );
     request.once("timeout", () => { request.destroy(); resolveProbe(false); });
@@ -2655,9 +2679,9 @@ export async function sessionBootstrapHandler(
     : `${greeting}\n\n${identityBlock}${updateNotice ? `\n${updateNotice}` : ""}`;
 
   if (projects.length === 0) {
-    const dashboardUrl = await readDashboardUrl();
+    const dashboardUrl = await readDashboardUrlForStartup();
     const dashboardLine = dashboardUrl
-      ? `- 🎛️ **Dashboard:** ${dashboardUrl} — configure projects, identity, and context depth`
+      ? `- 🎛️ **Dashboard:** run \`prism dashboard\` — opens locally with no Synalux account required`
       : `- 🎛️ **Dashboard:** not running — start Prism's dashboard to configure projects, identity, and context depth`;
     if (isFirstRun) {
       // Action-first instead of absence-first: every line is a capability or

@@ -14,6 +14,38 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
+export function renderDashboardLocalOpenHTML(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prism — Open Local Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #0a0e1a; color: #f1f5f9; font-family: Inter, system-ui, sans-serif; }
+    main { width: min(620px, 100%); padding: 36px; border: 1px solid rgba(139,92,246,.35); border-radius: 20px; background: #111827; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+    .eyebrow { color: #22d3ee; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+    h1 { margin: 12px 0; font-size: clamp(30px, 6vw, 46px); line-height: 1.05; }
+    p { color: #a5b4cf; font-size: 17px; line-height: 1.6; }
+    code { display: block; margin: 24px 0 12px; padding: 16px 18px; border-radius: 12px; background: #080d19; border: 1px solid #293554; color: #c4b5fd; font: 600 18px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    button { width: 100%; padding: 14px 18px; border: 0; border-radius: 12px; color: white; background: linear-gradient(135deg,#8b5cf6,#2563eb); font: 700 16px Inter,system-ui,sans-serif; cursor: pointer; }
+    .note { margin-top: 18px; color: #71809c; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Local dashboard access</div>
+    <h1>Open the current Prism dashboard.</h1>
+    <p>This browser does not have the current local dashboard link. Run this command in Terminal to open the active dashboard securely. Your Synalux account and plan remain unchanged.</p>
+    <code>prism dashboard</code>
+    <button type="button" onclick="navigator.clipboard.writeText('prism dashboard').then(() => { this.textContent = 'Copied'; })">Copy command</button>
+    <p class="note">This local browser access check is separate from Synalux sign-in.</p>
+  </main>
+</body>
+</html>`;
+}
+
 export function renderDashboardHTML(version: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -207,7 +239,12 @@ export function renderDashboardHTML(version: string): string {
     }
 
     /* ─── State Panel ─── */
-    .summary-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.7; margin-bottom: 1rem; }
+    .summary-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.7; margin-bottom: 0.4rem; }
+    .state-source, .timeline-note {
+      color: var(--text-muted); font-size: 0.72rem; line-height: 1.5;
+    }
+    .state-source { margin-bottom: 1rem; }
+    .timeline-note { margin: -0.25rem 0 0.8rem; }
     .todo-list { list-style: none; padding: 0; }
     .todo-list li {
       padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -414,6 +451,8 @@ export function renderDashboardHTML(version: string): string {
     .identity-chip .role-icon { font-size: 0.9rem; }
     .identity-chip .identity-label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .identity-chip .plan-mini { font-size: 0.58rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-green); }
+    .identity-chip .plan-mini.trial { color: var(--accent-amber); }
+    .identity-chip .plan-mini.attention { color: #fb7185; }
     .main-tabs { overflow-x: auto; scrollbar-width: thin; }
     .main-tabs .s-tab { flex: 0 0 auto; }
     /* Settings modal tab bar */
@@ -514,6 +553,8 @@ export function renderDashboardHTML(version: string): string {
     }
     .account-badge.role { color: var(--accent-cyan); background: rgba(6,182,212,0.1); border-color: rgba(6,182,212,0.22); }
     .account-badge.managed { color: var(--accent-amber); background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.22); }
+    .account-badge.trial { color: var(--accent-green); background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.3); }
+    .account-badge.attention { color: #fb7185; background: rgba(244,63,94,0.1); border-color: rgba(244,63,94,0.3); }
     .account-name { font-size: 1.35rem; line-height: 1.2; font-weight: 700; color: var(--text-primary); }
     .account-summary { margin-top: 0.45rem; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.55; max-width: 540px; }
     .account-actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 1rem; }
@@ -528,6 +569,9 @@ export function renderDashboardHTML(version: string): string {
     .account-connect {
       padding: 1rem; border: 1px solid var(--border-glass); border-radius: var(--radius-sm); background: rgba(15,23,42,0.42);
     }
+    .account-connect summary { cursor: pointer; color: var(--text-secondary); font-size: 0.8rem; font-weight: 600; }
+    .account-connect summary::marker { color: var(--accent-purple); }
+    .account-connect[open] summary { margin-bottom: 0.8rem; color: var(--text-primary); }
     .account-connect label { display: block; margin-bottom: 0.45rem; color: var(--text-primary); font-size: 0.8rem; font-weight: 600; }
     .account-code-row { display: flex; gap: 0.6rem; }
     .account-code-input {
@@ -793,10 +837,11 @@ export function renderDashboardHTML(version: string): string {
     <div id="content" class="grid grid-main fade-in">
       <!-- Left Column -->
       <div class="grid" style="align-content: start;">
-        <!-- Current State -->
+        <!-- Latest Activity -->
         <div class="card">
-          <div class="card-title"><span class="dot" style="background:var(--accent-blue)"></span> Current State <span id="versionBadge" class="badge badge-purple" style="margin-left:auto"></span></div>
+          <div class="card-title"><span class="dot" style="background:var(--accent-blue)"></span> Latest Activity <span id="versionBadge" class="badge badge-purple" style="margin-left:auto"></span></div>
           <div class="summary-text" id="summary"></div>
+          <div class="state-source" id="currentStateSource"></div>
           <div class="card-title" style="margin-top:0.5rem"><span class="dot" style="background:var(--accent-cyan)"></span> Pending TODOs</div>
           <ul class="todo-list" id="todos"></ul>
         </div>
@@ -1038,16 +1083,18 @@ export function renderDashboardHTML(version: string): string {
           </div>
         </div>
 
-        <!-- Time Travel -->
+        <!-- Recent Sessions -->
         <div class="card">
-          <div class="card-title"><span class="dot" style="background:var(--accent-purple)"></span> Time Travel History 🕰️</div>
-          <div class="timeline" id="historyTimeline"></div>
+          <div class="card-title"><span class="dot" style="background:var(--accent-amber)"></span> Recent Sessions</div>
+          <div class="timeline-note">Durable session activity, newest first.</div>
+          <div class="timeline" id="ledgerTimeline"></div>
         </div>
 
-        <!-- Ledger -->
+        <!-- Saved Handoff Versions -->
         <div class="card">
-          <div class="card-title"><span class="dot" style="background:var(--accent-amber)"></span> Session Ledger</div>
-          <div class="timeline" id="ledgerTimeline"></div>
+          <div class="card-title"><span class="dot" style="background:var(--accent-purple)"></span> Saved Handoff Versions 🕰️</div>
+          <div class="timeline-note">Restore points created when an agent saves a handoff.</div>
+          <div class="timeline" id="historyTimeline"></div>
         </div>
         </div>
 
@@ -2078,6 +2125,49 @@ function accountPlanSummary(plan) {
     };
     return summaries[plan] || summaries.free;
 }
+function accountTrialEndLabel(value) {
+    if (!value) return '';
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return '';
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+function accountBillingBadge(account) {
+    if (account.billing_status === 'trialing') return '<span class="account-badge trial">Trial active</span>';
+    if (account.billing_status === 'sync_pending') return '<span class="account-badge attention">Access update pending</span>';
+    if (['past_due', 'unpaid', 'incomplete', 'paused'].indexOf(account.billing_status) >= 0) {
+        return '<span class="account-badge attention">Payment needs attention</span>';
+    }
+    if (account.billing_status === 'unknown') return '<span class="account-badge attention">Billing status unavailable</span>';
+    if (account.billing_status === 'active') return '<span class="account-badge trial">Paid</span>';
+    return '';
+}
+function accountSubscriptionSummary(account) {
+    if (account.billing_status === 'trialing') {
+        var end = accountTrialEndLabel(account.trial_ends_at);
+        return accountPlanLabel(account.plan) + ' trial is active' + (end ? ' through ' + end : '') +
+            '. Add payment details before the trial ends to continue; otherwise it cancels automatically.';
+    }
+    if (['past_due', 'unpaid', 'incomplete', 'paused'].indexOf(account.billing_status) >= 0) {
+        var billedPlan = account.subscription_plan
+            ? accountPlanLabel(account.subscription_plan) + ' plan'
+            : account.plan === 'free' ? 'paid subscription' : accountPlanLabel(account.plan) + ' plan';
+        return 'Your ' + billedPlan + ' needs billing attention. Update payment details to restore or keep cloud features active.';
+    }
+    if (account.billing_status === 'sync_pending') {
+        var syncingPlan = accountPlanLabel(account.subscription_plan || account.plan);
+        var syncTrialEnd = accountTrialEndLabel(account.trial_ends_at);
+        return 'Stripe confirms your ' + syncingPlan + ' subscription' +
+            (syncTrialEnd ? ' with a trial through ' + syncTrialEnd : '') +
+            '. Synalux is updating access; current access remains ' + accountPlanLabel(account.plan) + '. Retry shortly or manage the subscription.';
+    }
+    if (account.billing_status === 'canceled' || account.billing_status === 'incomplete_expired') {
+        return 'This paid subscription is no longer active. Local Prism Free remains available.';
+    }
+    if (account.billing_status === 'unknown') {
+        return 'Prism could not verify the current trial or payment status. Open billing to review the subscription; local features remain available.';
+    }
+    return accountPlanSummary(account.plan);
+}
 function renderPlanLadder(plan) {
     var tiers = [
         ['free', 'Free', 'Local'],
@@ -2092,14 +2182,29 @@ function renderPlanLadder(plan) {
 }
 function renderAccountChip(account, error) {
     var chip = document.getElementById('identityChip');
+    var planStatus;
+    var planStatusClass;
     if (!chip)
         return;
     if (error) {
         chip.innerHTML = '<span class="role-icon">⚠️</span><span class="identity-label">Account</span>';
     }
     else if (account && account.signed_in) {
+        planStatus = account.billing_status === 'sync_pending'
+            ? accountPlanLabel(account.subscription_plan || account.plan) + ' syncing'
+            : account.billing_status === 'trialing' ? ' trial' :
+            ['past_due', 'unpaid', 'incomplete', 'paused'].indexOf(account.billing_status) >= 0
+                ? (account.plan === 'free' ? 'Payment due' : ' payment due') :
+                account.billing_status === 'unknown' ? ' status unavailable' : '';
+        planStatusClass = account.billing_status === 'trialing' ? ' trial' :
+            ['past_due', 'unpaid', 'incomplete', 'paused', 'unknown', 'sync_pending'].indexOf(account.billing_status) >= 0 ? ' attention' : '';
+        var chipPlanLabel = account.billing_status === 'sync_pending'
+            ? planStatus
+            : account.plan === 'free' && planStatus === 'Payment due'
+                ? planStatus
+                : accountPlanLabel(account.plan) + planStatus;
         chip.innerHTML = '<span class="role-icon">🤖</span><span class="identity-label">' + escapeHtml(account.name || 'Synalux user') + '</span>' +
-            '<span class="plan-mini">' + escapeHtml(accountPlanLabel(account.plan)) + '</span>';
+            '<span class="plan-mini' + planStatusClass + '">' + escapeHtml(chipPlanLabel) + '</span>';
     }
     else {
         chip.innerHTML = '<span class="role-icon">🆓</span><span class="identity-label">Free</span>';
@@ -2128,25 +2233,29 @@ function renderAccountPanel(account, error) {
             '<div class="account-card-head"><div><div class="account-badges">' +
             '<span class="account-badge">Free</span><span class="account-badge role">Local</span></div>' +
             '<div class="account-name">Prism Free</div><div class="account-summary">' + accountPlanSummary('free') +
-            ' Sign in to add cloud sync, larger models, and team features.</div></div></div>' +
-            '<div class="account-actions"><button class="account-action" onclick="startAccountSignIn()">Sign in</button>' +
+            ' No sign-in or redemption is required. Link a Synalux account only for cloud sync, larger models, or team features.</div></div></div>' +
+            '<div class="account-actions"><button class="account-action" onclick="startAccountSignIn()">Link Synalux account</button>' +
             '<button class="account-action secondary" onclick="openAccountBilling()">View plans</button></div></div>' +
-            '<div class="account-connect"><label for="accountCodeInput">Complete sign-in with a one-time code</label>' +
+            '<details class="account-connect" id="accountConnectDetails"><summary>Already have a Synalux account-link code? (optional)</summary>' +
+            '<label for="accountCodeInput">Account-link code</label>' +
             '<div class="account-code-row"><input class="account-code-input" id="accountCodeInput" autocomplete="off" spellcheck="false" placeholder="synalux_code_…" />' +
             '<button class="account-action" id="accountConnectButton" onclick="connectAccount()">Connect account</button></div>' +
-            '<div class="account-status" id="accountStatus">Sign in opens Synalux in a new tab. Paste the code shown there.</div></div>' +
+            '<div class="account-status" id="accountStatus">Use this only after choosing Link Synalux account. Prism Free is already active locally.</div></details>' +
             renderPlanLadder('free');
         return;
     }
     role = account.role_key || 'user';
-    billingLabel = account.billing && account.billing.action === 'manage' ? 'Manage subscription' :
-        account.billing && account.billing.action === 'included' ? 'View plans' : 'Upgrade plan';
+    billingLabel = account.billing_status === 'trialing' ? 'Add payment details' :
+        account.billing_status === 'sync_pending' ? 'Manage subscription' :
+        ['past_due', 'unpaid', 'incomplete', 'paused'].indexOf(account.billing_status) >= 0 ? 'Update payment details' :
+        account.billing && account.billing.action === 'manage' ? 'Manage subscription' :
+        account.billing && account.billing.action === 'included' ? 'View plans' : 'Start 14-day trial';
     managedBadge = account.plan_source === 'managed' ? '<span class="account-badge managed">Managed</span>' : '';
     panel.innerHTML = '<div class="account-card"><div class="account-card-head"><div>' +
         '<div class="account-badges"><span class="account-badge">' + escapeHtml(accountPlanLabel(account.plan)) + '</span>' +
-        '<span class="account-badge role">' + escapeHtml(role) + '</span>' + managedBadge + '</div>' +
+        '<span class="account-badge role">' + escapeHtml(role) + '</span>' + managedBadge + accountBillingBadge(account) + '</div>' +
         '<div class="account-name">' + escapeHtml(account.name || 'Synalux user') + '</div>' +
-        '<div class="account-summary">' + accountPlanSummary(account.plan) + '</div></div></div>' +
+        '<div class="account-summary">' + escapeHtml(accountSubscriptionSummary(account)) + '</div></div></div>' +
         '<div class="account-actions"><button class="account-action" id="accountBillingButton" onclick="openAccountBilling()">' + billingLabel + '</button>' +
         '<button class="account-action danger" id="accountSignOutButton" onclick="signOutAccount()">Sign out</button></div>' +
         '<div class="account-status" id="accountStatus"></div></div>' + renderPlanLadder(account.plan);
@@ -2187,8 +2296,14 @@ function loadIdentityChip() {
 }
 function startAccountSignIn() {
     var url = currentAccount && currentAccount.auth_url ? currentAccount.auth_url : 'https://synalux.ai/auth?source=prism';
+    var details = document.getElementById('accountConnectDetails');
+    if (details)
+        details.open = true;
     window.open(url, '_blank', 'noopener,noreferrer');
     setAccountStatus('Finish sign-in in Synalux, then paste the one-time code here.');
+    var input = document.getElementById('accountCodeInput');
+    if (input)
+        input.focus();
 }
 function openAccountBilling() {
     var target = window.open('about:blank', '_blank');
@@ -2396,7 +2511,7 @@ function resolveDuplicateGroup(keepId, duplicateIds) {
 }
 function loadProject() {
     return __awaiter(this, void 0, void 0, function () {
-        var project, res, data, ctx, todos, todoList, meta, briefingCard, visualCard, visuals, historyEl, ledgerEl, healthRes, healthData, healthCard, healthDot, healthLabel, healthSummary, healthIssues, statusMap, t, issues, cleanupBtn, sevIcons, he_1, e_3;
+        var project, res, data, ctx, ledgerEntries, latestLedger, contextTime, latestLedgerTime, useLatestLedger, versionBadge, currentStateSource, currentSummary, todos, todoList, meta, briefingCard, visualCard, visuals, historyEl, ledgerEl, healthRes, healthData, healthCard, healthDot, healthLabel, healthSummary, healthIssues, statusMap, t, issues, cleanupBtn, sevIcons, he_1, e_3;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -2425,9 +2540,41 @@ function loadProject() {
                 case 3:
                     data = _a.sent();
                     ctx = data.context || {};
-                    document.getElementById('versionBadge').textContent = 'v' + (ctx.version || '?');
-                    document.getElementById('summary').textContent = ctx.last_summary || ctx.summary || 'No summary available.';
-                    todos = ctx.pending_todo || ctx.active_context || [];
+                    ledgerEntries = Array.isArray(data.ledger) ? data.ledger.slice() : [];
+                    ledgerEntries.sort(function (a, b) {
+                        var aTime = Date.parse(a && a.created_at ? a.created_at : '');
+                        var bTime = Date.parse(b && b.created_at ? b.created_at : '');
+                        if (!Number.isFinite(aTime)) aTime = 0;
+                        if (!Number.isFinite(bTime)) bTime = 0;
+                        return bTime - aTime;
+                    });
+                    latestLedger = ledgerEntries.length > 0 ? ledgerEntries[0] : null;
+                    contextTime = Date.parse(ctx.updated_at || '');
+                    latestLedgerTime = Date.parse(latestLedger && latestLedger.created_at ? latestLedger.created_at : '');
+                    useLatestLedger = !!latestLedger && !!(latestLedger.summary || latestLedger.content) &&
+                        ((!Number.isFinite(contextTime) && Number.isFinite(latestLedgerTime)) ||
+                            (Number.isFinite(latestLedgerTime) && latestLedgerTime > contextTime) ||
+                            !(ctx.last_summary || ctx.summary));
+                    versionBadge = document.getElementById('versionBadge');
+                    versionBadge.textContent = useLatestLedger ? 'latest' : 'v' + (ctx.version || '?');
+                    versionBadge.className = 'badge ' + (useLatestLedger ? 'badge-amber' : 'badge-purple');
+                    currentSummary = useLatestLedger
+                        ? (latestLedger.summary || latestLedger.content)
+                        : (ctx.last_summary || ctx.summary);
+                    document.getElementById('summary').textContent = currentSummary || 'No summary available.';
+                    currentStateSource = document.getElementById('currentStateSource');
+                    if (useLatestLedger) {
+                        currentStateSource.textContent = 'Latest session' +
+                            (latestLedger.created_at ? ' · ' + formatDate(latestLedger.created_at) : '') +
+                            (ctx.version ? ' · saved handoff v' + ctx.version + ' remains available below' : '');
+                    }
+                    else {
+                        currentStateSource.textContent = 'Saved handoff' +
+                            (ctx.updated_at ? ' · ' + formatDate(ctx.updated_at) : '');
+                    }
+                    todos = useLatestLedger && Array.isArray(latestLedger.todos)
+                        ? latestLedger.todos
+                        : (ctx.pending_todo || ctx.active_context || []);
                     todoList = document.getElementById('todos');
                     if (Array.isArray(todos) && todos.length > 0) {
                         todoList.innerHTML = todos.map(function (t) { return '<li>' + escapeHtml(t) + '</li>'; }).join('');
@@ -2476,8 +2623,8 @@ function loadProject() {
                         historyEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:1rem;text-align:center">No time travel history yet.</div>';
                     }
                     ledgerEl = document.getElementById('ledgerTimeline');
-                    if (data.ledger && data.ledger.length > 0) {
-                        ledgerEl.innerHTML = data.ledger.map(function (l) {
+                    if (ledgerEntries.length > 0) {
+                        ledgerEl.innerHTML = ledgerEntries.map(function (l) {
                             var summary = l.summary || l.content || 'Entry';
                             var decisions = l.decisions;
                             var extra = '';

@@ -9,7 +9,8 @@ import { SupabaseStorage } from "./supabase.js";
 import type { StorageBackend } from "./interface.js";
 import { getSetting } from "./configStorage.js";
 import { upgradeInsecureCloudUrl } from "../utils/secureUrl.js";
-import { setSynaluxSignedOut } from "../utils/synaluxCredentialState.js";
+import { isSynaluxSignedOut, setSynaluxSignedOut } from "../utils/synaluxCredentialState.js";
+import { getSynaluxJwt, isUsableSynaluxApiKey } from "../utils/synaluxJwt.js";
 
 export function isValidHttpUrl(url: string): boolean {
   try {
@@ -62,14 +63,39 @@ export async function ensureSynaluxCredentials(): Promise<boolean> {
     delete process.env.PRISM_SYNALUX_API_KEY;
     return false;
   }
-  if (SYNALUX_CONFIGURED) return true;
   // Re-check process.env directly: SYNALUX_CONFIGURED is captured at module
   // load, so credentials injected later by another caller would be invisible
   // to it. Mirrors ensureSupabaseCredentials below.
   const rawEnvUrl = process.env.PRISM_SYNALUX_BASE_URL?.trim() || process.env.SYNALUX_BASE_URL?.trim();
   const envUrl = rawEnvUrl ? upgradeInsecureCloudUrl(rawEnvUrl) : rawEnvUrl;
   const envKey = process.env.PRISM_SYNALUX_API_KEY?.trim();
-  if (envUrl && envKey && isValidHttpUrl(envUrl)) return true;
+  if (envUrl && envKey && isValidHttpUrl(envUrl)) {
+    const storedKey = (await getSetting("PRISM_SYNALUX_API_KEY", ""))?.trim();
+    if (
+      isUsableSynaluxApiKey(storedKey) &&
+      storedKey !== envKey
+    ) {
+      // Validate the launcher credential before SynaluxStorage captures it.
+      // getSynaluxJwt keeps a valid explicit env key authoritative and promotes
+      // the persisted key only after the env key receives 401/403 and the
+      // persisted key succeeds.
+      const validatedJwt = await getSynaluxJwt();
+      if (!validatedJwt) {
+        // A launcher can retain a revoked credential while the dashboard has
+        // already saved the replacement. Do not let SynaluxStorage capture
+        // the launcher key when the validation/recovery request is currently
+        // unavailable: its refresh token is immutable, so publishing that
+        // singleton would keep project access broken even after recovery.
+        throw new Error(
+          "[Prism Storage] Could not validate the active Synalux account credential. " +
+          "Refusing to initialize cloud storage with an unverified credential because that could " +
+          "strand project access or split session history. Retry when Synalux is reachable.",
+        );
+      }
+    }
+    return true;
+  }
+  if (SYNALUX_CONFIGURED) return true;
   const rawUrl = (await getSetting("PRISM_SYNALUX_BASE_URL"))?.trim() ||
     (await getSetting("SYNALUX_BASE_URL"))?.trim();
   const url = rawUrl ? upgradeInsecureCloudUrl(rawUrl) : rawUrl;
@@ -163,12 +189,20 @@ export async function getStorage(): Promise<StorageBackend> {
   // (startupRecovery.ts): a missing credential is a configuration fault, not a
   // transient one, so startup must not paper over it with last-good context.
   if (requested === "synalux" && !(await ensureSynaluxCredentials())) {
-    throw new Error(
-      "[Prism Storage] PRISM_STORAGE=synalux but Synalux credentials are missing or invalid " +
-      "(need PRISM_SYNALUX_BASE_URL and PRISM_SYNALUX_API_KEY). " +
-      "Refusing to fall back to local storage because that silently splits session history. " +
-      "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
-    );
+    if (isSynaluxSignedOut()) {
+      // Sign-out is an explicit request to stop using the account. Keep the
+      // configured cloud preference intact for a later sign-in, but serve the
+      // unauthenticated Free dashboard from local SQLite in the meantime.
+      requested = "local";
+      debugLog("[Prism Storage] Synalux account signed out — using local SQLite");
+    } else {
+      throw new Error(
+        "[Prism Storage] PRISM_STORAGE=synalux but Synalux credentials are missing or invalid " +
+        "(need PRISM_SYNALUX_BASE_URL and PRISM_SYNALUX_API_KEY). " +
+        "Refusing to fall back to local storage because that silently splits session history. " +
+        "Set PRISM_STORAGE=local explicitly if local-only storage is intended.",
+      );
+    }
   }
   if (requested === "supabase" && !(await ensureSupabaseCredentials())) {
     throw new Error(

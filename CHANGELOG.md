@@ -2,6 +2,105 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.21.13 — 2026-09-20
+
+### Paid plans are discoverable and actionable in the dashboard
+
+The dashboard account panel previously showed a plan name without explaining
+whether a paid trial was active, when it ended, or what the user needed to do
+next. Free users could also reach generic pricing without a clear Prism plan
+entry point.
+
+Account & Settings now shows the verified billing state from Synalux. Free
+users get a direct **Start 14-day trial** action; trial users see their paid
+tier, exact end date, and **Add payment details**; customers with a recoverable
+payment issue get **Update payment details**; active customers retain
+**Manage subscription**. If billing verification is unavailable, Prism says so
+instead of claiming the account is paid or trialing. Local Prism Free remains
+usable throughout.
+
+## 20.21.12 — 2026-09-20
+
+### Dashboard discovery survives multiple MCP hosts
+
+Prism previously stored one shared dashboard link and port for every running
+MCP host. Starting a second host replaced the first host's discovery state. If
+the newer host stopped, `prism dashboard` and the startup message could report
+that no dashboard was running even while an older dashboard was still live.
+
+Prism now registers each local dashboard independently, verifies candidates
+newest first with the signed local probe, and falls back to an older live
+instance. Cleanup removes only the record owned by the stopping host. Registry
+files remain owner-only, and older singleton-only installations remain
+discoverable.
+
+The dashboard-open message now describes the active local dashboard without
+relabeling a linked paid account as Free or changing its account, plan, or
+workspace.
+
+## 20.21.11 — 2026-09-20
+
+### Linked dashboard accounts survive refreshes and host restarts
+
+Some MCP hosts retain the credential environment they launched with. After a
+user linked or refreshed a Synalux account in the dashboard, that older host
+credential could continue overriding the newer saved account and make a page
+refresh appear signed out or Free.
+
+Prism now keeps a valid explicit host credential authoritative, but after an
+authentication rejection it can recover once from the current saved account
+on the same validated portal origin. The saved portal URL and credential are
+validated as a pair, deliberate
+sign-out always wins, and a concurrent account change cannot be overwritten by
+an older retry. Cloud storage resolves that recovery before capturing its
+credential, so Project View and account status use the same linked account.
+
+The local browser-access page no longer labels the session as “Local Prism
+Free.” It explains that `prism dashboard` opens the active local dashboard and
+that the browser-access check does not change the user's Synalux account or
+plan.
+
+## 20.21.10 — 2026-09-20
+
+### Signed-out Free dashboards retain local projects and recent activity
+
+Signing out closed the Synalux storage client, but the dashboard kept a second
+reference to that closed client. Installations whose saved backend was
+explicitly `synalux` then refused to resolve local storage, leaving the Free
+dashboard with an internal server error and no projects until configuration was
+changed by hand.
+
+The dashboard now resolves storage through the canonical backend on every
+request. A deliberate sign-out temporarily selects local SQLite while
+preserving the Synalux preference for the next sign-in; an accidentally missing
+cloud credential still fails closed. Local project, handoff, ledger, and graph
+routes remain available without an account or process restart.
+
+Project View now labels the newest durable session as Latest Activity when it
+is newer than the saved handoff. Recent Sessions are sorted newest first, while
+older handoff snapshots remain available separately as restore points.
+
+## 20.21.9 — 2026-09-19
+
+### Prism Free opens locally without account redemption
+
+The dashboard previously presented its local browser-access check as an account
+failure. A signed-out Free user could reach Synalux, receive an account-link
+code, and return to a dashboard with no place to use it because local access and
+optional account linking are separate controls.
+
+`prism dashboard` now opens the current local Mind Palace directly. Visiting a
+bare local dashboard address explains that no Synalux account, API key, paid
+plan, or redemption is required. Once open, Account & Settings shows Prism Free
+as active and keeps Synalux linking behind an explicit optional action for cloud
+sync, billing, and paid features.
+
+The local browser capability is stored in an owner-only file, is no longer
+printed into startup context or logs, rejects symlinked state paths, and cannot
+be sent through a redirecting liveness probe. Account-link requests remain
+behind the independent local dashboard gate. Shipped documentation and examples
+now use the command-based opener instead of asking users to copy a startup URL.
+
 ## 20.21.8 — 2026-09-19
 
 ### The dashboard graph works without a Gemini key
