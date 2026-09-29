@@ -38,6 +38,9 @@ function firstDefinedEnv(
  *   GOOGLE_API_KEY         — (optional) API key for Google AI Studio / Gemini. Enables paper analysis.
  *   BRAVE_ANSWERS_API_KEY  — (optional) API key for Brave Answers (AI grounding). Enables brave_answers tool.
  *   PRISM_BRAVE_ANSWERS_API_KEY — (optional) Prism-scoped alias for Brave Answers credentials.
+ *   YDC_API_KEY            — (optional) API key for You.com Search. When set, the optional
+ *                            youcom_web_search tool is registered as an alternative web search
+ *                            provider. Get one at https://you.com/platform/api-keys
  *   SUPABASE_URL           — (optional) Your Supabase project URL. Enables session memory tools.
  *   SUPABASE_KEY           — (optional) Your Supabase anon/service key. Enables session memory tools.
  *   SUPABASE_API_PREFIX    — (optional) REST path prefix. Defaults to "/rest/v1"; set to empty for raw PostgREST.
@@ -399,6 +402,20 @@ const parsedDashboardPort = parseInt(process.env.PRISM_DASHBOARD_PORT || "3000",
 export const PRISM_DASHBOARD_PORT = Number.isInteger(parsedDashboardPort)
   ? parsedDashboardPort
   : 3000;
+
+// ─── Optional: You.com Search API Key ─────────────────────────
+// Used by the youcom_web_search tool. When set, registers an optional
+// web search tool that uses You.com's search API.
+// Get a key at https://you.com/platform/api-keys
+// You.com's own docs use YDC_API_KEY: https://you.com/docs/using-the-api/authentication
+
+// Trimmed, and blank means unset: a whitespace-only value would otherwise
+// register the tool while every call reports the key as not configured.
+export const YDC_API_KEY = process.env.YDC_API_KEY?.trim() || undefined;
+if (process.env.PRISM_DEBUG_LOGGING === "true") {
+  // Log presence or absence — non-critical, just informational
+  console.error(`[Prism] You.com search: ${YDC_API_KEY ? "configured" : "not configured (youcom_web_search tool disabled)"}`);
+}
 
 // ─── v2.0 / v12.1 / v13: Storage Backend Selection ──────────
 // Three backends are implemented:

@@ -2,6 +2,170 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.21.16 — 2026-09-27
+
+### A local answer to a conversation is checked before it is served
+
+`prism_infer` now checks a multi-turn local answer on your device before
+serving it: the local model that answered reads the conversation and its
+answer again and decides whether the answer holds. The rules it applies are fetched from Synalux by their
+SHA-256, verified, and held in memory only.
+- If the check fails, or cannot run (for example because the rules could not
+  be fetched), the answer goes to the cloud when your plan and settings allow
+  it, and is withheld otherwise.
+- On Pro and Team, with the cloud allowed, a local answer that passes is
+  confirmed by Synalux on a copy pseudonymized on your device. Names, dates,
+  contact details and record numbers become stable placeholders, and the
+  mapping stays on your device. If Synalux does not confirm the answer, the
+  cloud answers instead.
+- With an image attached, or with the cloud off, a local answer that passes
+  the on-device check is served.
+
+Single prompts are not affected.
+
+### The 9b reads a conversation again before it is refused or sent to the cloud
+
+When the on-device screen's 4b is unsure about a conversation, the 9b reads it
+again under a pinned exclusion policy, fetched and held the same way as the
+check's rules. If the 9b clears it, the conversation is answered locally. The
+read is sized from each model's measured limits and bounded by a deadline, and
+its outcome is recorded in the local ledger without conversation text.
+
+### Plans
+
+Everything local is free, with no account and no cap on the local model size
+(without an account, the cap was the 4b). A free Synalux account adds
+multi-turn `prism_infer` with the on-device check, and 20 cloud answers a day.
+Pro ($15/month) and Team ($20/seat/month, two seats or more) are Prism's own
+plans, with monthly cloud answers; the dashboard's Account panel shows them. A
+conversation sent without an account is refused, with a pointer to a free
+sign-in (`prism dashboard`, then Account).
+
+### Optional You.com web search
+
+Set `YDC_API_KEY` to enable the `youcom_web_search` tool. Contributed by
+@mouse-value-add in #227. The key is never echoed in errors, redirects are
+refused, and the result count is kept between 1 and 20.
+
+### Fixed: the 2b and 4b no longer answer Prism's own requests as a tool router
+
+The 2b and 4b carry a system prompt for apps that call them directly. Ollama
+applied it to Prism's own requests whenever they carried no system prompt, so
+some `prism_infer` answers came back as a tool call, and the on-device screen
+refused some ordinary requests. Prism now sends an empty system prompt to a
+model that has one built in, or whose configuration Ollama cannot report. A
+model without one, such as the 9b, gets the same request as before.
+
+### Also
+
+- The on-device classifier sees your words exactly as written. Text such as
+  `$&` or `` $` `` was expanded as a replacement pattern before.
+
+## 20.21.15 — 2026-09-25
+
+### A follow-up is no longer served on keyword checks alone while the classifier is down
+
+When the on-device classifier failed every read it was asked for on a
+follow-up (for example while Ollama restarts) and the conversation's earlier
+turns had already been screened, `prism_infer` could still answer the
+follow-up locally after only a keyword check. It now treats that follow-up as
+uncertain, like any other request the screen could not clear:
+- with cloud fallback on your plan, it goes to the cloud;
+- otherwise it is refused, with the reason `layer1_screen_all_reads_failed`.
+
+A follow-up that carries an image is answered on your machine with the cloud
+off, as other image requests already are. Single requests, and follow-ups
+where the classifier answered, behave as before.
+
+### See how much of your follow-up work runs locally
+
+`local_savings` (and `prism savings`) now has a line for follow-ups: calls that
+carried your conversation. It shows:
+- how many the local model answered, and how many of those the 9b answered;
+- how many the on-device screen refused, and at which stage;
+- how many your plan's multi-turn limits refused, counted separately;
+- how many went to the cloud.
+
+Before this, multi-turn use was recorded but never shown, so there was no way
+to tell whether local serving was taking over follow-ups or sending them back
+to your host. The figures come from the ledger prism already keeps. Nothing
+new is recorded or sent.
+
+### A short chat answer is an answer
+
+The quality gate treated any chat answer of four characters or fewer as an
+empty response. A follow-up is often answered with one short value ("16",
+"Yes"). On a paid plan, a failed gate discards the local answer and asks the
+cloud instead. In chat mode an answer now counts as empty only when it has no
+letter or digit at all ("", "..."). Route mode is unchanged (empty only when
+blank), and code mode keeps its four-character floor.
+
+## 20.21.14 — 2026-09-24
+
+### Tasks that say they need host tools stay with the host
+
+`session_task_route` sent some tasks to the local worker even when the task
+description said outright that it needed host tools or reserved judgment
+("Needs host tools to inspect…", "requiring host filesystem tools",
+"Reserved security judgment: …"). The local worker cannot run tools, so those
+delegations came back refused, rejected, or redone by the host. The router now
+treats any mention of such a requirement as a hard host boundary, negated or
+not: a wrong host route costs one host turn, a wrong local route a wasted
+delegation. On two months of real routes, reading negation changed nothing.
+
+### A pasted skill list no longer loads unrelated skills
+
+Prompt routing already ignored skill names pasted into a prompt, but only the
+names it could route. Protected skill names were not stripped, and one of them
+contains a trigger word for a different skill, so pasting Prism's startup
+output could load that skill into an unrelated question. Protected names are
+now stripped too. Stripping replaces each ASCII letter with q/Q and each
+digit with 0, keeping its kind but not its identity; other characters are
+left as they are. A trigger that can tell one letter or digit
+from another (a word, a range such as [n-s], or a backreference) may match a
+stripped name differently; a trigger that cannot matches exactly as it does
+on the raw text.
+
+### Notifications and agent reports no longer load skills
+
+Hosts deliver some turns to the prompt hook that no person wrote: background
+task notifications, reports from other agents, and continuation summaries.
+Prompt routing treated them like typed requests, so a word inside an agent's
+report ("Supabase", "screenshot", "unit test") loaded that skill in the middle
+of a task. In our own sessions, most hook skill loads came from these turns,
+and few of those loads helped the task. Such turns are now recognised by how
+they start and are not routed. The exception
+is a finished background command: its one-line summary, which names the
+command the agent chose to run, is still routed, but its output is not. The
+markers are matched only at the start, so a person who pastes a notification
+after their own words is routed as before. A message that begins with a
+pasted notification is not routed.
+
+### Routed skills name the routing table that chose them
+
+The routing table changes over time, and a transcript recorded which skills
+loaded but not which version of the table picked them, so a past load could
+not be judged against the rules that produced it. The routed-skills header
+from the prompt hook and `session_route_prompt`, and the symptom-triggered
+skills line from `session_bootstrap`, now end with the table's version, for
+example "Routing table v41.". The skills line itself is unchanged. No version
+is shown when no public table was available and only a skill's own triggers
+could match; when the hook re-injects skills after compaction or a skill
+update, which is not routing; or on skills that `session_load_context` adds to
+a project's context for the prompt, which carry no routed-skills header.
+
+### Skills with their own triggers load even when the file is formatted unusually
+
+A skill that declares its own `prompt_triggers` could be delivered and still
+never load, with no error, in two cases. If a line of its description ended in
+the text "prompt_triggers:", the parser started reading the trigger list there,
+met the real key on the next line, and stopped with nothing. If its SKILL.md
+was saved with Windows (CRLF) or old Mac (CR) line endings, the frontmatter
+never matched at all. Both skills now read exactly as the same file written
+plainly. A new end-to-end test runs such a skill through manifest sync, the
+local cache, routing and a fresh `prism route-prompt` process, and checks that
+it loads and that the injection names the routing table.
+
 ## 20.21.13 — 2026-09-20
 
 ### Paid plans are discoverable and actionable in the dashboard

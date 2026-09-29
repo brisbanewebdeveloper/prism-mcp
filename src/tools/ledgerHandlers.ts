@@ -693,14 +693,23 @@ function localWorkerLine(): string {
   const ent = peekEntitlements();
   if (!ent) return "";
   const p = multiTurnPolicy(ent);
-  return p.enabled
-    ? `\n> - 🧵 **Local worker multi-turn:** on — up to ${p.max_turns} turns / ` +
-      `${p.max_chars.toLocaleString("en-US")} chars per prism_infer call; pass accepted prior turns as \`messages\``
+  if (p.enabled) {
+    return `\n> - 🧵 **Local worker multi-turn:** on — up to ${p.max_turns} turns / ` +
+      `${p.max_chars.toLocaleString("en-US")} chars per prism_infer call; pass accepted prior turns as \`messages\``;
+  }
+  return ent.source === "unconfigured"
+    ? `\n> - 🧵 **Local worker multi-turn:** off without an account — a free Synalux account turns it on ` +
+      `(run \`prism dashboard\`, sign in under Account)`
     : `\n> - 🧵 **Local worker multi-turn:** off on the ${ent.plan} plan — a prism_infer follow-up is answered without context`;
 }
 
 function freeTierUpgradeLine(tier: string): string {
   if (tier !== "free") return "";
+  // No account yet: the next step is a free sign-in, not a purchase.
+  if (peekEntitlements()?.source === "unconfigured") {
+    return `\n> - 💎 **Free account:** sign in for free to get multi-turn and 20 cloud answers a day ` +
+      `(run \`prism dashboard\`, sign in under Account)`;
+  }
   return `\n> - 💎 **Free tier:** paid plans unlock the full skill library, ` +
     `super-skills, and agent routing → ${FREE_ENTITLEMENTS.upgrade_url}`;
 }
@@ -1944,7 +1953,7 @@ export async function sessionLoadContextHandler(
     // skill budget.
     if (typeof prompt === "string" && prompt.trim()) {
       try {
-        const { resolvePromptSkillNames } = await import("./skillRouting.js");
+        const { resolvePromptRouting } = await import("./skillRouting.js");
         // The manifest's routing_version is the only version signal available
         // here; without it a stale cached table would never be detected on
         // this path, since there is no portal response to compare against.
@@ -1955,11 +1964,12 @@ export async function sessionLoadContextHandler(
         // `prompt_triggers` in their own frontmatter and are matched here, on
         // device, from bodies already cached for injection.
         const scoped = await collectSkillTriggersOnThisMachine();
-        const matched = (await resolvePromptSkillNames(
+        const routed = await resolvePromptRouting(
           prompt,
           Number.isFinite(manifestVersion) && manifestVersion > 0 ? manifestVersion : undefined,
           scoped?.triggers,
-        )).filter((name) => entitledSkillNames.has(name) || scoped?.localNames.has(name));
+        );
+        const matched = routed.names.filter((name) => entitledSkillNames.has(name) || scoped?.localNames.has(name));
         if (matched.length > 0) {
           const shown = matched.slice(0, MAX_SYMPTOM_SKILLS);
           const overflow = matched.length - shown.length;
@@ -1972,7 +1982,8 @@ export async function sessionLoadContextHandler(
           symptomSkillSuffix = `\n\n**Symptom-triggered skills:** ${shown.join(", ")}` +
             (overflow > 0 ? `, … ${overflow} more` : "") +
             `\nThe first message matches these skills' trigger rules. Follow them before ` +
-            `proposing any change.\n`;
+            `proposing any change.\n` +
+            (typeof routed.tableVersion === "number" ? `Routing table v${routed.tableVersion}.\n` : "");
 
           // INLINE the top match's body rather than pointing at it. Naming a
           // skill is not delivering it: bodies reach agents only as files under
@@ -2521,7 +2532,7 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
  */
 export async function runPromptRouteFromCache(prompt: string, loaded: string[]) {
   const { routePrompt } = await import("./promptRouteHandler.js");
-  const { resolvePromptSkillNames, _setStorage } = await import("./skillRouting.js");
+  const { resolvePromptSkillNames, resolvePromptRouting, _setStorage } = await import("./skillRouting.js");
   // The CLI is a fresh process per prompt: without storage wiring the keyword
   // table can neither be read from disk (offline = dead routing) nor
   // persisted after a fetch (every prompt = a network GET). The server paths
@@ -2532,6 +2543,7 @@ export async function runPromptRouteFromCache(prompt: string, loaded: string[]) 
   );
   return routePrompt(prompt, loaded, {
     resolvePromptSkillNames,
+    resolvePromptRouting,
     collectTriggers: collectSkillTriggersOnThisMachine,
     entitledNames: async () => {
       try {

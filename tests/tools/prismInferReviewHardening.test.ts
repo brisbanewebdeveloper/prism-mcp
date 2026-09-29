@@ -3,6 +3,7 @@
  * failed on the code it guards before the fix landed.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { passingAnswerCheck } from "../fixtures/answerCheckPolicy.js";
 import {
     runInfer,
     VISION_SYSTEM_PROMPT,
@@ -42,7 +43,7 @@ const ENT: PrismEntitlements = {
     max_tokens: 4096,
     max_seats: 25,
     multi_turn: { enabled: true, max_turns: 30, max_chars: 96_000 },
-    features: { cloud_fallback: false, grounding_verifier: false, knowledge_search_unlimited: true, session_memory_unlimited: true, analytics_dashboard: true },
+    features: { cloud_fallback: true, grounding_verifier: true, knowledge_search_unlimited: true, session_memory_unlimited: true, analytics_dashboard: true },
     upgrade_url: "https://synalux.ai/pricing",
 };
 beforeEach(() => { _setCacheForTest(ENT, 60_000); _resetLayer1HistoryCacheForTest(); });
@@ -59,6 +60,7 @@ function deps(overrides: Partial<InferDeps> = {}): InferDeps {
         callCloud: vi.fn(async () => ({ ok: false as const, reason: "no_cloud" })),
         ollamaUrl: "http://x",
         callLayer1: vi.fn(async () => "OBVIOUS_NOT_RESERVED" as const),
+        ...passingAnswerCheck,   // the answer check has its own tests (answerCheck.test.ts); here it passes
         ...overrides,
     } as InferDeps;
 }
@@ -963,6 +965,36 @@ describe("R21 the context read joins the worker's answer with the next request",
             { role: "user", content: "Keep the next answer concise." }, { role: "assistant", content: PLAN }] }));
         expect(wins.at(-1)).toContain("Assistant: " + PLAN);
         expect(wins.at(-1)).toContain("User: " + ASK);
+    });
+});
+
+describe("R25 a classifier that answers none of a request's window reads trips to UNCERTAIN", () => {
+    // 2026-09-25: a host re-sent the same accepted turns with a new prompt
+    // while the classifier was down. Every earlier window was a cache hit, so
+    // the request made two reads (the prompt and its new context window),
+    // both failed, the three-read breaker never fired, and the keyword net
+    // alone served it locally.
+    it("the same turns with a new prompt and a dead classifier: refused, not served on the keyword net", async () => {
+        await runInfer(args({ prompt: "Which one did I pick?" }), deps());
+        const dead = vi.fn(async () => "ERROR" as const);
+        const d = deps({ callLayer1: dead });
+        const r = await runInfer(args({ prompt: "And the other one?" }), d);
+        expect(dead.mock.calls.filter(c => /^(User|Assistant): /.test(String(c[0]))).length).toBeLessThan(LAYER1_SCREEN_ERROR_BREAKER);
+        expect(r.backend).toBe("refused");
+        expect(r.attempts.map(a => a.reason)).toContain("layer1_screen_all_reads_failed");
+        expect((d.callLocal as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    });
+    it("one failed read after clean ones keeps the existing ERROR path", async () => {
+        const last = contextWindows(args()).at(-1);
+        const callLayer1 = vi.fn(async (t: string) => (t === last ? "ERROR" : "OBVIOUS_NOT_RESERVED") as "ERROR" | "OBVIOUS_NOT_RESERVED");
+        const r = await runInfer(args(), deps({ callLayer1 }));
+        expect(r.attempts.map(a => a.reason)).not.toContain("layer1_screen_all_reads_failed");
+        expect(r.backend).toBe("ollama-9b");
+    });
+    it("a single turn keeps the single-prompt ERROR path", async () => {
+        const r = await runInfer(args({ messages: undefined }), deps({ callLayer1: vi.fn(async () => "ERROR" as const) }));
+        expect(r.attempts.map(a => a.reason)).not.toContain("layer1_screen_all_reads_failed");
+        expect(r.backend).toBe("ollama-9b");
     });
 });
 

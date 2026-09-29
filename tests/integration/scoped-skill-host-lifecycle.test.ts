@@ -83,12 +83,12 @@ function manifestSkill(
   };
 }
 
-async function buildManifest(includeScopedSkill: boolean, routingVersion: number) {
+async function buildManifest(includeScopedSkill: boolean, routingVersion: number, scopedContent = SCOPED_SKILL_CONTENT) {
   const floor = skillRouting.REQUIRED_NATIVE_SKILL_NAMES.map((name, index) =>
     manifestSkill(name, `---\nname: ${name}\n---\n# ${name}\nProtected fixture.\n`, { priority: index }),
   );
   const skills = includeScopedSkill
-    ? [...floor, manifestSkill(SCOPED_SKILL_NAME, SCOPED_SKILL_CONTENT, { scoped: true, priority: 500 })]
+    ? [...floor, manifestSkill(SCOPED_SKILL_NAME, scopedContent, { scoped: true, priority: 500 })]
     : floor;
   const value: import("../../src/skillManifestSync.js").SkillManifest = {
     schema_version: 1,
@@ -196,10 +196,60 @@ afterEach(async () => {
   else process.env.PRISM_FORCE_LOCAL = previousForceLocal;
   if (previousSyncDisabled === undefined) delete process.env.PRISM_SKILL_SYNC_DISABLED;
   else process.env.PRISM_SKILL_SYNC_DISABLED = previousSyncDisabled;
-  await rm(fixtureRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  try {
+    await rm(fixtureRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // libsql-js#228: close() cannot finalize prepared statements, so Windows can
+    // hold config.db and its -shm/-wal files until V8 GC. This failed main's
+    // Windows CLI Integration on three of four runs after the test landed. The
+    // runner removes its temp tree at exit; any other cleanup error still fails.
+    if (process.platform !== "win32" || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(code ?? "")) {
+      throw error;
+    }
+  }
 });
 
 describe("scoped skill host lifecycle", () => {
+  it("routes a CRLF skill whose description mentions prompt_triggers: end to end, and names the routing table", async () => {
+    // Two parser defects left a delivered skill silently inert: a file saved
+    // with Windows line endings, and a description line ending in the key's
+    // own text. Both are present here; the skill must still route through
+    // sync -> cache -> a fresh route-prompt process, and the injection must
+    // name the routing table version the device used.
+    const content = SCOPED_SKILL_CONTENT
+      .replace("description: Public integration fixture for scoped skill delivery.",
+        "description: Public integration fixture that routes on its own prompt_triggers:")
+      .replace(/\n/g, "\r\n");
+    expect(content).toContain("\r\nprompt_triggers:\r\n");
+    const manifest = await buildManifest(true, 43, content);
+    const applied = await sync.triggerSkillManifestSync({
+      baseUrl: "https://portal.example.invalid",
+      agentsSkillsDir,
+      claudeCodeSkillsDir: false,
+      cursorSkillsDir: false,
+      claudeCodeAgentsDir: false,
+      codexAgentsDir: false,
+      geminiAgentsDir: false,
+      fetchImpl: vi.fn(() => response(manifest)) as unknown as typeof fetch,
+      configuredCredential: true,
+      getJwt: async () => "fixture-jwt",
+    });
+    expect(applied.status).toBe("applied");
+    expect(await storage.getSetting(`skill:${SCOPED_SKILL_NAME}`)).toBe(content);
+
+    await storage.setSetting("routing_keywords", JSON.stringify({ version: manifest.routing_version, prompt_keywords: {} }));
+    const routed = await ledger.runPromptRouteFromCache(SCOPED_PROMPT, []);
+    expect(routed.names).toEqual([SCOPED_SKILL_NAME]);
+
+    const cli = await runRouteCli(SCOPED_PROMPT);
+    expect(cli.names).toEqual([SCOPED_SKILL_NAME]);
+    expect(cli.text).toContain(SCOPED_SKILL_MARKER);
+    expect(cli.text).toContain("Routing table v43.");
+    const unrelated = await runRouteCli(UNRELATED_PROMPT);
+    expect(unrelated.names).toEqual([]);
+  });
+
   it("survives authenticated sync, atomic cache, cached routing, and the cross-platform CLI; downgrade revokes it", async () => {
     const skillContent = SCOPED_SKILL_CONTENT;
     const initial = await buildManifest(true, 42);

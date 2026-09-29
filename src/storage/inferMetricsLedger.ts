@@ -57,6 +57,11 @@ export interface InferMetricRow {
      *  'rules' | 'isolated' | 'prompt' | 'context' | 'budget' | 'backstop'. Names the layer
      *  to fix when benign work is refused. */
     refusal_layer?: string;
+    /** When the 4b screen hedged on a multi-turn call, what the 9b's second
+     *  read did: cleared_9b | confirmed_9b | reserved_9b | deadline |
+     *  skipped_<why>. Null otherwise. Makes "how often did the 9b overturn a
+     *  hedge" a query. */
+    layer1_second_read?: string;
 }
 
 let client: ReturnType<typeof createClient> | null = null;
@@ -68,8 +73,8 @@ const LEDGER_UNAVAILABLE_ERROR = "Inference metrics ledger is unavailable";
 const INSERT_METRIC_SQL = `INSERT OR IGNORE INTO infer_metrics
     (ts, caller, mode, backend, model, used_cloud, gate_outcome,
      refusal_reason, prompt_tokens, completion_tokens, latency_ms, ram_free_mb,
-     source_event_id, history_turns, refusal_layer)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+     source_event_id, history_turns, refusal_layer, layer1_second_read)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 function closeClient(context: string): void {
     const activeClient = client;
@@ -110,7 +115,8 @@ function ensureTable(): Promise<void> {
                     ram_free_mb INTEGER,
                     source_event_id TEXT,
                     history_turns INTEGER,
-                    refusal_layer TEXT
+                    refusal_layer TEXT,
+                    layer1_second_read TEXT
                 )`);
             // Existing ledgers predate external panel-spool ingestion. SQLite has
             // no ADD COLUMN IF NOT EXISTS, so use the repository's established
@@ -119,6 +125,7 @@ function ensureTable(): Promise<void> {
                 "source_event_id TEXT",
                 "history_turns INTEGER",
                 "refusal_layer TEXT",
+                "layer1_second_read TEXT",
             ]) {
                 try {
                     await client.execute(`ALTER TABLE infer_metrics ADD COLUMN ${column}`);
@@ -190,6 +197,7 @@ function metricArgs(row: InferMetricRow): Array<string | number | null> {
         row.completion_tokens ?? null, row.latency_ms ?? null,
         row.ram_free_mb ?? null, row.source_event_id ?? null,
         row.history_turns ?? null, row.refusal_layer ?? null,
+        row.layer1_second_read ?? null,
     ];
 }
 
@@ -322,6 +330,24 @@ export interface LocalSavings {
     first_ts: number | null;
     last_ts: number | null;
     by_model: Record<string, LocalSavingsModelRow>;
+    /** Calls that carried conversation history (`history_turns > 0`): how many
+     *  follow-ups local answered, refused, or sent to cloud. Ledger views only;
+     *  the session accumulators do not track history. */
+    followups?: FollowupSavings;
+}
+
+export interface FollowupSavings {
+    served_local: number;
+    /** Of served_local, answered by a 9b model. */
+    served_local_9b: number;
+    /** Refused by the on-device screen (rules, classifier, keyword net). */
+    refused: number;
+    /** Refused because the plan does not include history, or the history
+     *  exceeded the plan's cap. Not the screen. */
+    refused_by_plan: number;
+    cloud: number;
+    /** Screen refusals by the stage that stopped them ('unrecorded' for older rows). */
+    refused_by_layer: Record<string, number>;
 }
 
 /**
@@ -382,6 +408,33 @@ export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings 
             args: whereArgs,
         });
 
+        const followWhere = `WHERE history_turns > 0${sinceTs != null ? " AND ts >= ?" : ""}`;
+        const PLAN_REFUSAL = `COALESCE(refusal_reason, '') IN ('multi_turn_not_in_plan', 'history_over_plan_cap')`;
+        // A 9b model: '9b' right after a non-digit, so a future '19b' is not counted.
+        const NINE_B = `(LOWER(COALESCE(model, backend)) GLOB '*[^0-9]9b*' OR LOWER(COALESCE(model, backend)) GLOB '9b*')`;
+        const follow = await client.execute({
+            sql: `SELECT
+                SUM(CASE WHEN ${SERVED_LOCAL} THEN 1 ELSE 0 END) AS served,
+                SUM(CASE WHEN ${SERVED_LOCAL} AND ${NINE_B} THEN 1 ELSE 0 END) AS served_9b,
+                SUM(CASE WHEN used_cloud = 1 THEN 1 ELSE 0 END) AS cloud,
+                SUM(CASE WHEN used_cloud = 0 AND NOT (${SERVED_LOCAL}) AND NOT (${PLAN_REFUSAL}) THEN 1 ELSE 0 END) AS refused,
+                SUM(CASE WHEN used_cloud = 0 AND NOT (${SERVED_LOCAL}) AND ${PLAN_REFUSAL} THEN 1 ELSE 0 END) AS refused_by_plan
+                  FROM infer_metrics ${followWhere}`,
+            args: whereArgs,
+        });
+        const followLayers = await client.execute({
+            sql: `SELECT COALESCE(refusal_layer, 'unrecorded') AS layer, COUNT(*) AS n
+                  FROM infer_metrics ${followWhere} AND used_cloud = 0 AND NOT (${SERVED_LOCAL})
+                        AND NOT (${PLAN_REFUSAL})
+                  GROUP BY COALESCE(refusal_layer, 'unrecorded')`,
+            args: whereArgs,
+        });
+        const f = follow.rows[0] as Record<string, unknown>;
+        const refused_by_layer: Record<string, number> = {};
+        for (const row of followLayers.rows as Array<Record<string, unknown>>) {
+            refused_by_layer[String(row.layer)] = Number(row.n ?? 0);
+        }
+
         const r = agg.rows[0] as Record<string, unknown>;
         const by_model: Record<string, LocalSavingsModelRow> = {};
         for (const row of byM.rows as Array<Record<string, unknown>>) {
@@ -408,6 +461,14 @@ export async function queryLocalSavings(sinceTs?: number): Promise<LocalSavings 
             first_ts: r.first_ts == null ? null : Number(r.first_ts),
             last_ts: r.last_ts == null ? null : Number(r.last_ts),
             by_model,
+            followups: {
+                served_local: Number(f.served ?? 0),
+                served_local_9b: Number(f.served_9b ?? 0),
+                refused: Number(f.refused ?? 0),
+                refused_by_plan: Number(f.refused_by_plan ?? 0),
+                cloud: Number(f.cloud ?? 0),
+                refused_by_layer,
+            },
         };
     } catch (e) {
         debugLog(`[infer-ledger] savings query failed: ${e instanceof Error ? e.message : e}`);

@@ -1216,6 +1216,34 @@ describe("ledgerHandlers", () => {
       expect(miss).not.toContain("Symptom-triggered skills:");
     });
 
+    it("stamps the routing table's version under the symptom-triggered skills", async () => {
+      // A recorded load is only attributable if the transcript says which table
+      // produced it. The persisted table matches the manifest's version, so it
+      // is served with no network.
+      const table = JSON.stringify({ version: 77, prompt_keywords: { "\\bledger drift\\b": ["ledger-skill"] } });
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        autoload_projects: "alpha",
+        default_context_depth: "standard",
+        "skill_manifest:tier": "enterprise",
+        "skill_manifest:names": JSON.stringify(["ledger-skill"]),
+        "skill_manifest:routing_version": "77",
+        "skill:ledger-skill": "# ledger-skill\nCheck the rows first.",
+        routing_keywords: table,
+      }[key] ?? fallback));
+      mockGetAllSettings.mockResolvedValue({ "skill:ledger-skill": "# ledger-skill\nCheck the rows first." });
+      const storage = makeStorageStub();
+      storage.loadContext.mockResolvedValue({ last_summary: "ctx", version: 1 });
+      vi.mocked(getStorage).mockResolvedValue(storage as never);
+
+      const hit = (await sessionBootstrapHandler({ prompt: "why is there ledger drift in the report?" }))
+        .content[0].text as string;
+      expect(hit).toContain("**Symptom-triggered skills:** ledger-skill\n");
+      expect(hit).toMatch(/proposing any change\.\nRouting table v77\.\n/);
+
+      const miss = (await sessionBootstrapHandler({ prompt: "rename the helper" })).content[0].text as string;
+      expect(miss).not.toContain("Routing table");
+    });
+
     it("never inlines the frontmatter of a scoped skill whose closing fence is its last line", async () => {
       // Round-7 review: the inline path had its own fence parser that returned
       // the WHOLE document when nothing followed the closing fence (indexOf of
@@ -1850,6 +1878,15 @@ describe("ledgerHandlers", () => {
             ent._setCacheForTest({ ...ent.FREE_ENTITLEMENTS, plan: "free", multi_turn: { enabled: false, max_turns: 0, max_chars: 0 } }, 60_000);
             const off = (await sessionBootstrapHandler({})).content[0].text as string;
             expect(off).toContain("Local worker multi-turn:** off on the free plan");
+            // no account: the line says what turns it on, a free sign-in
+            ent._setCacheForTest({ ...ent.FREE_ENTITLEMENTS, source: "unconfigured" }, 60_000);
+            const anon = (await sessionBootstrapHandler({})).content[0].text as string;
+            expect(anon).toContain("Local worker multi-turn:** off without an account — a free Synalux account turns it on");
+            expect(anon).not.toContain("off on the free plan");
+            if (tier === "free") {
+              expect(anon).toContain("💎 **Free account:** sign in for free to get multi-turn and 20 cloud answers a day");
+              expect(off).toContain("💎 **Free tier:** paid plans unlock the full skill library");
+            }
           } finally {
             ent._resetEntitlementsForTest();
           }
