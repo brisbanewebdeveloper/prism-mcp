@@ -28,7 +28,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { parse as parseToml } from "smol-toml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   configureClaudeAgentPolicy,
   configureClaudeNativeStartup,
@@ -51,6 +51,7 @@ import {
   computeSkillManifestGeneration,
   type SkillManifest,
 } from "../../src/skillManifestSync.js";
+import { CONTEXT_RECOVERY_POLICY_TEXT } from "../../src/contextRecoveryPolicy.js";
 import { PROMPT_ROUTE_HOOK_VERSION } from "../../src/promptRouteHostHook.js";
 import { FREE_NATIVE_SKILL_NAMES } from "../../src/tools/skillRouting.js";
 
@@ -75,6 +76,37 @@ function expectVerbatimStartupContract(instructions: string): void {
   expect(normalized).toContain("never transmitted");
   // The zero-argument contract is what made routing dead on turn one.
   expect(normalized).not.toMatch(/exactly once with an empty object/);
+}
+
+// The save gate answers a refused write with a remedy: call session_load_context
+// for that project with the same conversation_id, then retry. A host block that
+// forbids that call leaves an agent with no way to follow the refusal — a
+// long-running Codex thread obeyed "Do not call `session_load_context`" and
+// stopped saving. The startup call stays exactly-once; recovery is a separate,
+// named section. Asserted for every host template for the same reason as above:
+// a new template cannot ship without it.
+function expectContextRecoveryContract(instructions: string): void {
+  const normalized = instructions.replace(/\s+/g, " ");
+  // No unconditional ban on the recovery tool, in any host's spelling.
+  expect(normalized).not.toMatch(/Do not call `?(?:mcp__prism-mcp__)?session_load_context`?(?!`? in place)/i);
+  // The surviving rule is scoped to what it was written for: not replacing the startup call.
+  expect(normalized).toContain("do not use `session_load_context` in place of it");
+  // One recovery section, spliced verbatim from the shared policy, between startup and local-first.
+  expect(normalized).toContain(CONTEXT_RECOVERY_POLICY_TEXT);
+  expect(normalized.match(/## Prism context recovery/g)).toHaveLength(1);
+  const startup = normalized.indexOf("## Prism session startup");
+  const recovery = normalized.indexOf("## Prism context recovery");
+  const localFirst = normalized.indexOf("## Prism local-first orchestration");
+  expect(startup).toBeGreaterThanOrEqual(0);
+  expect(recovery).toBeGreaterThan(startup);
+  expect(localFirst).toBeGreaterThan(recovery);
+  // ...and the semantics, so rewording the policy cannot quietly drop them.
+  const section = normalized.slice(recovery, localFirst);
+  expect(section).toContain("with `context_not_loaded`");
+  expect(section).toContain("Call `session_load_context` with the same `project` and the same `conversation_id` as the refused save");
+  expect(section).toContain("then retry the save once");
+  expect(section).toContain("not a second startup");
+  expect(section).toContain("Do not repeat `session_bootstrap`");
 }
 
 function expectLocalFirstPolicy(instructions: string): void {
@@ -221,6 +253,7 @@ function runBuiltCli(
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const home of tempHomes.splice(0)) {
     rmSync(home, { recursive: true, force: true });
   }
@@ -475,6 +508,7 @@ describe("prism connect", () => {
     expect(configured).toContain("Do not use shell commands, file reads, subagents");
     expect(configured).toContain("`Prism startup failure` and stop");
     expectVerbatimStartupContract(configured);
+    expectContextRecoveryContract(configured);
     expectLocalFirstPolicy(configured);
     expectEvidenceWorkflowPolicy(configured);
     expect(configureClaudeNativeStartup(homeDir)).toMatchObject({ status: "unchanged" });
@@ -564,6 +598,7 @@ describe("prism connect", () => {
     expect(configured).toContain("Do not use shell commands, file reads, subagents");
     expect(configured).toContain("`Prism startup failure` and stop");
     expectVerbatimStartupContract(configured);
+    expectContextRecoveryContract(configured);
     expectLocalFirstPolicy(configured);
     expectEvidenceWorkflowPolicy(configured);
     expect(configured).not.toContain("# Startup — MANDATORY");
@@ -658,6 +693,7 @@ describe("prism connect", () => {
     expect(configured.replaceAll("\r\n", "")).not.toContain("\n");
     expectPosixMode(instructionPath, 0o640);
     expectVerbatimStartupContract(configured);
+    expectContextRecoveryContract(configured);
     expectLocalFirstPolicy(configured);
     expectEvidenceWorkflowPolicy(configured);
 
@@ -1218,6 +1254,11 @@ describe("prism connect", () => {
     const root = makeHome();
     const codexHome = join(root, "custom-codex-home");
     mkdirSync(codexHome, { recursive: true });
+    // Production resolution uses the process home, and connect writes its
+    // installation receipt there. Without a scratch home this test rewrote the
+    // receipt in the real home of whoever ran the suite (every push runs it).
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
     const production = connectHosts({
       hosts: ["codex"],
       platform: "linux",
@@ -1226,6 +1267,7 @@ describe("prism connect", () => {
       env: { CODEX_HOME: codexHome },
     });
     expect(production.results[0].path).toBe(join(codexHome, "config.toml"));
+    expect(existsSync(join(root, ".prism-mcp", "installation.json"))).toBe(true);
 
     const isolatedHome = makeHome();
     const isolated = connectHosts({
@@ -1732,11 +1774,16 @@ describe("prism connect", () => {
   });
 
   it("exposes Codex through the built CLI with fail-loud exit codes", () => {
-    const codexHome = join(makeHome(), "codex-home");
+    const home = makeHome();
+    const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });
     const cliPath = resolve("dist/cli.js");
     const env = {
       ...process.env,
+      // The CLI writes its installation receipt under HOME; without its own
+      // home this test rewrote the receipt of whoever ran the suite.
+      HOME: home,
+      USERPROFILE: home,
       CODEX_HOME: codexHome,
       PRISM_CONFIG_PATH: join(codexHome, "prism-config.db"),
       PRISM_SKILL_SYNC_DISABLED: "true",
@@ -1749,6 +1796,7 @@ describe("prism connect", () => {
     });
     expect(connected.status, connected.stderr).toBe(0);
     expect(connected.stdout).toContain("Codex: registered");
+    expect(existsSync(join(home, ".prism-mcp", "installation.json"))).toBe(true);
     expect(readTomlConfig(join(codexHome, "config.toml")).mcp_servers)
       .toHaveProperty("prism-mcp");
     expect(existsSync(join(codexHome, "AGENTS.md"))).toBe(false);
@@ -2162,6 +2210,7 @@ it("reports the Claude project migration on default and refresh dry runs only af
       expect(canonicalClaudeInstructions).toContain("native tool discovery/ToolSearch");
       expect(canonicalClaudeInstructions).toContain("`Prism startup failure` and stop");
       expectVerbatimStartupContract(canonicalClaudeInstructions);
+      expectContextRecoveryContract(canonicalClaudeInstructions);
       expectLocalFirstPolicy(canonicalClaudeInstructions);
       expectEvidenceWorkflowPolicy(canonicalClaudeInstructions);
       expect(readFileSync(cursorHooks, "utf8")).toBe(cursorHookSentinel);
@@ -2172,6 +2221,7 @@ it("reports the Claude project migration on default and refresh dry runs only af
       expect(configuredGeminiInstructions).not.toContain("# Startup — MANDATORY");
       expect(configuredGeminiInstructions).toContain("# Paths\n\n- Keep this user rule.\n");
       expectVerbatimStartupContract(configuredGeminiInstructions);
+      expectContextRecoveryContract(configuredGeminiInstructions);
       expectLocalFirstPolicy(configuredGeminiInstructions);
       expectEvidenceWorkflowPolicy(configuredGeminiInstructions);
       expect(readFileSync(geminiAgents, "utf8")).toBe(geminiAgentsSentinel);
@@ -2182,6 +2232,7 @@ it("reports the Claude project migration on default and refresh dry runs only af
       expect(configuredCodexInstructions).toContain("continue with the user's request silently");
       expect(configuredCodexInstructions).not.toContain("`Prism startup failure` and stop");
       expectVerbatimStartupContract(configuredCodexInstructions);
+      expectContextRecoveryContract(configuredCodexInstructions);
       expectLocalFirstPolicy(configuredCodexInstructions);
       expectEvidenceWorkflowPolicy(configuredCodexInstructions);
       expect(readTomlConfig(join(codexHome, "config.toml"))).toMatchObject({

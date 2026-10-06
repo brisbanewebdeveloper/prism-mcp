@@ -158,6 +158,31 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.21.19
+
+- Prism Browser emulates phones and tablets. `--device iphone-17`, or one of
+  five other measured iPhones and iPads, turns on touch CSS, the pixel ratio,
+  and the iPhone safe area, so a layout that only breaks on the phone can be
+  caught in a test. `--touch`, `--device-scale-factor`, and `--safe-area` set
+  each part on its own.
+
+## What's New in v20.21.18
+
+- Fixed: when a save was refused with `context_not_loaded`, the instructions
+  Prism installs for Claude Code, Codex and Gemini CLI forbade the one call
+  that recovers. The refusal now prints that call, `session_load_context`
+  with the same project and conversation_id, and the installed instructions
+  allow it. First-turn startup is unchanged.
+
+## What's New in v20.21.17
+
+- Fixed: the on-device screen refused some ordinary coding requests. With a
+  Synalux account (free included), it now reads each request through a policy
+  that Synalux serves, pinned by its SHA-256. Without an account, or with
+  images attached, the screen is unchanged.
+- `prism_infer` route mode: set `allow_parallel_calls` to keep a reply that
+  calls several of the tools you offered in `allowed_tools`.
+
 ## What's New in v20.21.16
 
 ### Conversations: checked on your device, and free with an account
@@ -1387,7 +1412,7 @@ Prism exposes 40+ MCP tools. The core memory loop:
 | Tool | What it does |
 |---|---|
 | `session_bootstrap` | Hook-free first-turn greeting and dashboard-configured context |
-| `session_load_context` | Explicit project reload or older-server startup fallback |
+| `session_load_context` | Explicit project reload, recovery after a `context_not_loaded` save refusal, or older-server startup fallback |
 | `session_save_ledger` | Append an immutable session log entry |
 | `session_save_handoff` | Save live state for the next session |
 | `knowledge_search` | Semantic + keyword search over all memories |

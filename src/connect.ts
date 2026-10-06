@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 as w
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { CONTEXT_RECOVERY_POLICY_LINES } from "./contextRecoveryPolicy.js";
 import { EVIDENCE_WORKFLOW_POLICY_LINES } from "./evidenceWorkflowPolicy.js";
 import { LOCAL_FIRST_POLICY_ID, LOCAL_FIRST_POLICY_LINES } from "./localFirstPolicy.js";
 
@@ -168,6 +169,8 @@ const CODEX_STARTUP_BODY = [
   "`<prism_session />` line for every",
   "session_save_ledger, session_save_handoff, and session_detect_drift call in this conversation. This hook-free",
   "block is managed by `prism connect`; do not edit it manually.",
+  "",
+  ...CONTEXT_RECOVERY_POLICY_LINES,
   "",
   ...LOCAL_FIRST_POLICY_LINES,
   "",
@@ -762,10 +765,12 @@ function serializeClaudeStartupBlock(newline: string): string {
     "content. For a greeting-only prompt, stop after the verbatim startup display. If `session_bootstrap` is",
     "deferred, use native tool discovery/ToolSearch to load that",
     "exact tool, then invoke it. Do not use shell commands, file reads, subagents, or unrelated tool inspection",
-    "as a substitute. Do not call `session_load_context`. If discovery or invocation fails, report",
+    "as a substitute, and do not use `session_load_context` in place of it. If discovery or invocation fails, report",
     "`Prism startup failure` and stop. Reuse the `conversation_id` returned on the `<prism_session />` line for every",
     "session_save_ledger, session_save_handoff, and session_detect_drift call in this conversation. This block is",
     "managed by `prism connect`; do not edit it manually.",
+    "",
+    ...CONTEXT_RECOVERY_POLICY_LINES,
     "",
     ...LOCAL_FIRST_POLICY_LINES,
     "",
@@ -862,10 +867,12 @@ function serializeGeminiStartupBlock(newline: string): string {
     "reformat, or omit any returned section. Preserve its order and line content. For a greeting-only prompt, stop",
     "after the verbatim startup display. If `session_bootstrap` is deferred, use native tool discovery/ToolSearch",
     "to load that exact tool, then invoke it.",
-    "Do not use shell commands, file reads, subagents, or unrelated tool inspection as a substitute. Do not call",
-    "`session_load_context`. If discovery or invocation fails, report `Prism startup failure` and stop. Reuse the",
-    "`conversation_id` returned on the `<prism_session />` line for session_save_ledger, session_save_handoff, and",
-    "session_detect_drift calls. This block is managed by `prism connect`; do not edit it manually.",
+    "Do not use shell commands, file reads, subagents, or unrelated tool inspection as a substitute, and do not use",
+    "`session_load_context` in place of it. If discovery or invocation fails, report `Prism startup failure` and stop.",
+    "Reuse the `conversation_id` returned on the `<prism_session />` line for session_save_ledger, session_save_handoff,",
+    "and session_detect_drift calls. This block is managed by `prism connect`; do not edit it manually.",
+    "",
+    ...CONTEXT_RECOVERY_POLICY_LINES,
     "",
     ...LOCAL_FIRST_POLICY_LINES,
     "",

@@ -446,6 +446,76 @@ describe.skipIf(!python)('Prism Browser policy helpers (regression)', () => {
     });
   });
 
+  it('fails loudly on an unparseable safe area or pixel ratio', async () => {
+    const result = runPython([
+      'out = {}',
+      'for value in ["62,0,34,0", " 62, 0 ,34,0 ", "62,0,34", "a,b,c,d", "-1,0,0,0", "1000,0,0,0", ""]:',
+      ' try: out["area " + value] = list(browse.parse_safe_area(value))',
+      ' except ValueError: out["area " + value] = "error"',
+      'for value in ["3", "2.5", "0.4", "6", "x", ""]:',
+      ' try: out["scale " + value] = browse.parse_device_scale_factor(value)',
+      ' except ValueError: out["scale " + value] = "error"',
+      'print(json.dumps(out))',
+    ].join('\n'));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      'area 62,0,34,0': [62, 0, 34, 0],
+      'area  62, 0 ,34,0 ': [62, 0, 34, 0],
+      'area 62,0,34': 'error',
+      'area a,b,c,d': 'error',
+      'area -1,0,0,0': 'error',
+      'area 1000,0,0,0': 'error',
+      'area ': 'error',
+      'scale 3': 3,
+      'scale 2.5': 2.5,
+      'scale 0.4': 'error',
+      'scale 6': 'error',
+      'scale x': 'error',
+      'scale ': 'error',
+    });
+  });
+
+  it('lets explicit flags override a device preset', async () => {
+    const result = runPython([
+      'r = lambda *a: {k: list(v) if isinstance(v, tuple) else v for k, v in browse.resolve_device_options(*a).items()}',
+      'out = {',
+      ' "none": r(None, None, False, None, None),',
+      ' "touch": r(None, "402x874", True, None, None),',
+      ' "preset": r("iphone-17", None, False, None, None),',
+      ' "sideways": r("iphone-17", "874x402", False, None, "0,62,21,62"),',
+      '}',
+      'try: r("pixel-9", None, False, None, None); out["unknown"] = "accepted"',
+      'except ValueError: out["unknown"] = "error"',
+      'print(json.dumps(out))',
+    ].join('\n'));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      none: { viewport: [1440, 900], touch: false, device_scale_factor: null, safe_area: null },
+      touch: { viewport: [402, 874], touch: true, device_scale_factor: null, safe_area: null },
+      preset: { viewport: [402, 874], touch: true, device_scale_factor: 3, safe_area: [62, 0, 34, 0] },
+      sideways: { viewport: [874, 402], touch: true, device_scale_factor: 3, safe_area: [0, 62, 21, 62] },
+      unknown: 'error',
+    });
+  });
+
+  it('refuses an empty device option instead of falling back to a desktop default', async () => {
+    // `--safe-area "$INSETS"` with the variable unset passes "". Treating that
+    // as "not given" ran a phone test with no insets, silently.
+    const result = runPython([
+      'out = {}',
+      'for name, args in {"viewport": (None, "", False, None, None), "scale": (None, None, False, "", None),',
+      '                   "safe_area": (None, None, False, None, ""), "preset_viewport": ("iphone-17", "", False, None, None)}.items():',
+      ' try: browse.resolve_device_options(*args); out[name] = "accepted"',
+      ' except ValueError: out[name] = "error"',
+      'print(json.dumps(out))',
+    ].join('\n'));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ viewport: 'error', scale: 'error', safe_area: 'error', preset_viewport: 'error' });
+  });
+
   it('parses quoted selectors so a selector may contain spaces', async () => {
     const result = runPython([
       'print(json.dumps([',
@@ -574,6 +644,29 @@ describe.skipIf(!python || !browserRoot || !playwrightRuntimeAvailable)('Prism B
         res.end(fixturePage('<div id="app">second</div>', 'Second Window'));
         return;
       }
+      if (path === '/phone') {
+        // A page that opts in to the safe area, as iOS apps do, and can open a
+        // copy of itself in a popup.
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<!doctype html><html><head><title>Phone</title>'
+          + '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>'
+          + '<div id="inset" style="position:fixed;top:env(safe-area-inset-top);bottom:env(safe-area-inset-bottom)"></div>'
+          + '<button id="pop">Open</button>'
+          + '<script>document.getElementById("pop").addEventListener("click", function () {'
+          + ' window.open("/phone", "_blank");'
+          + '});</script></body></html>');
+        return;
+      }
+      if (path === '/phone-no-cover') {
+        // The same probe target WITHOUT viewport-fit=cover. iOS reports 0 insets
+        // for such a page; the docs say Chromium applies them anyway.
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<!doctype html><html><head><title>Phone, no cover</title>'
+          + '<meta name="viewport" content="width=device-width, initial-scale=1"></head><body>'
+          + '<div id="inset" style="position:fixed;top:env(safe-area-inset-top);bottom:env(safe-area-inset-bottom)"></div>'
+          + '</body></html>');
+        return;
+      }
       if (path === '/headers') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(fixturePage('<div id="app">headers</div><script>fetch("/sub.txt");</script>'));
@@ -606,6 +699,87 @@ describe.skipIf(!python || !browserRoot || !playwrightRuntimeAvailable)('Prism B
     if (server) await new Promise<void>((done) => server!.close(() => done()));
     server = null;
   });
+
+  // Phone emulation. A desktop run never matches (pointer: coarse), so CSS
+  // written for touchscreens could not be seen at all, and env(safe-area-inset-*)
+  // read 0 for every page.
+  const phoneProbe = 'JSON.stringify({'
+    + 'coarse: matchMedia("(pointer: coarse)").matches,'
+    + 'hoverNone: matchMedia("(hover: none)").matches,'
+    + 'dpr: devicePixelRatio, w: innerWidth, h: innerHeight,'
+    + 'top: getComputedStyle(document.getElementById("inset")).top,'
+    + 'bottom: getComputedStyle(document.getElementById("inset")).bottom'
+    + '})';
+  const phoneResult = (run: PipeRun) => {
+    const row = run.rows.find((r) => typeof r.result === 'string' && r.result.includes('hoverNone'));
+    expect(row, run.stdout + run.stderr).toBeDefined();
+    return JSON.parse(row!.result as string);
+  };
+
+  it.each(['full', 'none'])('emulates a touch phone with its safe area under --stealth %s', async (stealth) => {
+    // The stealth layer's user-agent override resets an earlier safe-area
+    // override, so under --stealth full the order of the two decides whether
+    // env() reads the insets or 0.
+    const run = await runPipe(
+      ['--stealth', stealth, '--viewport', '402x874', '--touch', '--device-scale-factor', '3', '--safe-area', '62,0,34,0'],
+      [`open ${origin}/phone`, `eval ${phoneProbe}`],
+    );
+    expect(run.status, run.stderr).toBe(0);
+    expect(phoneResult(run)).toEqual({ coarse: true, hoverNone: true, dpr: 3, w: 402, h: 874, top: '62px', bottom: '34px' });
+  }, 70_000);
+
+  it('keeps a desktop run on a mouse pointer with no safe area', async () => {
+    const run = await runPipe([], [`open ${origin}/phone`, `eval ${phoneProbe}`]);
+    expect(run.status, run.stderr).toBe(0);
+    expect(phoneResult(run)).toMatchObject({ coarse: false, hoverNone: false, dpr: 1, w: 1440, top: '0px', bottom: '0px' });
+  }, 70_000);
+
+  it('applies a measured device preset', async () => {
+    const run = await runPipe(['--device', 'iphone-se'], [`open ${origin}/phone`, `eval ${phoneProbe}`]);
+    expect(run.status, run.stderr).toBe(0);
+    expect(phoneResult(run)).toEqual({ coarse: true, hoverNone: true, dpr: 2, w: 375, h: 667, top: '20px', bottom: '0px' });
+  }, 70_000);
+
+  it('gives a popup the same safe area', async () => {
+    const run = await runPipe(
+      ['--device', 'iphone-17'],
+      [`open ${origin}/phone`, 'click #pop', 'wait 1', 'switch-page 1', `eval ${phoneProbe}`],
+    );
+    expect(run.status, run.stderr).toBe(0);
+    expect(phoneResult(run)).toMatchObject({ coarse: true, top: '62px', bottom: '34px' });
+  }, 70_000);
+
+  // docs/prism-browser.md warns that, unlike iOS, Chromium applies the insets
+  // to a page that never set viewport-fit=cover. A test that passes here while
+  // the same page reads 0 on an iPhone is the trap that warning describes.
+  it('applies the safe area even to a page without viewport-fit=cover, unlike iOS', async () => {
+    const run = await runPipe(['--device', 'iphone-17'], [`open ${origin}/phone-no-cover`, `eval ${phoneProbe}`]);
+    expect(run.status, run.stderr).toBe(0);
+    expect(phoneResult(run)).toMatchObject({ coarse: true, top: '62px', bottom: '34px' });
+  }, 70_000);
+
+  // docs/prism-browser.md: "the user agent stays the desktop one, so pages that
+  // branch on the user-agent string still take their desktop path".
+  // The user agent is chosen per profile name, so both runs share one profile;
+  // the later --profile wins over runBrowser's per-run default.
+  it.each(['full', 'none'])('keeps the desktop user agent under a device preset (--stealth %s)', async (stealth) => {
+    const profile = `ua-device-${stealth}`;
+    const uaOf = async (extra: string[]) => {
+      const run = await runPipe(
+        ['--stealth', stealth, '--profile', profile, ...extra],
+        [`open ${origin}/`, 'eval navigator.userAgent'],
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const row = run.rows.find((r) => typeof r.result === 'string' && r.result.startsWith('Mozilla/'));
+      expect(row, run.stdout + run.stderr).toBeDefined();
+      return row!.result as string;
+    };
+    const desktop = await uaOf([]);
+    const phone = await uaOf(['--device', 'iphone-17']);
+    expect(phone).toBe(desktop);
+    expect(phone).not.toMatch(/Mobile|iPhone|iPad|Android/);
+    // Two sequential launches: the 70 s per-launch budget the other tests use, twice, plus margin.
+  }, 150_000);
 
   it('applies the stealth library instead of swallowing a constructor error', async () => {
     const run = await runPipe([], [`open ${origin}/`, 'fingerprint']);
