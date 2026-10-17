@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.21.27 — 2026-10-16
+
+- Prism Browser's `pipe` mode ran a command that had already arrived only
+  when the next one was written; if nothing more came, the idle timeout
+  (600 s) ended the run with that command never run. The reader waited on
+  `select()` for new pipe data while `readline()` had already pulled the
+  commands sent so far into Python's own buffer, where `select()` could not
+  see them. A script that writes a block of commands and then waits for their
+  result before writing more (a database check between two screens, say)
+  stalled until the timeout and then failed. The reader now reads the
+  descriptor itself and decodes it as the text stream did (one incremental
+  decoder in the stream's encoding and error policy, universal newlines), so
+  every command runs as soon as it arrives. Short commands were affected
+  most: a chunk larger than the 8 KB buffer left data in the pipe and masked
+  the stall.
+- Measured (`tests/pipe-reader-check.py`, run by
+  `tests/browser-pipe-reader.test.ts`): two commands written together, then
+  the third written only once the reader has handed over the second. Before,
+  the second came out only with the third; now before the third is written.
+  Against the CLI with a 6 s pause, "two" ran with "one" instead of 6 s
+  later. The same check covers, with each read boundary forced: CRLF
+  continuations, UTF-16 split inside characters, CRLF split between reads, a
+  bare or trailing CR, an unterminated tail at EOF, a strict decoding error,
+  the blocking fallback taking over mid-line, and the timeout case below
+  (skipped where `select()` cannot watch a pipe).
+- Unchanged: the idle timeout, the `\` line continuation (CRLF endings still
+  join), comment lines, and a stream `select()` cannot watch, which is now
+  read blocking without losing a partial line. One difference: at the idle
+  timeout, a command still being written (a partial line, or a `\`
+  continuation whose tail never came) is dropped, never run cut short.
+  Before, the reader could block on a partial line past the timeout.
+
 ## 20.21.26 — 2026-10-15
 
 - Layer 1's deterministic rules no longer clear requests; they can only mark
