@@ -2511,6 +2511,9 @@ async function runInferAfterInputSafety(args: PrismInferArgs, deps: InferDeps, t
     const installed = await deps.listTags();
     const loaded = await deps.listLoaded();
     if (omlxTarget && installed === null) throw new Error("prism_infer: omlx_classifier_unavailable");
+    // Explicit oMLX: timeout_ms bounds the whole call, the Ollama unload and
+    // classification included.
+    const omlxDeadline = Date.now() + (args.timeout_ms ?? 300_000);
     // Ollama is unloaded during an explicit oMLX call (owner, 2026-10-15; this
     // replaces plan section 4's "never evict another Ollama user's weights").
     // Under the device lease, before classification: unload every resident
@@ -2594,7 +2597,8 @@ async function runInferAfterInputSafety(args: PrismInferArgs, deps: InferDeps, t
         const generationTarget = omlxTarget, runtime = omlxRuntime;
         const omlxL1Fetch = generationTarget && runtime
             ? omlxLayer1Fetch(async request =>
-                guardedOmlxGenerate(runtime, omlxModelTarget(generationTarget, OMLX_LAYER1_MODEL), request, deps.freemem))
+                guardedOmlxGenerate(runtime, omlxModelTarget(generationTarget, OMLX_LAYER1_MODEL), request, deps.freemem),
+                () => omlxDeadline - Date.now())
             : undefined;
         const l1fn = omlxL1Fetch
             ? (...[prompt, url, model, , images, opts]: Parameters<typeof defaultCallLayer1>) =>
@@ -2965,7 +2969,6 @@ async function runInferAfterInputSafety(args: PrismInferArgs, deps: InferDeps, t
     // Explicit oMLX classified on oMLX, so nothing of this call's is in Ollama.
     // Anything resident now belongs to another user: guardedOmlxGenerate
     // refuses generation (omlx_memory_contention) before any request.
-    const omlxDeadline = Date.now() + (args.timeout_ms ?? 300_000);
     const callLocal: InferDeps["callLocal"] = omlxTarget && omlxRuntime
         ? async (_url, _model, prompt, system, maxTokens, temperature, timeoutMs, think, _images, history) => {
             const messages = [...(system === undefined ? [] : [{ role: "system", content: system }]),
