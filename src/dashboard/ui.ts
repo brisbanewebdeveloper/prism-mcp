@@ -14,6 +14,11 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
+import { ANALYTICS_DATE_PATTERN, ANALYTICS_METRIC_IDS, DASHBOARD_READ_MESSAGES } from './readMessages.js';
+import { DARK_FACTORY_SETTINGS_UNAVAILABLE } from '../darkfactory/enablement.js';
+import { ACTR_SETTINGS_UNAVAILABLE, ACTR_UI } from '../utils/actrEnablement.js';
+import { localCodingPanelHTML, localCodingScript } from './localCodingUI.js';
+
 export function renderDashboardLocalOpenHTML(): string {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -193,6 +198,7 @@ export function renderDashboardHTML(version: string): string {
 
     /* ─── Glass Cards ─── */
     .card {
+      min-width: 0; overflow-wrap: anywhere;
       background: var(--bg-glass); backdrop-filter: blur(16px);
       border: 1px solid var(--border-glass); border-radius: var(--radius);
       padding: 1.5rem; transition: border-color 0.3s ease, box-shadow 0.3s ease;
@@ -208,8 +214,10 @@ export function renderDashboardHTML(version: string): string {
     }
 
     /* ─── Grid Layout ─── */
-    .grid { display: grid; gap: 1.5rem; }
-    .grid-main { grid-template-columns: 1fr 2fr; }
+    .grid { display: grid; gap: 1.5rem; min-width: 0; }
+    .grid-main { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+    .graph-filters select { color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-glass); border-radius: 6px; max-width: 100%; }
+    .graph-filters option { color: var(--text-primary); background: var(--bg-secondary); }
     @media (max-width: 900px) { .grid-main { grid-template-columns: 1fr; } }
 
     /* ─── PWA Mobile Overrides (v5.4) ─── */
@@ -477,6 +485,10 @@ export function renderDashboardHTML(version: string): string {
     .skill-save-btn { background: var(--accent-purple); color: #fff; border: none; border-radius: var(--radius-sm);
       padding: 0.45rem 1rem; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
     .skill-save-btn:hover { opacity: 0.85; }
+    #spanel-local .setting-desc { font-size: 0.8rem; line-height: 1.55; }
+    #spanel-local a { color: var(--accent-purple); text-underline-offset: 3px; }
+    #spanel-local button, #spanel-local select, #spanel-local input { min-height: 40px; }
+    #spanel-local button:disabled { opacity: 0.5; cursor: default; }
     .skill-upload-btn { background: none; border: 1px solid var(--border-glass); color: var(--text-secondary);
       border-radius: var(--radius-sm); padding: 0.45rem 0.85rem; font-size: 0.82rem; cursor: pointer; transition: all 0.2s; }
     .skill-upload-btn:hover { border-color: var(--accent-purple); color: var(--accent-purple); }
@@ -503,8 +515,10 @@ export function renderDashboardHTML(version: string): string {
     .modal-close:hover { color: var(--text-primary); }
     .setting-row {
       display: flex; justify-content: space-between; align-items: center;
+      gap: 1rem;
       padding: 0.75rem 0; border-bottom: 1px solid rgba(255,255,255,0.05);
     }
+    .setting-row > div { min-width: 0; }
     .setting-row:last-child { border-bottom: none; }
     .setting-label { font-size: 0.85rem; color: var(--text-secondary); }
     .setting-desc { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; }
@@ -866,8 +880,9 @@ export function renderDashboardHTML(version: string): string {
         <!-- Brain Health (v2.2.0) -->
         <div class="card" id="healthCard" style="display:none">
           <div class="card-title">
-            <span class="dot" style="background:var(--accent-green)"></span> Brain Health 🩺
-            <button class="cleanup-btn" id="cleanupBtn" onclick="cleanupIssues()" style="display:none">🧹 Fix Issues</button>
+            <span class="dot" style="background:var(--accent-green)"></span> ${DASHBOARD_READ_MESSAGES.memoryScanTitle}
+            <button class="refresh-btn" id="healthRefreshBtn" type="button" onclick="refreshHealthScan()">${DASHBOARD_READ_MESSAGES.refreshScan}</button>
+            <button class="cleanup-btn" id="cleanupBtn" onclick="cleanupIssues()" style="display:none" title="${DASHBOARD_READ_MESSAGES.repairCoverage}">🧹 Fix Issues</button>
           </div>
           <div class="health-status">
             <div class="health-dot unknown" id="healthDot"></div>
@@ -877,6 +892,8 @@ export function renderDashboardHTML(version: string): string {
             </div>
           </div>
           <div class="health-issues" id="healthIssues"></div>
+          <p id="healthCoverageNote" style="color:var(--text-muted);font-size:0.75rem"></p>
+          <p id="healthRepairNote" style="color:var(--text-muted);font-size:0.75rem">${DASHBOARD_READ_MESSAGES.repairCoverage}</p>
           <!-- Repair progress bar (v6.1.4) -->
           <div class="health-progress-wrap" id="healthProgressWrap">
             <div class="health-progress-header">
@@ -894,13 +911,15 @@ export function renderDashboardHTML(version: string): string {
           <div class="card-title">
             <span class="dot" style="background:var(--accent-purple)"></span>
             Memory Analytics 📊
+            <button class="refresh-btn" id="analyticsRetryBtn" type="button" onclick="loadAnalytics(document.getElementById('projectSelect').value)">${DASHBOARD_READ_MESSAGES.retry}</button>
           </div>
+          <div id="analyticsReadStatus" role="status" style="display:none;color:var(--accent-rose);font-size:0.85rem;margin-bottom:0.75rem"></div>
           <div class="sparkline" id="sparkline" title="Sessions per day (last 14 days)"></div>
           <div style="font-size:0.68rem;color:var(--text-muted);text-align:right">Sessions / day (14d)</div>
           <div class="analytics-stats">
-            <div class="astat"><div class="astat-val" id="astat-entries">—</div><div class="astat-label">Active sessions</div></div>
+            <div class="astat"><div class="astat-val" id="astat-entries">—</div><div class="astat-label">${DASHBOARD_READ_MESSAGES.activeEntries}</div></div>
             <div class="astat"><div class="astat-val" id="astat-rollups">—</div><div class="astat-label">Rollups</div></div>
-            <div class="astat"><div class="astat-val" id="astat-savings">—</div><div class="astat-label">Entries saved</div></div>
+            <div class="astat"><div class="astat-val" id="astat-savings">—</div><div class="astat-label">${DASHBOARD_READ_MESSAGES.consolidatedEntries}</div></div>
             <div class="astat"><div class="astat-val" id="astat-avglen">—</div><div class="astat-label">Avg summary chars</div></div>
           </div>
         </div>
@@ -1019,7 +1038,7 @@ export function renderDashboardHTML(version: string): string {
           </div>
 
           <!-- v5.1 Graph Filters -->
-          <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap; align-items:center;">
+          <div class="graph-filters" style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap; align-items:center;">
             <select id="graphProjectFilter" class="input-modern" style="min-width:120px; font-size:0.75rem; padding:0.3rem 0.5rem" onchange="loadGraph()">
               <option value="">All Projects</option>
             </select>
@@ -1133,7 +1152,7 @@ export function renderDashboardHTML(version: string): string {
       <div class="card" style="margin-top:1rem">
         <div class="card-title" style="display:flex;align-items:center;gap:0.5rem">
           <span class="dot" style="background:var(--accent-blue)"></span>
-          Graph Health 📊
+          ${DASHBOARD_READ_MESSAGES.graphActivityTitle}
           <div style="flex:1"></div>
           <span id="graphHealthWarnings" style="display:inline-flex;gap:0.3rem"></span>
           <button onclick="loadGraphMetrics()" class="refresh-btn">↻</button>
@@ -1187,251 +1206,34 @@ export function renderDashboardHTML(version: string): string {
       </div>
     </div>
 
-    <!-- VM Lab Panel (v14.0) -->
-    <div id="vm-content" class="fade-in" style="display:none; margin: 0 auto; max-width: 1100px; padding: 0 1rem;">
+    <!-- VM Lab: inventory must come from a runtime provider. -->
+    <div id="vm-content" class="fade-in" style="display:none;max-width:1100px;margin:auto;padding:0 1rem;">
       <div class="card">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-blue)"></span>
-          Device Template Gallery 🖥️
-          <span style="margin-left:auto;font-size:0.72rem;color:var(--text-muted)">14 templates</span>
-        </div>
-        <div class="vm-gallery">
-          <div class="vm-card"><span class="vm-tier free">FREE</span><div class="vm-icon">🐧</div><div class="vm-name">Ubuntu 24.04 LTS</div><div class="vm-specs">4 cores · 8 GB · 64 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier free">FREE</span><div class="vm-icon">🐧</div><div class="vm-name">Debian 12 Minimal</div><div class="vm-specs">2 cores · 4 GB · 32 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier standard">STD</span><div class="vm-icon">🪣</div><div class="vm-name">Windows 11 Dev</div><div class="vm-specs">4 cores · 16 GB · 128 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier standard">STD</span><div class="vm-icon">🪣</div><div class="vm-name">Windows Server 2022</div><div class="vm-specs">8 cores · 32 GB · 256 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier advanced">ADV</span><div class="vm-icon">📱</div><div class="vm-name">iOS 18 Simulator</div><div class="vm-specs">4 cores · 8 GB · 64 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier advanced">ADV</span><div class="vm-icon">📱</div><div class="vm-name">iPadOS 18</div><div class="vm-specs">4 cores · 8 GB · 64 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier advanced">ADV</span><div class="vm-icon">⌚</div><div class="vm-name">watchOS 11</div><div class="vm-specs">2 cores · 2 GB · 16 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier standard">STD</span><div class="vm-icon">🤖</div><div class="vm-name">Android 15</div><div class="vm-specs">4 cores · 8 GB · 64 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier standard">STD</span><div class="vm-icon">⌚</div><div class="vm-name">Wear OS 5</div><div class="vm-specs">2 cores · 2 GB · 16 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier advanced">ADV</span><div class="vm-icon">🌎</div><div class="vm-name">macOS Sequoia</div><div class="vm-specs">8 cores · 16 GB · 256 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier enterprise">ENT</span><div class="vm-icon">🥽</div><div class="vm-name">visionOS 2</div><div class="vm-specs">8 cores · 16 GB · 128 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier enterprise">ENT</span><div class="vm-icon">🥽</div><div class="vm-name">Meta Quest 3</div><div class="vm-specs">8 cores · 12 GB · 128 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier free">FREE</span><div class="vm-icon">🐧</div><div class="vm-name">Alpine Linux</div><div class="vm-specs">1 core · 1 GB · 8 GB SSD</div></div>
-          <div class="vm-card"><span class="vm-tier standard">STD</span><div class="vm-icon">🐧</div><div class="vm-name">Fedora 41</div><div class="vm-specs">4 cores · 8 GB · 64 GB SSD</div></div>
-        </div>
+        <div class="card-title">${DASHBOARD_READ_MESSAGES.vmTitle}</div>
+        <p role="status">${DASHBOARD_READ_MESSAGES.vmUnavailable}</p>
+        <button class="lc-btn compact" type="button" onclick="showFixedToast(dashboardReadMessages.vmActionUnavailable,false)">${DASHBOARD_READ_MESSAGES.vmAvailability}</button>
       </div>
+    </div>
 
-      <div class="card" style="margin-top:1.25rem">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-green)"></span>
-          Active VMs
-          <span style="margin-left:auto;font-size:0.72rem;color:var(--text-muted)">0 running</span>
-        </div>
-        <div class="vm-status-list">
-          <div style="text-align:center;padding:2rem;color:var(--text-muted);font-size:0.85rem">
-            <div style="font-size:2rem;margin-bottom:0.5rem">💤</div>
-            No active VMs. Click a template above to create one.
-          </div>
+    <!-- Marketplace: never advertise an unverified catalog or payout terms. -->
+    <div id="marketplace-content" class="fade-in" style="display:none;max-width:1100px;margin:auto;padding:0 1rem;">
+      <div class="card">
+        <div class="card-title">${DASHBOARD_READ_MESSAGES.marketplaceTitle}</div>
+        <p role="status">${DASHBOARD_READ_MESSAGES.marketplaceUnavailable}</p>
+        <div class="lc-row">
+          <button class="lc-btn compact" type="button" onclick="showFixedToast(dashboardReadMessages.marketplaceActionUnavailable,false)">${DASHBOARD_READ_MESSAGES.marketplaceAvailability}</button>
+          <button class="lc-btn export" type="button" onclick="showFixedToast(dashboardReadMessages.marketplaceActionUnavailable,false)">${DASHBOARD_READ_MESSAGES.publishComponent}</button>
         </div>
       </div>
     </div>
 
-    <!-- Marketplace Panel (v14.0) -->
-    <div id="marketplace-content" class="fade-in" style="display:none; margin: 0 auto; max-width: 1100px; padding: 0 1rem;">
+    <!-- Compliance: this view has no connected live enforcement/audit feed. -->
+    <div id="compliance-content" class="fade-in" style="display:none;max-width:1100px;margin:auto;padding:0 1rem;">
       <div class="card">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-cyan)"></span>
-          Component Marketplace 🛒
-          <button style="margin-left:auto;background:var(--gradient-hero);color:white;border:none;padding:0.35rem 0.85rem;border-radius:var(--radius-sm);font-size:0.78rem;font-weight:600;cursor:pointer">+ Publish Component</button>
-        </div>
-
-        <div style="display:flex;gap:0.75rem;margin-bottom:1rem;align-items:center">
-          <input type="text" class="input-modern" style="flex:1;padding:0.6rem 1rem;font-size:0.9rem" placeholder="Search components, shaders, UI kits...">
-        </div>
-
-        <div class="mp-filters">
-          <button class="mp-filter-chip active">All</button>
-          <button class="mp-filter-chip">🎨 UI</button>
-          <button class="mp-filter-chip">⚙️ Logic</button>
-          <button class="mp-filter-chip">🎧 Audio</button>
-          <button class="mp-filter-chip">✨ Shader</button>
-          <button class="mp-filter-chip">📄 Template</button>
-          <button class="mp-filter-chip">🎮 Game</button>
-          <button class="mp-filter-chip">🤖 AI/ML</button>
-        </div>
-
-        <div class="mp-grid">
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">🎨 Glassmorphism UI Kit</div><div class="mp-author">by @studioflow</div></div>
-              <span class="mp-price-badge free">FREE</span>
-            </div>
-            <div class="mp-desc">Premium glass-effect components with dark/light mode support. 24 components included.</div>
-            <button class="mp-install-btn">⬇ Install</button>
-          </div>
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">✨ PBR Shader Pack</div><div class="mp-author">by @renderlab</div></div>
-              <span class="mp-price-badge paid">$14.99</span>
-            </div>
-            <div class="mp-desc">Physically-based rendering shaders for Metal, Vulkan, and WebGPU. Includes toon, cel, and water effects.</div>
-            <button class="mp-install-btn">🛒 Purchase</button>
-          </div>
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">🎮 Netcode Toolkit</div><div class="mp-author">by @multiplayerlabs</div></div>
-              <span class="mp-price-badge paid">$29.99</span>
-            </div>
-            <div class="mp-desc">Client-side prediction, server reconciliation, and lag compensation for multiplayer games.</div>
-            <button class="mp-install-btn">🛒 Purchase</button>
-          </div>
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">🤖 Edge AI Runtime</div><div class="mp-author">by @inferenceio</div></div>
-              <span class="mp-price-badge free">FREE</span>
-            </div>
-            <div class="mp-desc">On-device ML inference with CoreML, ONNX, and TFLite. Includes pose estimation and object detection models.</div>
-            <button class="mp-install-btn">⬇ Install</button>
-          </div>
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">🎧 Spatial Audio Engine</div><div class="mp-author">by @soundscapevr</div></div>
-              <span class="mp-price-badge paid">$19.99</span>
-            </div>
-            <div class="mp-desc">HRTF-based 3D audio for VR/AR. Supports ambisonics, reverb zones, and occlusion.</div>
-            <button class="mp-install-btn">🛒 Purchase</button>
-          </div>
-          <div class="mp-card">
-            <div class="mp-header">
-              <div><div class="mp-name">📄 SaaS Starter Kit</div><div class="mp-author">by @launchfast</div></div>
-              <span class="mp-price-badge free">FREE</span>
-            </div>
-            <div class="mp-desc">Full-stack SaaS boilerplate with auth, billing, dashboard, and API. Next.js + Supabase.</div>
-            <button class="mp-install-btn">⬇ Install</button>
-          </div>
-        </div>
-
-        <div style="margin-top:1.25rem;padding:0.85rem;border-radius:var(--radius-sm);background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);font-size:0.78rem;color:var(--text-secondary)">
-          💰 <strong>Revenue Sharing:</strong> Earn 70% of sales on paid components. Payouts via Synalux every 30 days.
-        </div>
-      </div>
-    </div>
-
-    <!-- Compliance Panel (v14.0) -->
-    <div id="compliance-content" class="fade-in" style="display:none; margin: 0 auto; max-width: 1100px; padding: 0 1rem;">
-      <div class="card">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-green)"></span>
-          Enforcement Pipeline — 6 Layers 🛡️
-        </div>
-        <div class="compliance-layers">
-          <div class="compliance-layer">
-            <div class="cl-icon">📋</div>
-            <div class="cl-name">Registration Gate</div>
-            <div class="cl-status active">Active</div>
-          </div>
-          <div class="compliance-layer">
-            <div class="cl-icon">🌐</div>
-            <div class="cl-name">Geofence Gate</div>
-            <div class="cl-status active">Active</div>
-          </div>
-          <div class="compliance-layer">
-            <div class="cl-icon">🧠</div>
-            <div class="cl-name">Use-Case AI</div>
-            <div class="cl-status active">Active</div>
-          </div>
-          <div class="compliance-layer">
-            <div class="cl-icon">📊</div>
-            <div class="cl-name">Runtime Monitor</div>
-            <div class="cl-status active">Active</div>
-          </div>
-          <div class="compliance-layer">
-            <div class="cl-icon">🚨</div>
-            <div class="cl-name">Kill Switch</div>
-            <div class="cl-status active">Armed</div>
-          </div>
-          <div class="compliance-layer">
-            <div class="cl-icon">🔗</div>
-            <div class="cl-name">Audit Trail</div>
-            <div class="cl-status active">Hash-Chain</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:1.25rem">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-rose)"></span>
-          Embargoed Countries — Hard-Blocked
-        </div>
-        <div class="country-badges">
-          <span class="country-badge embargoed">⛔ BY — Belarus</span>
-          <span class="country-badge embargoed">⛔ CU — Cuba</span>
-          <span class="country-badge embargoed">⛔ IR — Iran</span>
-          <span class="country-badge embargoed">⛔ KP — DPRK</span>
-          <span class="country-badge embargoed">⛔ SY — Syria</span>
-        </div>
-
-        <div class="card-title" style="margin-top:1rem">
-          <span class="dot" style="background:var(--accent-amber)"></span>
-          Restricted — Civilian Only
-        </div>
-        <div class="country-badges">
-          <span class="country-badge restricted">🟡 RU — Russia</span>
-          <span class="country-badge restricted">🟡 CN — China</span>
-          <span class="country-badge restricted">🟡 VE</span>
-          <span class="country-badge restricted">🟡 MM</span>
-          <span class="country-badge restricted">🟡 SD</span>
-          <span class="country-badge restricted">🟡 SS</span>
-          <span class="country-badge restricted">🟡 LY</span>
-          <span class="country-badge restricted">🟡 SO</span>
-          <span class="country-badge restricted">🟡 YE</span>
-          <span class="country-badge restricted">🟡 ZW</span>
-          <span class="country-badge restricted">🟡 CD</span>
-          <span class="country-badge restricted">🟡 CF</span>
-          <span class="country-badge restricted">🟡 IQ</span>
-          <span class="country-badge restricted">🟡 LB</span>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:1.25rem">
-        <div class="card-title">
-          <span class="dot" style="background:var(--accent-purple)"></span>
-          Recent Audit Events 📜
-        </div>
-        <table class="audit-table">
-          <thead>
-            <tr><th>Time</th><th>Event</th><th>Severity</th><th>Details</th></tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style="font-family:var(--font-mono);font-size:0.72rem">2 min ago</td>
-              <td>Registration screened</td>
-              <td><span class="audit-severity low">Low</span></td>
-              <td style="color:var(--text-muted)">KYC passed — US-based individual</td>
-            </tr>
-            <tr>
-              <td style="font-family:var(--font-mono);font-size:0.72rem">18 min ago</td>
-              <td>Use-case classified</td>
-              <td><span class="audit-severity low">Low</span></td>
-              <td style="color:var(--text-muted)">Project "pet-tracker" — consumer app (2% risk)</td>
-            </tr>
-            <tr>
-              <td style="font-family:var(--font-mono);font-size:0.72rem">1 hr ago</td>
-              <td>Geofence mismatch</td>
-              <td><span class="audit-severity medium">Medium</span></td>
-              <td style="color:var(--text-muted)">IP: DE, Billing: FR — flagged for human review</td>
-            </tr>
-            <tr>
-              <td style="font-family:var(--font-mono);font-size:0.72rem">4 hr ago</td>
-              <td>VPN detected</td>
-              <td><span class="audit-severity medium">Medium</span></td>
-              <td style="color:var(--text-muted)">NordVPN exit node — billing triangulation passed</td>
-            </tr>
-            <tr>
-              <td style="font-family:var(--font-mono);font-size:0.72rem">1 day ago</td>
-              <td>Sanctions check failed</td>
-              <td><span class="audit-severity high">High</span></td>
-              <td style="color:var(--text-muted)">OFAC SDN match — registration blocked</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div style="margin-top:1.25rem;padding:0.85rem;border-radius:var(--radius-sm);background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);font-size:0.78rem;color:var(--text-secondary)">
-        ✅ <strong>All 6 enforcement layers are active.</strong> Ethics enforcement is NOT tier-gated — applies equally to Free, the free account, Pro and Team.
-        <a href="/ethics" style="color:var(--accent-purple);margin-left:0.5rem">View full policy →</a>
+        <div class="card-title">${DASHBOARD_READ_MESSAGES.complianceTitle}</div>
+        <p role="status">${DASHBOARD_READ_MESSAGES.complianceUnavailable}</p>
+        <p>${DASHBOARD_READ_MESSAGES.auditUnavailable}</p>
+        <button class="lc-btn compact" type="button" onclick="showFixedToast(dashboardReadMessages.policyUnavailable,false)">${DASHBOARD_READ_MESSAGES.policyAvailability}</button>
       </div>
     </div>
 
@@ -1445,6 +1247,7 @@ export function renderDashboardHTML(version: string): string {
         <div class="settings-tabs">
           <button class="s-tab active" id="stab-account" onclick="switchSettingsTab('account')">👤 Account</button>
           <button class="s-tab" id="stab-settings" onclick="switchSettingsTab('settings')">⚙️ Preferences</button>
+          <button class="s-tab" id="stab-local" onclick="switchSettingsTab('local')">Local Coding</button>
           <button class="s-tab" id="stab-skills" onclick="switchSettingsTab('skills')">📜 Skills</button>
           <button class="s-tab" id="stab-providers" onclick="switchSettingsTab('providers')">🤖 AI Providers</button>
           <button class="s-tab" id="stab-observability" onclick="switchSettingsTab('observability')">🔭 Observability</button>
@@ -1457,6 +1260,7 @@ export function renderDashboardHTML(version: string): string {
           </div>
         </div>
 
+        ${localCodingPanelHTML()}
         <!-- Settings panel (existing content) -->
         <div class="s-tab-panel" id="spanel-settings">
 
@@ -1488,9 +1292,9 @@ export function renderDashboardHTML(version: string): string {
             <div class="setting-desc">Default level for session_load_context</div>
           </div>
           <select class="setting-select" id="select-context-depth" onchange="saveSetting('default_context_depth', this.value)">
-            <option value="standard">Standard (~200 tokens)</option>
-            <option value="quick">Quick (~50 tokens)</option>
-            <option value="deep">Deep (~1000+ tokens)</option>
+              <option value="standard">Standard</option>
+              <option value="quick">Quick</option>
+              <option value="deep">Deep</option>
           </select>
         </div>
 
@@ -1511,6 +1315,15 @@ export function renderDashboardHTML(version: string): string {
 
         <div class="setting-row">
           <div>
+            <div class="setting-label">${ACTR_UI.label}</div>
+            <div class="setting-desc">${ACTR_UI.description}</div>
+            <div id="actr-state" style="color:var(--text-muted);font-size:0.78rem;margin-top:0.25rem">${ACTR_UI.loading}</div>
+          </div>
+          <button class="toggle" id="toggle-actr" type="button" role="switch" aria-label="${ACTR_UI.label}" aria-checked="false" disabled onclick="toggleBootSetting('PRISM_ACTR_ENABLED', this)"></button>
+        </div>
+
+        <div class="setting-row">
+          <div>
             <div class="setting-label">Hivemind Mode</div>
             <div class="setting-desc">Multi-agent coordination (PRISM_ENABLE_HIVEMIND)</div>
           </div>
@@ -1522,6 +1335,14 @@ export function renderDashboardHTML(version: string): string {
             <div class="setting-desc">Route tasks to local Claw agent (PRISM_TASK_ROUTER_ENABLED)</div>
           </div>
           <div class="toggle" id="toggle-task-router" onclick="toggleBootSetting('task_router_enabled', this)"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Dark Factory</div>
+            <div class="setting-desc">Enable pipeline execution tools and the background runner. Restart required; an environment override wins.</div>
+            <div id="dark-factory-state" style="color:var(--text-muted);font-size:0.78rem;margin-top:0.25rem">Loading startup state…</div>
+          </div>
+          <button class="toggle" id="toggle-dark-factory" type="button" role="switch" aria-label="Dark Factory enablement" aria-checked="false" disabled onclick="toggleBootSetting('PRISM_DARK_FACTORY_ENABLED', this)"></button>
         </div>
         <div class="setting-row">
           <div>
@@ -1618,8 +1439,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             <button class="skill-clear-btn" onclick="clearCurrentSkill()">🗑️ Clear</button>
           </div>
           <div class="skill-hint">
-            Skills are auto-injected into <code>session_load_context</code> responses for this role.<br>
-            Use Markdown. Changes take effect immediately — no restart needed.
+            ${DASHBOARD_READ_MESSAGES.customRoleInstructions}
           </div>
         </div><!-- /spanel-skills -->
 
@@ -1648,7 +1468,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
             <div class="setting-row">
               <div>
                 <div class="setting-label">Google API Key</div>
-                <div class="setting-desc">GOOGLE_API_KEY — required for Gemini text &amp; embeddings</div>
+                <div class="setting-desc">${DASHBOARD_READ_MESSAGES.directGeminiKey}</div>
               </div>
               <input type="password" id="input-google-api-key"
                 placeholder="AIza…"
@@ -1761,8 +1581,7 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
           </div>
 
           <div style="margin-top:1rem;padding:0.6rem 0.8rem;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:6px;font-size:0.78rem;color:var(--text-secondary);line-height:1.5">
-            💡 <strong>Cost-optimized setup:</strong> Text Provider → <code>Anthropic</code>, Embedding Provider → <code>OpenAI / Ollama</code>.<br>
-            Use Claude 3.5 Sonnet for reasoning &amp; <code>nomic-embed-text</code> (free, local) for embeddings.
+            ${DASHBOARD_READ_MESSAGES.providerChoice}
           </div>
 
           <span class="setting-saved" id="savedToastProviders">Saved ✓</span>
@@ -1860,6 +1679,19 @@ Example:\n## Dev Rules\n- Always write tests first\n- Use TypeScript strict mode
 // This HTML is served as a raw template literal; mixing ES6 in the
 // inline script causes SyntaxError in some browser/context combos.
 // ═══════════════════════════════════════════════════════════════════
+var dashboardReadMessages = ${JSON.stringify(DASHBOARD_READ_MESSAGES)};
+var analyticsMetricIds = ${JSON.stringify(ANALYTICS_METRIC_IDS)};
+var analyticsReadSequence = 0;
+var pipelineReadSequence = 0;
+var projectReadSequence = 0;
+var retentionReadSequence = 0;
+var teamReadSequence = 0;
+var intentReadSequence = 0;
+var graphReadSequence = 0;
+var healthReadSequence = 0;
+var graphMetricsReadSequence = 0;
+var activeGraphNetwork = null;
+var analyticsDatePattern = new RegExp(${JSON.stringify(ANALYTICS_DATE_PATTERN.source)});
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -1927,20 +1759,28 @@ function switchMainTab(tabId) {
     if (tabId === 'factory') {
         loadPipelines();
     }
+    if (tabId === 'project' && projectLoaded) loadGraph();
 }
 // ─── DARK FACTORY (v7.3) ───
 var factoryPollTimer = null;
 function loadPipelines() {
+    var readSequence = ++pipelineReadSequence;
+    document.getElementById('factoryCount').textContent = dashboardReadMessages.pipelinesLoading;
     var statusFilter = document.getElementById('factoryStatusFilter').value;
     var url = '/api/pipelines';
     if (statusFilter)
         url += '?status=' + encodeURIComponent(statusFilter);
-    fetch(url)
-        .then(function (r) { return r.json(); })
+    return fetch(url)
+        .then(function (r) {
+        if (!r.ok) throw new Error(dashboardReadMessages.pipelinesUnavailable);
+        return r.json();
+    })
         .then(function (data) {
+        if (readSequence !== pipelineReadSequence) return;
+        if (!data || !Array.isArray(data.pipelines)) throw new Error(dashboardReadMessages.pipelinesUnavailable);
         var list = document.getElementById('factoryList');
         var count = document.getElementById('factoryCount');
-        var pipelines = data.pipelines || [];
+        var pipelines = data.pipelines;
         count.textContent = pipelines.length + ' pipeline' + (pipelines.length !== 1 ? 's' : '');
         if (pipelines.length === 0) {
             list.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:0.5rem">🏭</div>No pipelines found. Use <code>session_start_pipeline</code> to create one.</div>';
@@ -1991,7 +1831,10 @@ function loadPipelines() {
         }
     })
         .catch(function (err) {
-        document.getElementById('factoryList').innerHTML = '<div style="color:var(--accent-rose);padding:1rem">Failed to load pipelines: ' + escapeHtml(err.message) + '</div>';
+        if (readSequence !== pipelineReadSequence) return;
+        document.getElementById('factoryCount').textContent = '—';
+        document.getElementById('factoryList').innerHTML = '<div role="status" style="color:var(--accent-rose);padding:1rem">' + escapeHtml(dashboardReadMessages.pipelinesUnavailable) +
+            ' <button class="refresh-btn" id="factoryRetryBtn" type="button" onclick="loadPipelines()">' + escapeHtml(dashboardReadMessages.retry) + '</button></div>';
     });
 }
 function abortPipeline(id) {
@@ -2496,9 +2339,6 @@ function renderHealthIssues(issues) {
             '<span>' + escapeHtml(i.message || '') + duplicateDetails + '</span></div>';
     }).join('');
 }
-function hasFixableHealthIssue(issues) {
-    return Array.isArray(issues) && issues.some(function (i) { return i && i.fixable === true; });
-}
 function resolveDuplicateGroup(keepId, duplicateIds) {
     if (!keepId || !Array.isArray(duplicateIds) || duplicateIds.length === 0) return;
     if (!window.confirm('Soft-delete ' + duplicateIds.length + ' confirmed duplicate entr' + (duplicateIds.length === 1 ? 'y' : 'ies') + ' and keep this entry?')) return;
@@ -2518,7 +2358,62 @@ function resolveDuplicateGroup(keepId, duplicateIds) {
         showFixedToast(err.message || 'Duplicate resolution failed.', false);
     });
 }
+function isCurrentProjectRead(project, sequence) {
+    return document.getElementById('projectSelect').value === project
+        && (typeof sequence === 'undefined' || sequence === projectReadSequence);
+}
+function applyHealthReport(data) {
+    var partial = !!data && data.coverage === 'embedding_inventory';
+    var totals = data && data.totals;
+    var validStatus = data && (data.status === 'healthy' || data.status === 'degraded' || data.status === 'unhealthy');
+    var validCoverage = data && data.scope === 'account'
+        && (data.backend === 'synalux' && data.coverage === 'embedding_inventory'
+            || (data.backend === 'local' || data.backend === 'supabase') && data.coverage === 'backend_scan');
+    var available = !!validStatus && validCoverage && totals && typeof totals.activeEntries === 'number' && isFinite(totals.activeEntries) && totals.activeEntries >= 0
+        && typeof totals.handoffs === 'number' && isFinite(totals.handoffs) && totals.handoffs >= 0
+        && (partial || (typeof totals.rollups === 'number' && isFinite(totals.rollups) && totals.rollups >= 0)) && Array.isArray(data.issues)
+        && data.issues.every(function (issue) { return issue && typeof issue.message === 'string'; });
+    var issues = available ? data.issues : [];
+    document.getElementById('healthCard').style.display = 'block';
+    document.getElementById('healthDot').className = 'health-dot ' + (available && !partial ? data.status : 'unknown');
+    document.getElementById('healthLabel').textContent = !available ? dashboardReadMessages.scanUnavailable
+        : partial ? dashboardReadMessages.partialScan
+        : data.status === 'healthy' ? dashboardReadMessages.scanPassed : dashboardReadMessages.scanIssues;
+    document.getElementById('healthSummary').textContent = available
+        ? totals.activeEntries + ' entries · ' + totals.handoffs + ' handoffs' + (partial ? '' : ' · ' + totals.rollups + ' rollups')
+            + (!partial && typeof totals.crdtMerges === 'number' && totals.crdtMerges > 0 ? ' · ' + totals.crdtMerges + ' merges' : '')
+        : '—';
+    document.getElementById('healthCoverageNote').textContent = !available ? dashboardReadMessages.coverageUnavailable
+        : partial ? dashboardReadMessages.partialCoverage : dashboardReadMessages.backendCoverage;
+    var issueContainer = document.getElementById('healthIssues');
+    if (available && issues.length) {
+        issueContainer.innerHTML = renderHealthIssues(issues);
+    } else {
+        issueContainer.textContent = !available ? dashboardReadMessages.scanUnavailable
+            : partial ? dashboardReadMessages.noEmbeddingIssues : dashboardReadMessages.noScanIssues;
+    }
+    var actionable = issues.some(function (issue) {
+        return (issue.check === 'missing_embeddings' || issue.check === 'orphaned_handoffs') && issue.count > 0;
+    });
+    document.getElementById('cleanupBtn').style.display = actionable ? 'inline-block' : 'none';
+}
+function refreshHealthScan() {
+    var sequence = ++healthReadSequence;
+    applyHealthReport(null);
+    document.getElementById('healthLabel').textContent = dashboardReadMessages.scanLoading;
+    document.getElementById('healthIssues').textContent = '';
+    return fetch('/api/health').then(function (response) {
+        if (!response.ok) throw new Error(dashboardReadMessages.scanUnavailable);
+        return response.json();
+    }).then(function (data) {
+        if (sequence === healthReadSequence) applyHealthReport(data);
+    }).catch(function () {
+        if (sequence === healthReadSequence) applyHealthReport(null);
+    });
+}
 function loadProject() {
+    var readSequence = ++projectReadSequence;
+    projectLoaded = false;
     return __awaiter(this, void 0, void 0, function () {
         var project, res, data, ctx, ledgerEntries, latestLedger, contextTime, latestLedgerTime, useLatestLedger, versionBadge, currentStateSource, currentSummary, todos, todoList, meta, briefingCard, visualCard, visuals, historyEl, ledgerEl, healthRes, healthData, healthCard, healthDot, healthLabel, healthSummary, healthIssues, statusMap, t, issues, cleanupBtn, sevIcons, he_1, e_3;
         return __generator(this, function (_a) {
@@ -2526,6 +2421,7 @@ function loadProject() {
                 case 0:
                     project = document.getElementById('projectSelect').value;
                     if (!project) {
+                        document.getElementById('loading').style.display = 'none';
                         var hc = document.getElementById('intentHealthCard');
                         if (hc) hc.style.display = 'none';
                         var welcomeEl = document.getElementById('welcome');
@@ -2548,6 +2444,8 @@ function loadProject() {
                     return [4 /*yield*/, res.json()];
                 case 3:
                     data = _a.sent();
+                    if (!isCurrentProjectRead(project, readSequence)) return [2 /*return*/];
+                    if (!res.ok || !data || data.error) throw new Error(dashboardReadMessages.projectUnavailable);
                     ctx = data.context || {};
                     ledgerEntries = Array.isArray(data.ledger) ? data.ledger.slice() : [];
                     ledgerEntries.sort(function (a, b) {
@@ -2634,6 +2532,8 @@ function loadProject() {
                     ledgerEl = document.getElementById('ledgerTimeline');
                     if (ledgerEntries.length > 0) {
                         ledgerEl.innerHTML = ledgerEntries.map(function (l) {
+                            var entryKind = l.is_rollup === true || l.is_rollup === 1 || l.is_rollup === 'true'
+                                ? dashboardReadMessages.rollupEntry : dashboardReadMessages.sessionEntry;
                             var summary = l.summary || l.content || 'Entry';
                             var decisions = l.decisions;
                             var extra = '';
@@ -2647,7 +2547,7 @@ function loadProject() {
                                 catch (e) { }
                             }
                             return '<div class="timeline-item">' +
-                                '<div class="meta"><span class="badge badge-amber">session</span>' +
+                                '<div class="meta"><span class="badge badge-amber">' + entryKind + '</span>' +
                                 '<span>' + formatDate(l.created_at) + '</span></div>' +
                                 escapeHtml(summary) + extra + '</div>';
                         }).join('');
@@ -2657,44 +2557,16 @@ function loadProject() {
                     }
                     _a.label = 4;
                 case 4:
-                    _a.trys.push([4, 7, , 8]);
-                    return [4 /*yield*/, fetch('/api/health')];
+                    return [4 /*yield*/, refreshHealthScan()];
                 case 5:
-                    healthRes = _a.sent();
-                    return [4 /*yield*/, healthRes.json()];
-                case 6:
-                    healthData = _a.sent();
-                    healthCard = document.getElementById('healthCard');
-                    healthDot = document.getElementById('healthDot');
-                    healthLabel = document.getElementById('healthLabel');
-                    healthSummary = document.getElementById('healthSummary');
-                    healthIssues = document.getElementById('healthIssues');
-                    // Set the dot color based on status
-                    healthDot.className = 'health-dot ' + (healthData.status || 'unknown');
-                    statusMap = { healthy: '✅ Healthy', degraded: '⚠️ Degraded', unhealthy: '🔴 Unhealthy' };
-                    healthLabel.textContent = statusMap[healthData.status] || '❓ Unknown';
-                    t = healthData.totals || {};
-                    healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' +
-                        (t.handoffs || 0) + ' handoffs · ' +
-                        (t.rollups || 0) + ' rollups' +
-                        (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
-                    issues = healthData.issues || [];
-                    cleanupBtn = document.getElementById('cleanupBtn');
-                    healthIssues.innerHTML = renderHealthIssues(issues);
-                    if (cleanupBtn)
-                        cleanupBtn.style.display = hasFixableHealthIssue(issues) ? 'inline-block' : 'none';
-                    healthCard.style.display = 'block';
-                    return [3 /*break*/, 8];
-                case 7:
-                    he_1 = _a.sent();
-                    // Health check not available — silently skip
-                    console.warn('Health check unavailable:', he_1);
+                    _a.sent();
                     return [3 /*break*/, 8];
                 case 8:
+                    if (!isCurrentProjectRead(project, readSequence)) return [2 /*return*/];
                     document.getElementById('content').className = 'grid grid-main fade-in';
                     document.getElementById('content').style.display = 'grid';
                     projectLoaded = true; // Fix 3: mark project as loaded for tab-switch restore
-
+                    loadGraph(); // Fit the network after the previously hidden panel becomes visible.
                     // Feature A: Run Intent Health Fetch
                     fetchIntentHealth(project);
 
@@ -2708,10 +2580,10 @@ function loadProject() {
                     return [3 /*break*/, 11];
                 case 9:
                     e_3 = _a.sent();
-                    alert('Failed to load project data: ' + e_3.message);
+                    if (isCurrentProjectRead(project, readSequence)) alert(dashboardReadMessages.projectUnavailable);
                     return [3 /*break*/, 11];
                 case 10:
-                    document.getElementById('loading').style.display = 'none';
+                    if (isCurrentProjectRead(project, readSequence)) document.getElementById('loading').style.display = 'none';
                     return [7 /*endfinally*/];
                 case 11: return [2 /*return*/];
             }
@@ -2720,6 +2592,14 @@ function loadProject() {
 }
 // ─── v3.1: Memory Analytics ───────────────────────────────────────────────
 function loadAnalytics(project) {
+    if (!isCurrentProjectRead(project)) return Promise.resolve();
+    var readSequence = ++analyticsReadSequence;
+    var parentSequence = projectReadSequence;
+    var readStatus = document.getElementById('analyticsReadStatus');
+    analyticsMetricIds.forEach(function (id) { document.getElementById(id).textContent = '—'; });
+    document.getElementById('sparkline').innerHTML = '';
+    readStatus.textContent = dashboardReadMessages.analyticsLoading;
+    readStatus.style.display = 'block';
     return __awaiter(this, void 0, void 0, function () {
         var res, d, sparkEl, days, maxCount, e_4;
         return __generator(this, function (_a) {
@@ -2732,6 +2612,20 @@ function loadAnalytics(project) {
                     return [4 /*yield*/, res.json()];
                 case 2:
                     d = _a.sent();
+                    if (readSequence !== analyticsReadSequence || !isCurrentProjectRead(project, parentSequence)) return [2 /*return*/];
+                    if (!res.ok || !d || d.error || typeof d.totalEntries !== 'number'
+                        || typeof d.totalRollups !== 'number' || typeof d.rollupSavings !== 'number'
+                        || typeof d.avgSummaryLength !== 'number' || !isFinite(d.totalEntries)
+                        || !isFinite(d.totalRollups) || !isFinite(d.rollupSavings) || !isFinite(d.avgSummaryLength)
+                        || d.totalEntries < 0 || d.totalRollups < 0 || d.rollupSavings < 0 || d.avgSummaryLength < 0
+                        || !Array.isArray(d.sessionsByDay) || d.sessionsByDay.some(function (day) {
+                            return !day || typeof day.date !== 'string' || !analyticsDatePattern.test(day.date)
+                                || typeof day.count !== 'number' || !isFinite(day.count) || day.count < 0;
+                        })) {
+                        throw new Error(dashboardReadMessages.analyticsUnavailable);
+                    }
+                    readStatus.textContent = '';
+                    readStatus.style.display = 'none';
                     document.getElementById('astat-entries').textContent = (d.totalEntries || 0);
                     document.getElementById('astat-rollups').textContent = (d.totalRollups || 0);
                     document.getElementById('astat-savings').textContent = (d.rollupSavings || 0);
@@ -2742,18 +2636,23 @@ function loadAnalytics(project) {
                         // Pad with 14 zero days
                         days = Array.from({ length: 14 }, function (_, i) {
                             var dt = new Date();
-                            dt.setDate(dt.getDate() - (13 - i));
+                            dt.setUTCDate(dt.getUTCDate() - (13 - i));
                             return { date: dt.toISOString().slice(0, 10), count: 0 };
                         });
                     }
                     maxCount = Math.max.apply(null, days.map(function (x) { return x.count || 0; })) || 1;
                     sparkEl.innerHTML = days.slice(-14).map(function (d) {
                         var pct = Math.max(4, Math.round(((d.count || 0) / maxCount) * 100));
-                        return '<div class="spark-bar" style="height:' + pct + '%" title="' + d.date + ': ' + d.count + '"></div>';
+                        return '<div class="spark-bar" style="height:' + pct + '%" title="' + escapeHtml(d.date) + ': ' + d.count + '"></div>';
                     }).join('');
                     return [3 /*break*/, 4];
                 case 3:
                     e_4 = _a.sent();
+                    if (readSequence !== analyticsReadSequence || !isCurrentProjectRead(project, parentSequence)) return [2 /*return*/];
+                    analyticsMetricIds.forEach(function (id) { document.getElementById(id).textContent = '—'; });
+                    document.getElementById('sparkline').innerHTML = '';
+                    readStatus.textContent = dashboardReadMessages.analyticsUnavailable;
+                    readStatus.style.display = 'block';
                     console.warn('Analytics load failed:', e_4);
                     return [3 /*break*/, 4];
                 case 4: return [2 /*return*/];
@@ -2763,6 +2662,9 @@ function loadAnalytics(project) {
 }
 // ─── v3.1: TTL Retention ───────────────────────────────────────────────
 function loadRetention(project) {
+    if (!isCurrentProjectRead(project)) return Promise.resolve();
+    var readSequence = ++retentionReadSequence;
+    var parentSequence = projectReadSequence;
     return __awaiter(this, void 0, void 0, function () {
         var res, d, inp, e_5;
         return __generator(this, function (_a) {
@@ -2775,6 +2677,7 @@ function loadRetention(project) {
                     return [4 /*yield*/, res.json()];
                 case 2:
                     d = _a.sent();
+                    if (readSequence !== retentionReadSequence || !isCurrentProjectRead(project, parentSequence)) return [2 /*return*/];
                     inp = document.getElementById('ttlInput');
                     if (inp)
                         inp.value = d.ttl_days || 0;
@@ -3303,7 +3206,29 @@ function getDecayColor(daysSince, decayedImportance, group, baseImportance) {
     return { bg: hex, border: hex, fontColor: fontBrightness };
 }
 // ─── Neural Graph (v2.3.0 / v5.1 / v6.2 Decay Heatmap) ───
+function graphStatisticsElement(container) {
+    var title = container.parentElement.querySelector('.card-title');
+    var stats = title.querySelector('.graph-stats');
+    if (!stats) {
+        stats = document.createElement('span');
+        stats.className = 'graph-stats';
+        stats.style.cssText = 'margin-left:auto;font-size:0.7rem;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;text-transform:none;letter-spacing:0';
+        title.appendChild(stats);
+    }
+    return stats;
+}
+function updateGraphStatistics(container, data) {
+    var nodes = data.nodes;
+    var projects = nodes.filter(function (node) { return node.group === 'project'; }).length;
+    var keywords = nodes.filter(function (node) { return node.group === 'keyword'; }).length;
+    graphStatisticsElement(container).textContent = data.graphType === 'memory'
+        ? nodes.length + ' ' + dashboardReadMessages.graphSessions + ' · ' + data.edges.length + ' ' + dashboardReadMessages.graphStoredLinks
+        : projects + ' ' + dashboardReadMessages.graphProjects + ' · ' + keywords + ' ' + dashboardReadMessages.graphKeywords + ' · ' + data.edges.length + ' ' + dashboardReadMessages.graphEdges;
+}
 function loadGraph() {
+    var readSequence = ++graphReadSequence;
+    if (activeGraphNetwork && typeof activeGraphNetwork.destroy === 'function') activeGraphNetwork.destroy();
+    activeGraphNetwork = null;
     return __awaiter(this, void 0, void 0, function () {
         var container, proj, days, imp, qs, url, res, data, graphDataNote, dens, graduatedNodes, denPercentage, dens, MAX_NODES, priority, kept, options, network, allNodes, allEdges, isFiltered, graphTitle, statsSpan, projectCount, kwCount, e_11;
         return __generator(this, function (_a) {
@@ -3312,6 +3237,10 @@ function loadGraph() {
                     container = document.getElementById('network-container');
                     if (!container)
                         return [2 /*return*/];
+                    graphStatisticsElement(container).textContent = dashboardReadMessages.graphLoading;
+                    container.textContent = dashboardReadMessages.graphLoading;
+                    document.getElementById('densityStatContainer').style.display = 'none';
+                    document.getElementById('graphDataNote').style.display = 'none';
                     proj = document.getElementById('graphProjectFilter') ? document.getElementById('graphProjectFilter').value : '';
                     days = document.getElementById('graphDaysFilter') ? document.getElementById('graphDaysFilter').value : '';
                     imp = document.getElementById('graphImportanceFilter') ? document.getElementById('graphImportanceFilter').value : '';
@@ -3332,8 +3261,9 @@ function loadGraph() {
                     return [4 /*yield*/, res.json()];
                 case 3:
                     data = _a.sent();
-                    if (!res.ok || data.error)
-                        throw new Error(data.error || 'Unable to load graph');
+                    if (readSequence !== graphReadSequence) return [2 /*return*/];
+                    if (!res.ok || !data || data.error || !Array.isArray(data.nodes) || !Array.isArray(data.edges))
+                        throw new Error(dashboardReadMessages.graphUnavailable);
                     graphDataNote = document.getElementById('graphDataNote');
                     if (graphDataNote) {
                         graphDataNote.style.display = data.graphType === 'memory' ? 'block' : 'none';
@@ -3343,7 +3273,8 @@ function loadGraph() {
                     }
                     // Empty state — no ledger entries yet
                     if (data.nodes.length === 0) {
-                        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.85rem">No knowledge associations found yet.</div>';
+                        updateGraphStatistics(container, data);
+                        container.textContent = dashboardReadMessages.graphEmpty;
                         dens = document.getElementById('densityStatContainer');
                         if (dens)
                             dens.style.display = 'none';
@@ -3429,6 +3360,7 @@ function loadGraph() {
                         interaction: { hover: true, tooltipDelay: 200 }
                     };
                     network = new vis.Network(container, data, options);
+                    activeGraphNetwork = network;
                     allNodes = data.nodes;
                     allEdges = data.edges;
                     isFiltered = false;
@@ -3500,26 +3432,14 @@ function loadGraph() {
                         network.setData({ nodes: allNodes, edges: allEdges });
                         isFiltered = false;
                     });
-                    graphTitle = container.parentElement.querySelector('.card-title');
-                    if (graphTitle) {
-                        statsSpan = graphTitle.querySelector('.graph-stats');
-                        if (!statsSpan) {
-                            statsSpan = document.createElement('span');
-                            statsSpan.className = 'graph-stats';
-                            statsSpan.style.cssText = 'margin-left:auto;font-size:0.7rem;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;text-transform:none;letter-spacing:0';
-                            graphTitle.appendChild(statsSpan);
-                        }
-                        projectCount = allNodes.filter(function (n) { return n.group === 'project'; }).length;
-                        kwCount = allNodes.filter(function (n) { return n.group === 'keyword'; }).length;
-                        statsSpan.textContent = data.graphType === 'memory'
-                            ? allNodes.length + ' sessions · ' + allEdges.length + ' stored links'
-                            : projectCount + ' projects · ' + kwCount + ' keywords · ' + allEdges.length + ' edges';
-                    }
+                    updateGraphStatistics(container, data);
                     return [3 /*break*/, 5];
                 case 4:
                     e_11 = _a.sent();
+                    if (readSequence !== graphReadSequence) return [2 /*return*/];
                     console.error('Graph error', e_11);
-                    container.innerHTML = '<div style="padding:1rem;color:var(--accent-rose)">Graph failed to load</div>';
+                    graphStatisticsElement(container).textContent = dashboardReadMessages.graphUnavailable;
+                    container.textContent = dashboardReadMessages.graphUnavailable;
                     return [3 /*break*/, 5];
                 case 5: return [2 /*return*/];
             }
@@ -3816,13 +3736,14 @@ document.getElementById('settingsModal').addEventListener('click', function (e) 
 // ─── Skills Tab JS ───────────────────────────────────────────
 var _skillsCache = {}; // role → content cache
 function switchSettingsTab(tab) {
-    ['account', 'settings', 'skills', 'providers', 'observability'].forEach(function (t) {
+    ['account', 'settings', 'local', 'skills', 'providers', 'observability'].forEach(function (t) {
         document.getElementById('stab-' + t).classList.toggle('active', t === tab);
         document.getElementById('spanel-' + t).classList.toggle('active', t === tab);
     });
     if (tab === 'account') {
         loadIdentityChip();
     }
+    if (tab === 'local') loadLocalCoding(true);
     if (tab === 'skills') {
         var role = document.getElementById('skillRoleSelect').value;
         loadSkillForRole(role);
@@ -4179,9 +4100,12 @@ function loadSettings() {
                     return [4 /*yield*/, fetch('/api/settings?t=' + Date.now())];
                 case 1:
                     res = _a.sent();
+                    if (!res.ok) throw new Error(DARK_FACTORY_SETTINGS_UNAVAILABLE_MESSAGE);
                     return [4 /*yield*/, res.json()];
                 case 2:
                     data = _a.sent();
+                    if (!data.darkFactory) throw new Error(DARK_FACTORY_SETTINGS_UNAVAILABLE_MESSAGE);
+                    loadActrSettingState(data.actr);
                     s = data.settings || {};
                     // Runtime toggles
                     if (s.auto_capture === 'true')
@@ -4205,6 +4129,21 @@ function loadSettings() {
                         document.getElementById('toggle-task-router').classList.add('active');
                     else
                         document.getElementById('toggle-task-router').classList.remove('active');
+                    if ((s.PRISM_DARK_FACTORY_ENABLED || (data.darkFactory && data.darkFactory.saved ? 'true' : 'false')) === 'true')
+                        document.getElementById('toggle-dark-factory').classList.add('active');
+                    else
+                        document.getElementById('toggle-dark-factory').classList.remove('active');
+                    document.getElementById('toggle-dark-factory').setAttribute('aria-checked', document.getElementById('toggle-dark-factory').classList.contains('active') ? 'true' : 'false');
+                    if (data.darkFactory) {
+                        var df = data.darkFactory;
+                        var effective = df.envOverride === null ? df.saved : df.envOverride;
+                        var state = df.envOverride === null ? 'Saved: ' + (df.saved ? 'on' : 'off') + ' · Active: ' + (df.active ? 'on' : 'off') + (df.pendingRestart ? ' · restart required' : '') : 'Saved: ' + (df.saved ? 'on' : 'off') + ' · Active override: ' + (df.envOverride ? 'on' : 'off');
+                        document.getElementById('dark-factory-state').textContent = state;
+                        document.getElementById('toggle-dark-factory').disabled = df.envOverride !== null;
+                        document.getElementById('toggle-dark-factory').setAttribute('aria-disabled', df.envOverride !== null ? 'true' : 'false');
+                        document.getElementById('toggle-dark-factory').classList.toggle('active', effective);
+                        document.getElementById('toggle-dark-factory').setAttribute('aria-checked', effective ? 'true' : 'false');
+                    }
                     // Storage Backend
                     if (s.PRISM_STORAGE) {
                         document.getElementById('storageBackendSelect').value = s.PRISM_STORAGE;
@@ -4227,6 +4166,11 @@ function loadSettings() {
                 case 3:
                     e_19 = _a.sent();
                     console.warn('Settings load failed:', e_19);
+                    document.getElementById('actr-state').textContent = ACTR_SETTINGS_UNAVAILABLE_MESSAGE;
+                    document.getElementById('toggle-actr').disabled = true;
+                    document.getElementById('dark-factory-state').textContent = DARK_FACTORY_SETTINGS_UNAVAILABLE_MESSAGE;
+                    document.getElementById('toggle-dark-factory').disabled = true;
+                    document.getElementById('toggle-dark-factory').setAttribute('aria-disabled', 'true');
                     return [3 /*break*/, 4];
                 case 4: return [2 /*return*/];
             }
@@ -4277,17 +4221,42 @@ function toggleSetting(key, el) {
             el.classList.toggle('active'); // rollback on failure
     });
 }
+function loadActrSettingState(ar) {
+    var toggle = document.getElementById('toggle-actr');
+    if (!ar) {
+        toggle.disabled = true;
+        document.getElementById('actr-state').textContent = ACTR_SETTINGS_UNAVAILABLE_MESSAGE;
+        return;
+    }
+    var effective = ar.envOverride === null ? ar.saved : ar.envOverride;
+    toggle.disabled = ar.envOverride !== null;
+    toggle.setAttribute('aria-disabled', toggle.disabled ? 'true' : 'false');
+    toggle.classList.toggle('active', effective);
+    toggle.setAttribute('aria-checked', effective ? 'true' : 'false');
+    document.getElementById('actr-state').textContent = ar.envOverride === null
+        ? 'Saved: ' + (ar.saved ? 'on' : 'off') + ' · Active in this process: ' + (ar.active ? 'on' : 'off') + (ar.pendingRestart ? ' · restart required' : '')
+        : 'Environment override: ' + (ar.envOverride ? 'on' : 'off') + ' · saved preference: ' + (ar.saved ? 'on' : 'off');
+}
 function toggleBootSetting(key, el) {
+    if (el.disabled) return;
+    if (key === 'PRISM_ACTR_ENABLED') el.disabled = true;
     var isActive = el.classList.toggle('active');
+    el.setAttribute('aria-checked', isActive ? 'true' : 'false');
     saveSetting(key, isActive ? 'true' : 'false').then(function (ok) {
         if (!ok) {
+            if (key === 'PRISM_ACTR_ENABLED') el.disabled = false;
             el.classList.toggle('active'); // rollback on failure
+            el.setAttribute('aria-checked', isActive ? 'false' : 'true');
         }
         else {
-            showToast('Saved. Restart your AI client for this to take effect.');
+            showToast(DARK_FACTORY_RESTART_MESSAGE);
+            loadSettings();
         }
     });
 }
+var DARK_FACTORY_SETTINGS_UNAVAILABLE_MESSAGE = ${JSON.stringify(DARK_FACTORY_SETTINGS_UNAVAILABLE)};
+var ACTR_SETTINGS_UNAVAILABLE_MESSAGE = ${JSON.stringify(ACTR_SETTINGS_UNAVAILABLE)};
+var DARK_FACTORY_RESTART_MESSAGE = 'Saved. Restart your AI client for this to take effect.';
 function saveBootSetting(key, value) {
     saveSetting(key, value).then(function (ok) {
         if (ok)
@@ -4344,6 +4313,8 @@ function showToast(msg) {
 // ─── Hivemind Radar (v5.3 — Health Watchdog) ───
 var hivemindRefreshTimer = null;
 function loadTeam() {
+    var readSequence = ++teamReadSequence;
+    var parentSequence = projectReadSequence;
     return __awaiter(this, void 0, void 0, function () {
         var project, card, res, data, team, list, roleIcons, statusColors, statusLabels, healthyCt, warnCt, summary, e_22;
         return __generator(this, function (_a) {
@@ -4362,6 +4333,7 @@ function loadTeam() {
                     return [4 /*yield*/, res.json()];
                 case 3:
                     data = _a.sent();
+                    if (readSequence !== teamReadSequence || !isCurrentProjectRead(project, parentSequence)) return [2 /*return*/];
                     team = data.team || [];
                     list = document.getElementById('teamList');
                     if (team.length > 0) {
@@ -4510,6 +4482,7 @@ function loadSchedulerStatus() {
     });
 }
 function loadGraphMetrics() {
+    var readSequence = ++graphMetricsReadSequence;
     return __awaiter(this, void 0, void 0, function () {
         var el, warn, res, m, parts, synthStatus, tmStatus, pruneRatio, pruneSkipParts, rate, ratePct, rateColor, netNew, netColor, netSign, pruneRatioPct, cogTotal, autoP, clarP, fallP, ambPct, ambColor, fbPct, fbColor, lastRoute, lastConcept, lastConf, badges, e_24;
         return __generator(this, function (_a) {
@@ -4525,9 +4498,11 @@ function loadGraphMetrics() {
                     return [4 /*yield*/, fetch('/api/graph/metrics')];
                 case 2:
                     res = _a.sent();
+                    if (!res.ok) throw new Error(dashboardReadMessages.graphUnavailable);
                     return [4 /*yield*/, res.json()];
                 case 3:
                     m = _a.sent();
+                    if (readSequence !== graphMetricsReadSequence) return [2 /*return*/];
                     parts = [];
                     // Synthesis row
                     parts.push('<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;margin-bottom:0.5rem">');
@@ -4598,23 +4573,26 @@ function loadGraphMetrics() {
                     // SLO derivations row (WS4)
                     if (m.slo) {
                         parts.push('<div style="border-top:1px solid var(--border-glass);padding-top:0.4rem;margin-top:0.2rem;font-size:0.75rem">');
-                        parts.push('<strong>SLO</strong>');
+                        parts.push('<strong>' + escapeHtml(dashboardReadMessages.recordedResults) + '</strong>');
+                        if (m.scheduler && m.scheduler.last_sweep_at) {
+                            parts.push('<br>' + escapeHtml(dashboardReadMessages.schedulerOutcome) + ': ' + m.scheduler.projects_succeeded_last +
+                                ' ' + dashboardReadMessages.schedulerSucceeded + ' · ' + m.scheduler.projects_failed_last + ' ' + dashboardReadMessages.schedulerFailed + ' · ' + m.scheduler.projects_processed_last + ' ' + dashboardReadMessages.schedulerAttempted);
+                        }
                         // Synthesis success rate — color-coded
                         if (m.slo.synthesis_success_rate !== null) {
                             rate = m.slo.synthesis_success_rate;
                             ratePct = Math.round(rate * 100);
                             rateColor = rate >= 0.95 ? 'var(--accent-green)' : rate >= 0.80 ? 'var(--accent-amber)' : 'var(--accent-rose)';
-                            parts.push('<br>Success rate: <span style="color:' + rateColor + ';font-weight:600">' + ratePct + '%</span>');
+                            parts.push('<br>' + escapeHtml(dashboardReadMessages.recordedSuccess) + ': <span style="color:' + rateColor + ';font-weight:600">' + ratePct + '%</span>');
                         }
                         else {
-                            parts.push('<br>Success rate: <span style="color:var(--text-muted)">—</span>');
+                            parts.push('<br>' + escapeHtml(dashboardReadMessages.recordedSuccess) + ': <span style="color:var(--text-muted)">—</span>');
                         }
-                        netNew = m.slo.net_new_links_last_sweep;
-                        netColor = netNew > 0 ? 'var(--accent-green)' : netNew < 0 ? 'var(--accent-rose)' : 'var(--text-muted)';
-                        netSign = netNew > 0 ? '+' : '';
-                        parts.push(' · Net links: <span style="color:' + netColor + '">' + netSign + netNew + '</span>');
-                        pruneRatioPct = Math.round(m.slo.prune_ratio_last_sweep * 100);
-                        parts.push(' · Prune: ' + pruneRatioPct + '%');
+                        parts.push('<br>' + escapeHtml(dashboardReadMessages.lastDirectLinks) + ': ' +
+                            (m.synthesis && m.synthesis.last_run_at ? m.synthesis.last_links_created : '—'));
+                        parts.push(' · ' + escapeHtml(dashboardReadMessages.lastPrune) + ': ' +
+                            (m.pruning && m.pruning.last_run_at && m.pruning.links_scanned_last > 0
+                                ? Math.round(m.slo.prune_ratio_last_sweep * 100) + '%' : '—'));
                         // Sweep duration
                         if (m.slo.scheduler_sweep_duration_ms_last > 0) {
                             parts.push(' · Sweep: ' + m.slo.scheduler_sweep_duration_ms_last + 'ms');
@@ -4693,7 +4671,9 @@ function loadGraphMetrics() {
                     return [3 /*break*/, 5];
                 case 4:
                     e_24 = _a.sent();
+                    if (readSequence !== graphMetricsReadSequence) return [2 /*return*/];
                     el.innerHTML = '<div style="color:var(--text-muted)">Graph metrics unavailable</div>';
+                    if (warn) warn.textContent = '';
                     return [3 /*break*/, 5];
                 case 5: return [2 /*return*/];
             }
@@ -4833,50 +4813,7 @@ function cleanupIssues() {
                         btn.textContent = '🧹 Fix Issues';
                     }
                     // Re-run health check to refresh the card
-                    setTimeout(function () {
-                        return __awaiter(this, void 0, void 0, function () {
-                            var healthRes, healthData, healthDot, healthLabel, healthSummary, healthIssues, cleanupBtn, statusMap, t, issues, sevIcons, e_27;
-                            return __generator(this, function (_a) {
-                                switch (_a.label) {
-                                    case 0:
-                                        _a.trys.push([0, 3, , 4]);
-                                        return [4 /*yield*/, fetch('/api/health')];
-                                    case 1:
-                                        healthRes = _a.sent();
-                                        return [4 /*yield*/, healthRes.json()];
-                                    case 2:
-                                        healthData = _a.sent();
-                                        healthDot = document.getElementById('healthDot');
-                                        healthLabel = document.getElementById('healthLabel');
-                                        healthSummary = document.getElementById('healthSummary');
-                                        healthIssues = document.getElementById('healthIssues');
-                                        cleanupBtn = document.getElementById('cleanupBtn');
-                                        statusMap = { healthy: '✅ Healthy', degraded: '⚠️ Degraded', unhealthy: '🔴 Unhealthy' };
-                                        healthDot.className = 'health-dot ' + (healthData.status || 'unknown');
-                                        healthLabel.textContent = statusMap[healthData.status] || '❓ Unknown';
-                                        t = healthData.totals || {};
-                                        healthSummary.textContent = (t.activeEntries || 0) + ' entries · ' + (t.handoffs || 0) + ' handoffs · ' + (t.rollups || 0) + ' rollups' + (t.crdtMerges ? ' · 🔄 ' + t.crdtMerges + ' merges' : '');
-                                        issues = healthData.issues || [];
-                                        healthIssues.innerHTML = renderHealthIssues(issues);
-                                        if (cleanupBtn) {
-                                            cleanupBtn.disabled = false;
-                                            cleanupBtn.textContent = '🧹 Fix Issues';
-                                            cleanupBtn.style.display = hasFixableHealthIssue(issues) ? 'inline-block' : 'none';
-                                        }
-                                        return [3 /*break*/, 4];
-                                    case 3:
-                                        e_27 = _a.sent();
-                                        // Health re-check failed — ensure button is usable
-                                        if (btn) {
-                                            btn.disabled = false;
-                                            btn.textContent = '🧹 Fix Issues';
-                                        }
-                                        return [3 /*break*/, 4];
-                                    case 4: return [2 /*return*/];
-                                }
-                            });
-                        });
-                    }, 400);
+                    setTimeout(function () { refreshHealthScan(); }, 400);
                     return [3 /*break*/, 5];
                 case 4:
                     e_26 = _a.sent();
@@ -4934,6 +4871,9 @@ if ('serviceWorker' in navigator) {
 /* --- INTENT HEALTH COMPONENT (ES5 Safe) --- */
 
 function fetchIntentHealth(project) {
+    if (!isCurrentProjectRead(project)) return;
+    var readSequence = ++intentReadSequence;
+    var parentSequence = projectReadSequence;
     var container = document.getElementById('intentHealthCardContent');
     var card = document.getElementById('intentHealthCard');
     if (!container || !card) return;
@@ -4944,6 +4884,7 @@ function fetchIntentHealth(project) {
     fetch('/api/intent-health?project=' + encodeURIComponent(project))
         .then(function(res) { return res.json(); })
         .then(function(data) {
+            if (readSequence !== intentReadSequence || !isCurrentProjectRead(project, parentSequence)) return;
             if (data.error) {
                 container.innerHTML = '<div style="color: #ff7b72; padding: 16px;">Error: ' + escapeHtml(data.error) + '</div>';
                 return;
@@ -4951,6 +4892,7 @@ function fetchIntentHealth(project) {
             renderIntentHealthCard(data);
         })
         .catch(function(err) {
+            if (readSequence !== intentReadSequence || !isCurrentProjectRead(project, parentSequence)) return;
             container.innerHTML = '<div style="color: #ff7b72; padding: 16px;">Failed to load intent health.</div>';
         });
 }
@@ -4992,6 +4934,7 @@ function renderIntentHealthCard(data) {
     container.innerHTML = html;
 }
 
+${localCodingScript()}
 </script>
 </body>
 </html>`;

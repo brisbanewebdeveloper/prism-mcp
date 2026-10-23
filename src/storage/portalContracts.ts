@@ -18,6 +18,83 @@
  */
 
 import { z } from "zod";
+import { TestAssertionSchema, type TestAssertion } from '../verification/schema.js';
+import { ANALYTICS_DATE_PATTERN } from "../dashboard/readMessages.js";
+
+const AnalyticsCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const UTC_DAY_MS = 24 * 60 * 60 * 1000;
+export const ProjectAnalyticsSchema = z.object({
+    totalEntries: AnalyticsCountSchema,
+    totalRollups: AnalyticsCountSchema,
+    rollupSavings: AnalyticsCountSchema,
+    avgSummaryLength: z.number().nonnegative().finite(),
+    sessionsByDay: z.array(z.object({
+      date: z.string().regex(ANALYTICS_DATE_PATTERN), count: AnalyticsCountSchema,
+    })).length(14),
+  }).refine(value => value.totalRollups <= value.totalEntries
+    && value.sessionsByDay.reduce((sum, day) => sum + day.count, 0) <= value.totalEntries - value.totalRollups
+    && value.sessionsByDay.every((day, index, days) => {
+      const time = Date.parse(day.date);
+      return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === day.date
+        && (index === 0 || time - Date.parse(days[index - 1].date) === UTC_DAY_MS);
+    }));
+export const ProjectAnalyticsResponseSchema = z.object({
+  status: z.literal('success'),
+  project: z.string().min(1).max(100),
+  analytics: ProjectAnalyticsSchema,
+});
+
+// Factory reads fail closed: corrupt rows must not become an empty or partial list.
+const PipelineTextSchema = z.string().refine(value => value.trim().length > 0);
+const PipelineTimestampSchema = z.string().refine(value => Number.isFinite(Date.parse(value)));
+const PipelineSpecSchema = z.string().refine(value => {
+  try {
+    const spec = JSON.parse(value);
+    return spec !== null && typeof spec === 'object' && !Array.isArray(spec);
+  } catch { return false; }
+});
+export const FactoryPipelineSchema = z.object({
+  id: PipelineTextSchema,
+  project: PipelineTextSchema,
+  user_id: PipelineTextSchema,
+  status: z.enum(['PENDING', 'RUNNING', 'PAUSED', 'ABORTED', 'COMPLETED', 'FAILED']),
+  current_step: PipelineTextSchema,
+  iteration: AnalyticsCountSchema,
+  eval_revisions: AnalyticsCountSchema.optional(),
+  started_at: PipelineTimestampSchema,
+  updated_at: PipelineTimestampSchema,
+  spec: PipelineSpecSchema,
+  error: z.string().nullable().optional(),
+  last_heartbeat: PipelineTimestampSchema.nullable().optional(),
+  contract_payload: z.object({
+    criteria: z.array(z.object({ id: z.string(), description: z.string() }).passthrough()),
+  }).passthrough().nullable().optional(),
+  notes: z.string().nullable().optional(),
+}).passthrough();
+export const FactoryPipelinesResponseSchema = z.object({
+  status: z.literal('success'),
+  pipelines: z.array(FactoryPipelineSchema).max(100)
+    .refine(rows => new Set(rows.map(row => row.id)).size === rows.length),
+});
+export const FactoryPipelineResponseSchema = z.object({
+  status: z.literal('success'),
+  pipeline: FactoryPipelineSchema.nullable(),
+});
+const VerificationHarnessSchema = z.object({
+  project: z.string().min(1), conversation_id: z.string().min(1), created_at: PipelineTimestampSchema,
+  rubric_hash: z.string().regex(/^[a-f0-9]{64}$/), min_pass_rate: z.number().min(0).max(1),
+  tests: z.array(z.custom<TestAssertion>(value => TestAssertionSchema.safeParse(value).success)), metadata: z.record(z.string(), z.unknown()).optional(),
+});
+const VerificationRunSchema = z.object({
+  id: z.string().min(1), rubric_hash: z.string().regex(/^[a-f0-9]{64}$/), project: z.string().min(1),
+  conversation_id: z.string().min(1), run_at: PipelineTimestampSchema, passed: z.boolean(),
+  pass_rate: z.number().min(0).max(1), critical_failures: AnalyticsCountSchema,
+  coverage_score: z.number().min(0).max(1), result_json: PipelineSpecSchema,
+  gate_action: z.enum(['continue', 'block', 'abort']), gate_override: z.boolean().optional(), override_reason: z.string().optional(),
+});
+export const FactoryHarnessResponseSchema = z.object({ status: z.literal('success'), harness: VerificationHarnessSchema.nullable(), reused: z.boolean().optional() });
+export const FactoryRunResponseSchema = z.object({ status: z.literal('success'), run: VerificationRunSchema.nullable() });
+export const FactoryRunsResponseSchema = z.object({ status: z.literal('success'), runs: z.array(VerificationRunSchema).max(100).refine(runs => new Set(runs.map(run => run.id)).size === runs.length) });
 
 // ─── knowledge_search ────────────────────────────────────────────
 

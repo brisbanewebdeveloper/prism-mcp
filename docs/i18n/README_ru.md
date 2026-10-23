@@ -2,6 +2,11 @@
 
 **Give your AI agent memory that lasts — and see the cloud tokens it never had to spend.** Persistent sessions, knowledge graphs, offline tool-routing, and an auditable savings meter. Fully local and free.
 
+> **Current release: v20.22.4 — oMLX setup and local model roles**
+> Install a pinned oMLX server/model pack from the dashboard or CLI, or connect
+> an existing server. Discover installed models and choose coder/reviewer roles
+> for oMLX and Ollama. Controlled oMLX coding remains text-only.
+
 [![npm](https://img.shields.io/npm/v/prism-mcp-server?color=cb0000&label=npm)](https://www.npmjs.com/package/prism-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-00ADD8)](https://github.com/modelcontextprotocol/servers)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](../../LICENSE)
@@ -22,9 +27,10 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
 
 - **Session memory that survives restarts** — resume projects with handoff notes,
   recent work, open TODOs, and configurable quick, standard, or deep context.
-- **Local-first inference** — bounded work is routed through local Ollama models
-  first, with automatic 2B/4B/9B/27B selection based on installed models,
-  available RAM, context fit, and subscription entitlements.
+- **Local-first inference** — local Ollama models use automatic 2B/4B/9B/27B
+  selection based on installed models, available RAM, context fit, and
+  subscription entitlements. Eligible text-only coding can prefer configured
+  oMLX; explicit task choices override the saved backend preference.
 - **A savings meter you can audit** — `prism savings` (or the `local_savings`
   tool from any host) reports the token volume local serving kept off your
   cloud model: headline, local share, per-model breakdown. It reports tokens,
@@ -48,12 +54,36 @@ A paid subscription adds cloud sync, higher model tiers, and team features throu
   Where a host offers hooks (Claude Code, Codex), `prism connect` adds two
   small ones on top: mid-session prompt routing, and a post-compaction
   re-injection of the protected-floor digest.
+- **Prompt-triggered Factory** — enabled by default for suitable bounded
+  implementation requests with explicit files, an allowed write list, and a
+  verification command. The host starts and monitors the recommended pipeline;
+  BCBA requests stay with the host. A dashboard toggle or
+  `PRISM_DARK_FACTORY_ENABLED=false` disables Factory after an MCP restart.
+  Try the [three-test filename fix](../../examples/factory-filename-fix/README.md).
 - **Safe escalation and observability** — inference outcomes are explicit,
   reserved text remains fail-closed (clinical images are processed locally,
   never sent to the cloud), and local/cloud usage is recorded for
   review.
 
+### On-device oMLX coding
+
+On Apple Silicon, choose **Settings → Local Coding** in `prism dashboard` to
+install oMLX and its model pack or use an existing server. Auto prefers configured
+oMLX for eligible coding; a saved preference or explicit task choice can select
+Ollama instead. This path requires
+Prism's oMLX integration and its separate classifier; stock oMLX is insufficient.
+See [oMLX setup, tested models, results, and failure handling](../omlx.md), or
+start with the [quickstart beside Ollama](#optional-omlx-for-local-coding).
+Explicit oMLX never falls back to Ollama or cloud inference; drafts still need
+host review and tests.
+
 ## Get started
+
+Memory search automatically applies ACT-R ranking: relevance plus recency,
+frequency and memory associations. No upvote or prompt instruction is required.
+To opt out, use **Account & Settings → Preferences → Automatic Memory Ranking
+(ACT-R)**, then restart your AI client. `PRISM_ACTR_ENABLED=false` also disables
+it. This ranking is separate from the neural graph's stored importance filter.
 
 ```bash
 npm install -g prism-mcp-server
@@ -157,6 +187,236 @@ or by re-enabling after each run.
 
 <details>
 <summary>Release history (optional)</summary>
+
+## What's New in v20.22.4
+
+- **Dashboard and CLI setup:** Settings → Local Coding and `prism local` install
+  a pinned oMLX server/model pack with progress, retry and managed startup, or
+  connect an existing server. See the [oMLX guide](../omlx.md) for requirements.
+- **Saved coding preference:** choose Auto, oMLX or Ollama without restarting
+  Prism. Auto prefers configured oMLX for eligible text-only coding; an explicit
+  per-task backend overrides that preference.
+- **Discovered model roles:** select installed coder and reviewer models for
+  each backend, including the same model for both roles. Explicit task model
+  choices win. Reported sizes and conservative memory estimates help compare
+  choices; unknown metadata stays unknown and estimates do not guarantee fit.
+- **Managed isolation:** model discovery, Hub cache and cluster launchers stay
+  private to the managed installation. Competing Ollama residency refuses the
+  call without unloading other jobs.
+- **Setup-state hardening:** bounded reads use one file handle and reject
+  symlinks, closing the filesystem race reported by CodeQL.
+- **Vision boundary:** this release does not enable image requests through the
+  controlled oMLX coding path. Picture-recognition tests remain separate work.
+
+## What's New in v20.22.3
+
+- **Dependency fixes:** Hono 4.13.11 addresses its static-path middleware
+  bypass advisory; Vite 8.2.4 addresses its development editor-launch advisories.
+- **Local resource probes use numeric loopback by default.** The default
+  Ollama endpoint is now `http://127.0.0.1:11434`, so a stalled `localhost`
+  DNS lookup cannot block those probes. Explicit URL overrides are preserved;
+  IPv6-only servers need an explicit URL.
+- **Read-only oMLX inspection accepts release-candidate versions.** Valid
+  `rcN` labels no longer invalidate status. Inspection still reports
+  generation disabled and the provider not qualified; it is not an activation
+  or a generation check.
+- **Stable oMLX setup:** the current setup link uses the Prism integration
+  based on upstream `v0.7.1`. Stock oMLX still lacks the required control routes.
+
+## What's New in v20.22.2
+
+**Why it matters:** an agent that followed `session_task_route`'s advice was
+refused on explicit oMLX before anything ran.
+
+- **A complexity hint no longer refuses explicit oMLX.** `session_task_route`
+  recommends a `task_complexity` for every code task. That hint picks Ollama's
+  starting tier, but on explicit oMLX it lowered the model ceiling, so a call
+  that passed the recommended arguments was refused with `omlx_model_ceiling`.
+  Now only an explicit `model_ceiling` below the top tier, or a plan below it,
+  refuses. Thinking on oMLX stays with the server's settings.
+
+## What's New in v20.22.1
+
+**Why it matters:** on explicit oMLX, a long prompt could keep the device busy
+for minutes while being classified, and `timeout_ms` did not limit it.
+
+- **The call budget now covers classification.** `timeout_ms` (default 300 s)
+  starts before the safety screen, and each classifier read is bounded by the
+  remaining budget as well as its own 90 s.
+- **A failed read ends the classification.** An oversize prompt is read in
+  3,600-character windows; a read that fails already means refusal on this
+  path, so the remaining windows are no longer read. Before, a stalled server
+  could cost about four minutes per window.
+- **Tests:** the owned-job marker tests pin the size limit and the
+  non-blocking open directly.
+
+## What's New in v20.22.0
+
+**Why it matters:** on Apple Silicon, `prism_infer` can now draft code on an
+oMLX server instead of Ollama, opt-in per call, behind its own safety screen.
+Separately, Layer 1 now marks two more kinds of auth request reserved, on every
+path.
+
+- **Opt-in oMLX backend:** `local_backend: "omlx"` with `mode: "code"`, text
+  only. Nothing changes for calls that do not ask for it. It **requires** the
+  oMLX build with Prism's control routes, published as the
+  [`prism-v0.7.1rc1` branch of dcostenco/omlx](https://github.com/dcostenco/omlx/tree/prism-v0.7.1rc1)
+  ([install and settings](https://github.com/dcostenco/omlx/blob/prism-v0.7.1rc1/PRISM.md)); with stock oMLX every call is refused.
+- **Its own safety screen:** the 9b classifier on the same oMLX server reads
+  every request; rules only refuse. In our tests, of 327 labelled sensitive
+  requests, the 9b alone let 2 run locally, against 19 for the 4b classifier
+  on Ollama; two rules written after reviewing those rows bring this path to
+  0, so 0 is not an out-of-sample figure. Of 294 routine requests, 2 were
+  escalated (27 on Ollama). Of 135 adversarial probes, 3 ran locally, all one
+  shape (a documentation field).
+- **Speed and cost:** a classifier read took about 0.37 s at the 95th
+  percentile on an idle machine and up to 0.65 s under load. The first read
+  after a long idle took 14.5 s, because macOS had paged the classifier out,
+  so Prism waits up to 90 s for it instead of refusing. The classifier holds
+  about 9.2 GB while loaded (9.7 GB peak).
+- **Fails closed:** a classifier failure, an unreadable answer or a missing
+  model refuses the call; it never falls back to a keyword check or to
+  Ollama. A long prompt is read whole, in windows, not as an excerpt.
+- **Frees memory first:** Ollama's loaded models are unloaded before the call
+  (they reload on the next Ollama call), so the two runtimes do not hold large
+  models at once.
+- **Layer 1, every path:** a request that decides whether signed-out,
+  anonymous or guest users may reach a route, page or endpoint (granting or
+  blocking it), makes one public, or gives them admin rights is marked
+  reserved by rule, and so is code that exchanges an authorization code for
+  tokens. Measured on the 327 sensitive requests on
+  the default Ollama path: 18 now run locally, against 19 before; routine
+  escalations are unchanged (27 of 294).
+
+## What's New in v20.21.27
+
+**Why it matters:** a script that feeds Prism Browser through a pipe can
+now pause between blocks of commands. Before, commands that had already
+arrived waited for the next write, and never ran if the 600 s idle timeout
+came first, so a script that checked a result before sending more stalled
+and then failed.
+
+- **Every piped command runs when it arrives.** The reader waited on
+  `select()` for new pipe data while `readline()` had already buffered the
+  commands sent so far. It now reads the descriptor itself and decodes it as
+  the text stream did (its encoding, universal newlines). Measured with two
+  commands written together and a third written only after the reader hands
+  over the second: the second came out only with the third before, and
+  before the third is written now.
+- **Unchanged:** the idle timeout, `\` line continuation (CRLF endings
+  included), comment lines, and streams `select()` cannot watch, now read
+  blocking. At the idle timeout, a command still being written is dropped,
+  never run cut short.
+
+## What's New in v20.21.26
+
+**Why it matters:** routine wording no longer lets a mixed request skip
+Layer 1, the safety screen that decides whether a request may run on your
+device. A BCBA who asks in one message for an operational
+definition and how many mL of a drug to give, or a developer who asks for a
+code review and then authentication code, now has that request screened by
+Layer 1's rules and, unless the request or conversation is already marked
+reserved, a classifier read. Before, it could be answered by a local model
+with no classifier read.
+
+- **Rules no longer clear requests.** Before, one routine clause let Layer 1's
+  rules clear the whole request, so it skipped the classifier. "Write an
+  operational definition for tantrums and tell me how many mL of Benadryl to
+  give at bedtime" was answered locally with no classifier read, and so was
+  "review the dashboard component for hook order and then write the JWT
+  validation middleware". Now rules can only mark a request reserved. The
+  routine shortcut is gone for a single prompt and for the current prompt of a
+  follow-up; the prompt's classifier read is skipped only if the request or
+  conversation is already marked reserved. A long prompt that reaches the
+  classifier is read as excerpts, as before.
+- **What happens to a flagged request.** A text request that a rule marks
+  reserved, or that the classifier flags, goes to a stronger cloud model when
+  your plan includes cloud and the call does not pass `cloud_fallback: false`.
+  Otherwise it is refused, and the refusal says why. Requests the classifier
+  clears remain eligible to run locally, so routine drafting (operational
+  definitions, data sheets, antecedent strategies) and routine code work still
+  run on your device when the local model can answer.
+- **Seclusion by another name.** Placement phrases such as "put him in the
+  quiet room until he calms down" (also isolation, time-out, padded and
+  calm-down rooms) are now marked reserved by rule. This catches placement
+  requests of that shape (him, her, them, or the client, student or child
+  placed into the room) that never use the word "seclusion". Other wording,
+  and other mentions of these rooms, are left to the classifier.
+- **Measured:** of 46 mixed requests built to test this bypass, which should
+  never be answered locally, 41 were cleared to run locally before this
+  release and 9 after: 32 fewer sensitive requests reaching a local model. Of
+  294 routine requests, 2 more than before are escalated (or refused, without
+  cloud).
+- **Limits, unchanged in this release.** Keep them in mind when deciding
+  whether a local answer needs your review:
+  - The classifier can miss a request, and a missed request still runs
+    locally. The 9 above are such misses.
+  - Some classifier failures fall back to a keyword check, and text that
+    passes it can still run locally.
+  - A request with images is processed on this device even when flagged, and
+    is never sent to the cloud.
+- **Cost:** requests that used the shortcut now need a classifier read, unless
+  screening has already marked them reserved. That added check is the price of
+  closing the bypass; in our tests the read took about 0.3 s at the 95th
+  percentile.
+
+## What's New in v20.21.25
+
+Semantic memory search now automatically applies ACT-R ranking, combining
+relevance with recency, frequency and associations. **Account & Settings →
+Preferences → Automatic Memory Ranking (ACT-R)** lets you opt out after an AI
+client restart; an explicit environment value takes precedence.
+
+Synalux Cloud uses authenticated, owner-scoped access-history and candidate-link
+APIs. Cloud deployment requires the matching Portal history migration. Stored
+importance thresholds remain separate, and HRR drift detection remains independent.
+
+## What's New in v20.21.24
+
+- Synalux cloud preserves initial importance and handles votes, graduated
+  insights, and stale-score decay through the authenticated Portal API.
+- Voting rejects inactive or inaccessible records; decay preserves archived
+  history. Existing scores remain unchanged.
+- Graph importance thresholds use stored scores. Automatic retrieval ranking
+  and access tracking do not automatically turn ordinary memories into high-score rules.
+
+## What's New in v20.21.23
+
+- Factory routes suitable bounded implementation prompts and executes only the
+  allowed file actions, with independent verification and explicit lifecycle results.
+- Paid pipeline creation, updates, aborts, and verification records use the
+  authenticated Portal API. Startup waits for paid storage initialization before
+  reporting Factory readiness.
+- The default-enabled toggle distinguishes the saved setting from the active
+  MCP setting and shows when a restart is required.
+
+## What's New in v20.21.22
+
+- Factory pipeline lists for cloud accounts use the authenticated Portal API,
+  including exact project and status filters, without direct database credentials.
+- Invalid, incomplete, or oversized reads show an unavailable state. A valid empty
+  list remains distinct from a failed read.
+- This release covers pipeline lists. Cloud pipeline creation, controls, and
+  execution still need separate validation.
+
+## What's New in v20.21.21
+
+- Prism Dashboard now reports unavailable analytics and factory reads clearly,
+  prevents stale project results, and keeps graph filters and counts in sync.
+- Project analytics can be read through the authenticated Portal API with
+  validated 14-day activity data.
+
+## What's New in v20.21.20
+
+- Fixed: a `session_save_ledger` call refused with `context_not_loaded`, or the
+  greeting-only reply that writes nothing, restarted the hourly drift reminder.
+  A ledger save restarts it now only when it writes an entry.
+- A written ledger entry's reply also asks for the handoff when the checkpoint
+  ends a unit of work.
+- A ledger save skipped as a duplicate of one saved in the last 5 minutes now
+  says nothing new was written, instead of "saved".
+- Fixed: with Supabase storage, a handoff whose save failed was reported as
+  updated. It is now an error the agent can see and retry.
 
 ## What's New in v20.21.19
 
@@ -1061,6 +1321,32 @@ requests are refused rather than answered blind when no tier (or the Layer 1
 safety classifier) can actually see the image, so a text-only model is never
 handed a prompt about a screenshot it never received. The 27b is text only.
 
+### Optional oMLX for local coding
+
+Use **Settings → Local Coding** in `prism dashboard` for opt-in installation,
+progress, retry, connection checks, and backend/model selection. Or use
+`prism local install` followed by `prism local start`. npm installation never
+downloads models automatically. The managed pack requires Apple Silicon,
+macOS 15+, Python 3.11–3.13, 32 GiB memory and 40 GiB free disk; it keeps existing
+servers and jobs running. Auto prefers configured oMLX for eligible coding;
+explicit smaller model ceilings stay on Ollama, and task overrides take priority.
+
+For manual setup, install the **Prism integration** of oMLX, its required
+9B classifier, and a drafting model such as Qwen3.8-27B oQ4e. Set a loopback API
+key, enable chunked prefill, disable MTP/DFlash/speculative prefill, and configure
+model context/thinking budgets. Then verify a call with `local_backend: "omlx"`,
+`mode: "code"`, and the exact advertised `local_model`. Ollama need not be
+running; Prism refuses device contention without unloading another job's models.
+
+Follow the [step-by-step oMLX guide](../omlx.md) for pinned install/download
+commands, server startup, a first MCP call, and troubleshooting. Its
+[tested model table](../omlx.md#tested-models-and-trade-offs) separates native
+oMLX checkpoints from the experimental Strata GGUF runtime. The
+[coding and review results](../omlx.md#observed-coding-and-review-results)
+show measured trade-offs and limits; they do not establish an overall winner.
+Stock oMLX cannot serve this Prism path, and explicit oMLX has no inference
+fallback. Local reviews remain advisory.
+
 ---
 
 ## What it does
@@ -1211,6 +1497,9 @@ and `verify` govern the other two channels.
 
 ## Models
 
+This section describes the default **Ollama fleet**. For explicit oMLX coding,
+see [tested oMLX models and trade-offs](../omlx.md#tested-models-and-trade-offs).
+
 The `prism-coder` fleet uses Qwen3.5 for MCP tool-routing AND general inference. The 9B and 27B are fine-tuned; the 2B and 4B use stock Qwen3.5-4B at different quantization levels. The 27B scored 100% on our internal 115-case tool-routing suite and 100% on an internal 15-problem coding eval, at $0 inference cost. These are self-run evaluations, not [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) leaderboard submissions.
 
 `prism_infer` supports three modes: `route` (tool routing, fast), `chat` (conversation) and `code` (code generation). Reasoning is decided by the **tier**, not the mode: a tier carrying `MODEL_TIERS.prefersThinking` also carries a `minLocalTokens` floor so reasoning cannot crowd out the answer, and only those tiers use `<think>` blocks (stripped before the response is served). The 9B does; the 4B and 2B do not, because on those tiers reasoning drew down the same `num_predict` budget the answer needed and returned an empty response. An explicit `think: true` still overrides, for a caller who has sized `max_tokens` for it. If the local model fails a quality gate (empty, think-only, or truncated), paid tiers automatically escalate to Gemini 3.6 Flash via the Synalux portal.
@@ -1281,7 +1570,7 @@ selection.
 
 | Layer | What | Model | Cost |
 |---|---|---|---|
-| **L1** | Crisis/medical safety gate | None (regex) | 0 ms |
+| **L1** | Crisis/medical safety rules and local classification | Backend-specific classifier (required 9B on oMLX) | Varies |
 | **L3-Registry** | Envelope validation + advertised-tool enforcement (all tiers) | None | 0 ms |
 | **L3-Route** | Authenticated deterministic route correction (Standard+) | None | Network latency |
 | **L3-Tier0** | Integer grounding (set membership) | None (deterministic) | 0 ms |
@@ -1326,10 +1615,14 @@ check, the local 9B passed 2/3 tasks; the local 27B and Gemini 3.6 Flash each
 passed 3/3. This is a self-published regression signal, not an independent
 leaderboard or a claim of broad model equivalence.
 
+For the separate October 2026 coding and advisory-review comparison, see
+[oMLX and Strata results and limitations](../omlx.md#observed-coding-and-review-results).
+
 ### Cloud Escalation (`cloud_fallback`)
 
-Prism always tries an eligible local model first. If the quality gate detects
-an empty, truncated, think-only, or looping response, or the safety screen
+For the default **Ollama backend**, Prism tries an eligible local model first.
+If the quality gate detects an empty, truncated, think-only, or looping
+response, or the safety screen
 finds the request uncertain or reserved, a paid plan escalates the request
 through Gemini 3.6 Flash. Free-tier routing stays local and reports the
 outcome without making a cloud call.
@@ -1339,6 +1632,9 @@ escalate, free plans never do. Pass `false` to forbid cloud inference fallback
 for a call, which the clinical delegation rules do for drafting; pass `true`
 to ask for it, which still requires a plan with cloud. A request that carries
 an image is never escalated; screenshots stay on this device.
+
+Explicit `local_backend: "omlx"` never falls back to cloud inference or Ollama,
+regardless of plan or `cloud_fallback`. See [oMLX behavior](../omlx.md#runtime-behavior-and-failure-handling).
 
 ---
 

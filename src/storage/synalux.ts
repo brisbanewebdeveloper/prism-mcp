@@ -19,6 +19,11 @@
  *
  *   Methods migrated to portal:
  *     - saveLedger        → POST /api/v1/prism/memory  action=save_ledger
+ *     - adjustImportance  → POST /api/v1/prism/memory  action=adjust_importance
+ *     - getGraduatedInsights → POST /api/v1/prism/memory  action=graduated_insights
+ *     - decayImportance   → POST /api/v1/prism/memory  action=decay_importance
+ *     - logAccess / recordAccesses / updateLastAccessed → action=record_access
+ *     - getAccessLog      → POST /api/v1/prism/memory  action=get_access_log
  *     - saveHandoff       → POST /api/v1/prism/memory  action=save_handoff
  *     - saveHistorySnapshot → POST /api/v1/prism/memory  action=save_history_snapshot
  *     - loadContext       → POST /api/v1/prism/memory  action=load_context
@@ -30,6 +35,8 @@
  *     - patchLedger       → POST /api/v1/prism/memory  action=save_embedding
  *     - getEntriesMissingEmbeddings → POST /api/v1/prism/memory  action=list_missing_embeddings
  *     - listProjects      → POST /api/v1/prism/memory  action=list_projects
+ *     - getAnalytics      → GET /api/v1/prism/analytics  view=project
+ *     - listPipelines     → GET /api/v1/prism/factory/pipelines
  *     - exportLedger      → POST /api/v1/prism/memory  action=export_memory (paginated)
  *
  *   Methods still falling through to SupabaseStorage (Phase 3 Tier B+):
@@ -52,7 +59,8 @@ import { SupabaseStorage } from "./supabase.js";
 import { debugLog } from "../utils/logger.js";
 import { PRISM_SYNALUX_BASE_URL, PRISM_SYNALUX_API_KEY } from "../config.js";
 import { isSynaluxSignedOut } from "../utils/synaluxCredentialState.js";
-import { KnowledgeSearchRequestSchema, KnowledgeSearchResponseSchema } from "./portalContracts.js";
+import { KnowledgeSearchRequestSchema, KnowledgeSearchResponseSchema, ProjectAnalyticsResponseSchema, FactoryPipelinesResponseSchema, FactoryPipelineResponseSchema, FactoryHarnessResponseSchema, FactoryRunResponseSchema, FactoryRunsResponseSchema } from "./portalContracts.js";
+import type { VerificationHarness, ValidationResult } from '../verification/schema.js';
 import type {
   LedgerEntry,
   HandoffEntry,
@@ -64,6 +72,9 @@ import type {
   HistorySnapshot,
   HealthStats,
   MemoryLink,
+  AnalyticsData,
+  PipelineState,
+  PipelineStatus,
 } from "./interface.js";
 
 /**
@@ -99,12 +110,84 @@ interface JwtExchangeResponse {
 
 /** Refresh JWT this many ms before expiry to avoid edge-case 401s. */
 const JWT_REFRESH_LEEWAY_MS = 60_000;
+const ACCESS_BATCH_LIMIT = 50;
+const ACCESS_ID_RE = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
+const ACCESS_MESSAGES = {
+  invalid: "Invalid memory access batch",
+  write: "Invalid memory access response",
+  read: "Invalid memory access history response",
+  failed: "[SynaluxStorage] Memory access recording failed",
+};
+
+function accessIds(ids: string[]): string[] {
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !ACCESS_ID_RE.test(id))) {
+    throw new Error(ACCESS_MESSAGES.invalid);
+  }
+  return [...new Set(ids.map(id => id.toLowerCase()))];
+}
 
 function buildContextLoadKey(project: string, level: string, userId: string, role?: string): string {
   return JSON.stringify({ project, level, userId, role: role ?? "" });
 }
 
 export class SynaluxStorage extends SupabaseStorage {
+  logAccess(entryId: string, contextHash?: string): void {
+    void this.recordAccesses([entryId], contextHash).catch(() => console.error(ACCESS_MESSAGES.failed));
+  }
+
+  async getCandidateLinks(entryIds: string[]): Promise<Array<{ source_id: string; target_id: string; strength: number }>> {
+    const ids = accessIds(entryIds);
+    if (ids.length === 0) return [];
+    if (ids.length > ACCESS_BATCH_LIMIT) throw new Error(ACCESS_MESSAGES.invalid);
+    const response = await this.portalPost("/api/v1/prism/memory", { action: "get_candidate_links", entry_ids: ids });
+    if (!Array.isArray(response.links) || response.links.length > ids.length * 20
+      || response.links.some(row => !row || !ids.includes(row.source_id) || !ids.includes(row.target_id)
+        || !Number.isFinite(row.strength) || row.strength < 0 || row.strength > 1)) throw new Error(ACCESS_MESSAGES.read);
+    return response.links;
+  }
+
+  async recordAccesses(entryIds: string[], contextHash?: string): Promise<void> {
+    await this.writeAccesses(entryIds, contextHash, true);
+  }
+
+  async updateLastAccessed(entryIds: string[]): Promise<void> {
+    await this.writeAccesses(entryIds, undefined, false);
+  }
+
+  private async writeAccesses(entryIds: string[], contextHash: string | undefined, recordHistory: boolean): Promise<void> {
+    const ids = accessIds(entryIds);
+    if (contextHash !== undefined && !/^[a-f0-9]{1,64}$/.test(contextHash)) throw new Error(ACCESS_MESSAGES.invalid);
+    for (let offset = 0; offset < ids.length; offset += ACCESS_BATCH_LIMIT) {
+      const batch = ids.slice(offset, offset + ACCESS_BATCH_LIMIT);
+      const response = await this.portalPost("/api/v1/prism/memory", {
+        action: "record_access", entry_ids: batch, context_hash: contextHash ?? null, record_history: recordHistory,
+      });
+      if (!Number.isInteger(response.recorded) || Number(response.recorded) < 0 || Number(response.recorded) > batch.length) {
+        throw new Error(ACCESS_MESSAGES.write);
+      }
+    }
+  }
+
+  async getAccessLog(entryIds: string[], maxPerEntry = ACCESS_BATCH_LIMIT): Promise<Map<string, Date[]>> {
+    const ids = accessIds(entryIds);
+    if (!Number.isInteger(maxPerEntry) || maxPerEntry < 1 || maxPerEntry > ACCESS_BATCH_LIMIT) throw new Error(ACCESS_MESSAGES.invalid);
+    const result = new Map<string, Date[]>();
+    for (let offset = 0; offset < ids.length; offset += ACCESS_BATCH_LIMIT) {
+      const batch = ids.slice(offset, offset + ACCESS_BATCH_LIMIT);
+      const response = await this.portalPost("/api/v1/prism/memory", { action: "get_access_log", entry_ids: batch, max_per_entry: maxPerEntry });
+      if (!Array.isArray(response.accesses) || response.accesses.length > batch.length * maxPerEntry) throw new Error(ACCESS_MESSAGES.read);
+      for (const row of response.accesses) {
+        if (!row || !batch.includes(row.entry_id) || typeof row.accessed_at !== "string") throw new Error(ACCESS_MESSAGES.read);
+        const timestamp = new Date(row.accessed_at);
+        if (!Number.isFinite(timestamp.getTime())) throw new Error(ACCESS_MESSAGES.read);
+        const history = result.get(row.entry_id) ?? [];
+        if (history.length >= maxPerEntry) throw new Error(ACCESS_MESSAGES.read);
+        history.push(timestamp);
+        result.set(row.entry_id, history);
+      }
+    }
+    return result;
+  }
   private readonly baseUrl: string;
   private readonly refreshToken: string;
   private cachedJwt: string | null = null;
@@ -113,6 +196,7 @@ export class SynaluxStorage extends SupabaseStorage {
   private readonly inflightContextLoads = new Map<string, Promise<ContextResult>>();
   private readonly closeController = new AbortController();
   private closed = false;
+  private factoryReady = false;
 
   constructor() {
     super();
@@ -136,10 +220,17 @@ export class SynaluxStorage extends SupabaseStorage {
 
   async initialize(_isLocal: boolean = false): Promise<void> {
     debugLog(`[SynaluxStorage] Initializing (portal=${this.baseUrl})`);
+    try {
+      const capabilities = await this.portalPost('/api/v1/prism/factory/verification', { action: 'capabilities' });
+      this.factoryReady = capabilities.status === 'success' && capabilities.execution_ready === true;
+    } catch { this.factoryReady = false; }
   }
+
+  isFactoryReady(): boolean { return !this.closed && !isSynaluxSignedOut() && this.factoryReady; }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.factoryReady = false;
     this.cachedJwt = null;
     this.cachedJwtExpiresAt = 0;
     this.closeController.abort();
@@ -334,8 +425,69 @@ export class SynaluxStorage extends SupabaseStorage {
       role: entry.role,
       event_type: entry.event_type,
       confidence_score: entry.confidence_score,
+      importance: entry.importance,
     });
     return result.entry ?? result;
+  }
+
+  // Portal derives the owner and workspace from the authenticated account.
+  async adjustImportance(id: string, delta: number, _userId: string): Promise<void> {
+    if (delta !== 1 && delta !== -1) {
+      throw new Error("Importance vote delta must be 1 or -1");
+    }
+    const entryId = id.toLowerCase();
+    const result = await this.portalPost("/api/v1/prism/memory", {
+      action: "adjust_importance", id: entryId, delta,
+    });
+    const entry = result.entry as { id?: unknown; importance?: unknown } | undefined;
+    if (!entry || entry.id !== entryId || typeof entry.importance !== "number"
+      || !Number.isInteger(entry.importance) || entry.importance < 0) {
+      throw new Error("Importance vote contract drift: updated entry is required");
+    }
+  }
+
+  async getGraduatedInsights(project: string, _userId: string, minImportance = 7): Promise<LedgerEntry[]> {
+    const entries: LedgerEntry[] = [];
+    const seen = new Set<string>();
+    let offset = 0;
+    let total: number | undefined;
+    while (true) {
+      const result = await this.portalPost("/api/v1/prism/memory", {
+        action: "graduated_insights", project, min_importance: minImportance, offset,
+      });
+      const page = result.page as { total?: number; has_more?: boolean; next_offset?: number | null } | undefined;
+      if (!Array.isArray(result.insights) || !page || !Number.isSafeInteger(page.total)
+        || (page.total as number) < 0 || typeof page.has_more !== "boolean"
+        || (total !== undefined && total !== page.total)) {
+        throw new Error("Graduated insight contract drift or list changed; retry");
+      }
+      total = page.total;
+      for (const row of result.insights as LedgerEntry[]) {
+        if (!row || typeof row.id !== "string" || seen.has(row.id) || row.project !== project.trim()
+          || typeof row.summary !== "string" || !Number.isInteger(row.importance)
+          || (row.importance as number) < minImportance) {
+          throw new Error("Invalid graduated insight response");
+        }
+        seen.add(row.id); entries.push(row);
+      }
+      if (!page.has_more) {
+        if (entries.length !== total) throw new Error("Graduated insight read is incomplete");
+        return entries;
+      }
+      if (!Number.isSafeInteger(page.next_offset) || page.next_offset !== entries.length || entries.length <= offset) {
+        throw new Error("Graduated insight pagination did not advance");
+      }
+      offset = page.next_offset as number;
+    }
+  }
+
+  async decayImportance(project: string, _userId: string, decayDays: number): Promise<void> {
+    const result = await this.portalPost("/api/v1/prism/memory", {
+      action: "decay_importance", project, days: decayDays,
+    });
+    if (!Number.isSafeInteger(result.decayed) || (result.decayed as number) < 0) {
+      throw new Error("Importance decay contract drift: updated count is required");
+    }
   }
 
   // ─── Handoff ─────────────────────────────────────────────────
@@ -876,7 +1028,82 @@ export class SynaluxStorage extends SupabaseStorage {
     })) as HistorySnapshot[];
   }
 
+  // ─── Factory read path ────────────────────────────────────────
+  async getPipeline(id: string, _userId: string): Promise<PipelineState | null> {
+    const result = FactoryPipelineResponseSchema.safeParse(await this.portalGet(`/api/v1/prism/factory/pipeline?id=${encodeURIComponent(id)}`));
+    if (!result.success || (result.data.pipeline && result.data.pipeline.id !== id)) throw new Error('[SynaluxStorage] Invalid Factory pipeline response');
+    return result.data.pipeline as PipelineState | null;
+  }
+
+  async saveVerificationHarness(harness: VerificationHarness, _userId: string): Promise<void> {
+    const result = FactoryHarnessResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/verification', { action: 'save_harness', harness }));
+    if (!result.success || !result.data.harness || result.data.harness.rubric_hash !== harness.rubric_hash
+        || result.data.harness.min_pass_rate !== harness.min_pass_rate
+        || (!result.data.reused && (result.data.harness.project !== harness.project || result.data.harness.conversation_id !== harness.conversation_id))) throw new Error('[SynaluxStorage] Invalid verification harness save response');
+  }
+
+  async getVerificationHarness(rubric_hash: string, _userId: string): Promise<VerificationHarness | null> {
+    const result = FactoryHarnessResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/verification', { action: 'get_harness', rubric_hash }));
+    if (!result.success || (result.data.harness && result.data.harness.rubric_hash !== rubric_hash)) throw new Error('[SynaluxStorage] Invalid verification harness response');
+    return result.data.harness as VerificationHarness | null;
+  }
+
+  async saveVerificationRun(run: ValidationResult, _userId: string): Promise<void> {
+    const result = FactoryRunResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/verification', { action: 'save_run', run }));
+    if (!result.success || !result.data.run || result.data.run.id !== run.id || result.data.run.rubric_hash !== run.rubric_hash
+        || result.data.run.project !== run.project || result.data.run.conversation_id !== run.conversation_id || result.data.run.result_json !== run.result_json) throw new Error('[SynaluxStorage] Invalid verification run save response');
+  }
+
+  async getVerificationRun(id: string, _userId: string): Promise<ValidationResult | null> {
+    const result = FactoryRunResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/verification', { action: 'get_run', id }));
+    if (!result.success || (result.data.run && result.data.run.id !== id)) throw new Error('[SynaluxStorage] Invalid verification run response');
+    return result.data.run as ValidationResult | null;
+  }
+
+  async listVerificationRuns(project: string, _userId: string): Promise<ValidationResult[]> {
+    const result = FactoryRunsResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/verification', { action: 'list_runs', project }));
+    if (!result.success || result.data.runs.some(run => run.project !== project)) throw new Error('[SynaluxStorage] Invalid verification runs response');
+    return result.data.runs as ValidationResult[];
+  }
+
+  async savePipeline(state: PipelineState): Promise<void> {
+    const { user_id: _userId, ...pipeline } = state;
+    const create = state.status === 'PENDING' && state.current_step === 'INIT' && state.iteration === 0 && state.started_at === state.updated_at;
+    const result = FactoryPipelineResponseSchema.safeParse(await this.portalPost('/api/v1/prism/factory/pipeline', {
+      operation: create ? 'create' : 'update', pipeline,
+      ...(create ? {} : { expected_updated_at: state.updated_at }),
+    }));
+    if (!result.success || !result.data.pipeline || result.data.pipeline.id !== state.id || result.data.pipeline.project !== state.project
+        || result.data.pipeline.status !== state.status || result.data.pipeline.current_step !== state.current_step
+        || result.data.pipeline.iteration !== state.iteration || result.data.pipeline.spec !== state.spec
+        || Date.parse(result.data.pipeline.updated_at) <= Date.parse(state.updated_at)) throw new Error('[SynaluxStorage] Invalid Factory save response');
+    state.updated_at = result.data.pipeline.updated_at;
+    state.user_id = result.data.pipeline.user_id;
+  }
+
+  async listPipelines(project?: string, status?: PipelineStatus, _userId?: string): Promise<PipelineState[]> {
+    const query = new URLSearchParams();
+    if (project !== undefined) query.set('project', project);
+    if (status !== undefined) query.set('status', status);
+    const result = FactoryPipelinesResponseSchema.safeParse(
+      await this.portalGet('/api/v1/prism/factory/pipelines' + (query.size ? '?' + query : '')),
+    );
+    if (!result.success || result.data.pipelines.some(row =>
+      (project !== undefined && row.project !== project) || (status !== undefined && row.status !== status))) {
+      throw new Error('Factory pipelines unavailable');
+    }
+    return result.data.pipelines;
+  }
+
   // ─── Health Check ─────────────────────────────────────────────
+  async getAnalytics(project: string, _userId: string): Promise<AnalyticsData> {
+    const query = new URLSearchParams({ view: 'project', project });
+    const result = ProjectAnalyticsResponseSchema.safeParse(await this.portalGet('/api/v1/prism/analytics?' + query));
+    if (!result.success || result.data.project !== project) {
+      throw new Error('Project analytics unavailable');
+    }
+    return result.data.analytics;
+  }
   // Phase 3 Tier B: route health_check through portal. The portal
   // returns summary counts only (no per-entry duplicate scan), so
   // activeLedgerSummaries is returned empty — the hygiene handler
@@ -889,6 +1116,11 @@ export class SynaluxStorage extends SupabaseStorage {
         project: "prism-mcp",
       });
       const inventory = result.inventory as Record<string, number> | undefined;
+      if (!inventory || !['ledger_entries', 'active_projects', 'ledger_missing_embeddings'].every(field =>
+        Number.isSafeInteger(inventory[field]) && inventory[field] >= 0)
+        || inventory.ledger_missing_embeddings > inventory.ledger_entries) {
+        throw new Error('Health inventory unavailable');
+      }
       const totalActiveEntries = typeof inventory?.ledger_entries === "number" ? inventory.ledger_entries : 0;
       const totalHandoffs = typeof inventory?.active_projects === "number" ? inventory.active_projects : 0;
       // Hardcoding 0 here certified a 100%-missing-embeddings outage as

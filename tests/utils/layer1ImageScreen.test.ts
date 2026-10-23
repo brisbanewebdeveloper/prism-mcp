@@ -289,8 +289,8 @@ describe("only a clean NO permits local processing", () => {
     });
 });
 
-describe("the deterministic fast path must not skip the screen", () => {
-    it("screens the image even when the WORDS are deterministically routine", async () => {
+describe("routine words never skip the image screen", () => {
+    it("screens the image even when the words are routine", async () => {
         // Measured 8/8: routine BCBA phrasing returned OBVIOUS_NOT_RESERVED with
         // an EMPTY call log — neither screen nor classifier saw the picture.
         const { fn, calls } = mockFetch({ screenAnswer: "YES" });
@@ -302,14 +302,14 @@ describe("the deterministic fast path must not skip the screen", () => {
         expect(v).toBe("OBVIOUS_RESERVED");
     });
 
-    it("still short-circuits routine TEXT requests without any network call", async () => {
+    it("reads a routine TEXT request with the classifier: the rules never clear", async () => {
         const { fn, calls } = mockFetch({});
         const v = await callLayer1(
             "write an operational definition for hand raising",
             "http://x", "prism-coder:4b", fn,
         );
         expect(v).toBe("OBVIOUS_NOT_RESERVED");
-        expect(calls, "a text-only routine request hit the network").toHaveLength(0);
+        expect(calls.filter(c => !c.screen), "the classifier read the request once").toHaveLength(1);
     });
 });
 

@@ -672,7 +672,7 @@ export const PRISM_GRAPH_PRUNE_MAX_PROJECTS_PER_SWEEP = parseInt(
 // a composite similarity + activation model.
 
 /** Master switch for ACT-R activation-based re-ranking. */
-export const PRISM_ACTR_ENABLED = process.env.PRISM_ACTR_ENABLED === "true";
+export const PRISM_ACTR_ENABLED = process.env.PRISM_ACTR_ENABLED !== "false";
 
 /** ACT-R decay parameter d in t^(-d). Higher = faster forgetting. (Paper default: 0.5) */
 export const PRISM_ACTR_DECAY = parseFloat(process.env.PRISM_ACTR_DECAY || "0.5");
@@ -755,11 +755,11 @@ export const PRISM_VERIFICATION_DEFAULT_SEVERITY =
 
 // ─── v7.3: Dark Factory Orchestration ─────────────────────────
 // Autonomous pipeline runner: PLAN → EXECUTE → VERIFY → iterate.
-// Opt-in because it executes LLM calls in the background.
+// Enabled by default; the persisted preference or an explicit env override can disable it.
 
-/** Master switch for the Dark Factory background runner. */
+/** Compatibility default; startup resolver applies env or persisted dashboard state. */
 export const PRISM_DARK_FACTORY_ENABLED =
-  process.env.PRISM_DARK_FACTORY_ENABLED === "true"; // Opt-in
+  true; // Startup resolver applies env override or persisted dashboard setting.
 
 /** Poll interval for the runner loop (ms). Default: 30s. */
 export const PRISM_DARK_FACTORY_POLL_MS = parseInt(
@@ -799,7 +799,7 @@ export const PRISM_TURBOQUANT_TIEBREAKER_EPSILON =
 //
 // Set PRISM_LOCAL_LLM_ENABLED=true to activate.
 // Set PRISM_LOCAL_LLM_MODEL to override the model tag.
-// Set PRISM_LOCAL_LLM_URL to override the Ollama endpoint (default: localhost:11434).
+// Set PRISM_LOCAL_LLM_URL to override the Ollama endpoint (default: 127.0.0.1:11434).
 // Set PRISM_LOCAL_LLM_TIMEOUT_MS to override per-call timeout (default: 60000, max: 300000).
 // Set PRISM_STRICT_LOCAL_MODE=true to block cloud fallback when local LLM is enabled (HIPAA).
 
@@ -811,9 +811,10 @@ export const PRISM_LOCAL_LLM_ENABLED =
 export const PRISM_LOCAL_LLM_MODEL =
   (process.env.PRISM_LOCAL_LLM_MODEL || "prism-coder:9b").trim();
 
-/** Ollama base URL. Override for remote Ollama instances. */
+/** Numeric loopback avoids queuing local health probes behind getaddrinfo work.
+ * Explicit overrides still support custom hostnames and IPv6-only listeners. */
 export const PRISM_LOCAL_LLM_URL =
-  (process.env.PRISM_LOCAL_LLM_URL || "http://localhost:11434").trim();
+  (process.env.PRISM_LOCAL_LLM_URL || "http://127.0.0.1:11434").trim();
 
 /** Per-call timeout in ms. Prevents stalled background tasks. Capped at 300s. */
 export const PRISM_LOCAL_LLM_TIMEOUT_MS = (() => {

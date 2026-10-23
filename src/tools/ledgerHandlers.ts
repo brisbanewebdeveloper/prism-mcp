@@ -39,6 +39,9 @@ import { resolveProject } from "../utils/projectResolver.js";
 import { getUpdateNotice } from "../updateNotice.js";
 import type { StorageBackend } from "../storage/interface.js";
 import { findRunningDashboardAccessState } from "../dashboard/dashboardAccess.js";
+import { isDarkFactoryEnabled } from "../darkfactory/enablement.js";
+import { routeFactoryPrompt, formatFactoryPromptRoute } from "../darkfactory/promptRouting.js";
+import { factoryBackendReadiness } from "../darkfactory/backendReadiness.js";
 
 // The running server's own version, for the update-available notice. A read
 // failure must never affect startup: an empty string fails the notice's
@@ -950,6 +953,22 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
   });
 
+  // SQLite skips an identical (project, conversation_id, summary) saved in the
+  // last 5 minutes and returns { id, deduplicated: true } without writing.
+  // Nothing new was saved, so this is not a drift checkpoint and must not read
+  // as one: no timer reset, no "saved" line, no handoff nudge, and no second
+  // embedding or auto-link pass over the existing row.
+  if ((result as { deduplicated?: boolean } | null | undefined)?.deduplicated === true) {
+    return {
+      content: [{
+        type: "text",
+        text: (_saveLedgerGateWarning ? `⚠️ ${_saveLedgerGateWarning}\n\n` : "") +
+          `ℹ️ An identical ledger entry for project "${project}" was already saved in the last 5 minutes; nothing new was written.` +
+          resolverNote,
+      }],
+      isError: false,
+    };
+  }
 
   // ─── Fire-and-forget embedding generation ───
   const embeddingProvider = result ? getEmbeddingProviderOrNull("session_save_ledger") : null;
@@ -1066,6 +1085,15 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
   const metricsBlock = formatInferenceMetrics();
 
+  // GATE 5: a ledger entry that was WRITTEN is a drift checkpoint. Reset the
+  // timer here, on the write path only. It used to be reset by the server
+  // after every returned result, so a context_not_loaded refusal or the
+  // greeting-only skip silenced the hourly reminder without saving anything.
+  {
+    const { noteDriftCheck } = await import("../session/sessionContext.js");
+    noteDriftCheck(conversation_id);
+  }
+
   return {
     content: [{
       type: "text",
@@ -1078,6 +1106,9 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         (embeddingQueued
           ? `📊 Embedding generation queued for semantic search.`
           : `📊 Primary history saved; optional semantic indexing was not queued.`) +
+        // The ledger logs what happened; the next session starts from the
+        // handoff. Only a written entry asks, never the skip or a refusal.
+        `\n💾 If this checkpoint ends a unit of work, also save the handoff with session_save_handoff.` +
         metricsBlock +
         resolverNote,
     }],
@@ -2602,6 +2633,7 @@ export async function sessionRoutePromptHandler(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const input = (typeof args === "object" && args !== null && !Array.isArray(args) ? args : {}) as {
     prompt?: unknown; loaded?: unknown; project?: unknown;
+    working_directory?: unknown; files_involved?: unknown; test_command?: unknown; allowed_write_paths?: unknown;
   };
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const loaded = Array.isArray(input.loaded)
@@ -2609,11 +2641,21 @@ export async function sessionRoutePromptHandler(
     : [];
 
   const result = await runPromptRouteFromCache(prompt, loaded);
+  const project = typeof input.project === "string" ? input.project : undefined;
+  const workingDirectory = typeof input.working_directory === "string" ? input.working_directory :
+    (project ? await getSetting(`repo_path:${project}`, "") : "") || undefined;
+  const route = routeFactoryPrompt(prompt, {
+    enabled: isDarkFactoryEnabled(), project, working_directory: workingDirectory,
+    files_involved: Array.isArray(input.files_involved) ? input.files_involved.filter((file): file is string => typeof file === "string") : undefined,
+    test_command: typeof input.test_command === "string" ? input.test_command : undefined,
+    ...(await factoryBackendReadiness()),
+    allowed_write_paths: Array.isArray(input.allowed_write_paths) ? input.allowed_write_paths.filter((file): file is string => typeof file === "string") : undefined,
+  });
 
   // Text only, never structuredContent. A result carrying both lets a host
   // surface just the structured half — which is exactly how Claude Code
   // silently dropped the bootstrap payload for three weeks.
-  return { content: [{ type: "text", text: result.text }] };
+  return { content: [{ type: "text", text: `${result.text}\n\n${formatFactoryPromptRoute(route)}` }] };
 }
 
 export async function sessionBootstrapHandler(
@@ -2655,7 +2697,16 @@ export async function sessionBootstrapHandler(
     : "developer";
   const role = sanitizeNativeIdentity(defaultRole) || "global";
   const manifestSnapshot = await resolveNativeSkillManifestSnapshot(skillSyncResult);
-  const { text: systemReadyBlock, floorDigestChars } = await buildNativeSystemReadyBlock(manifestSnapshot, depth);
+  const { text: baseSystemReadyBlock, floorDigestChars } = await buildNativeSystemReadyBlock(manifestSnapshot, depth);
+  const startupProject = projects.length === 1 ? projects[0] : undefined;
+  const startupFactoryRoute = routeFactoryPrompt(typeof input.prompt === "string" ? input.prompt : "", {
+    enabled: isDarkFactoryEnabled(), project: startupProject,
+    working_directory: startupProject ? await getSetting(`repo_path:${startupProject}`, "") : undefined,
+    ...(await factoryBackendReadiness()),
+  });
+  const factoryStatusLine = `- 🏭 **Factory:** ${isDarkFactoryEnabled() ? "enabled" : "disabled"} for this MCP startup; enablement does not prove execution readiness.`;
+  const systemReadyBlock = `${baseSystemReadyBlock}\n${factoryStatusLine}` +
+    (startupFactoryRoute.candidate ? `\n${formatFactoryPromptRoute(startupFactoryRoute)}\nFor a suitable request, supply the current workspace and verification command through session_route_prompt, then automatically call its recommended pipeline tool.` : "");
   // First run = the dashboard has never been touched: no agent identity AND no
   // projects. Measured 2026-08-05: a brand-new free-tier install was greeted
   // with "Welcome back", three "Not loaded" rows, a warning, and three

@@ -84,9 +84,10 @@ import {
   PRISM_SCHOLAR_ENABLED,
   PRISM_HDC_ENABLED,
   PRISM_TASK_ROUTER_ENABLED_ENV,
-  PRISM_DARK_FACTORY_ENABLED,
   YDC_API_KEY,
 } from "./config.js";
+import { initializeDarkFactoryEnabled, isDarkFactoryEnabled } from "./darkfactory/enablement.js";
+import { initializeActrEnabled } from "./utils/actrEnablement.js";
 import { startWatchdog, drainAlerts } from "./hivemindWatchdog.js";
 import { startScheduler, startScholarScheduler } from "./backgroundScheduler.js";
 import { startDarkFactoryRunner } from "./darkfactory/runner.js";
@@ -614,6 +615,14 @@ export async function initializeRuntime() {
     await runStaleDistGuard();
     acquireLock();
     await initConfigStorage();
+    initializeDarkFactoryEnabled();
+    initializeActrEnabled();
+    // Hydrate before storage pre-warm so both stdio and HTTP startup use
+    // the subscription key from settings when the host environment lacks it.
+    const portalSearchReady = await hydrateSynaluxCredentials(getSetting);
+    if (!portalSearchReady) {
+      debugLog("[Prism] no Synalux subscription key in the environment or the settings store — search falls back to BRAVE_API_KEY");
+    }
     initTelemetry();
     ensureStoragePrewarm();
     scheduleDashboardStartup();
@@ -673,7 +682,7 @@ function scheduleBackgroundServices() {
     });
   }
 
-  if (PRISM_DARK_FACTORY_ENABLED) {
+  if (isDarkFactoryEnabled()) {
     storageReady?.then(() => {
       startDarkFactoryRunner();
     }).catch(err => {
@@ -814,7 +823,7 @@ export function getAvailableTools(): Tool[] {
     ...SESSION_MEMORY_TOOLS,
     ...(PRISM_ENABLE_HIVEMIND ? AGENT_REGISTRY_TOOLS : []),
     ...(getSettingSync("task_router_enabled", String(PRISM_TASK_ROUTER_ENABLED_ENV)) === "true" ? [SESSION_TASK_ROUTE_TOOL] : []),
-    ...(PRISM_DARK_FACTORY_ENABLED ? [SESSION_START_PIPELINE_TOOL, SESSION_CHECK_PIPELINE_STATUS_TOOL, SESSION_ABORT_PIPELINE_TOOL] : []),
+    ...(isDarkFactoryEnabled() ? [SESSION_START_PIPELINE_TOOL, SESSION_CHECK_PIPELINE_STATUS_TOOL, SESSION_ABORT_PIPELINE_TOOL] : []),
   ];
 }
 
@@ -839,7 +848,7 @@ export const PRISM_SERVER_INSTRUCTIONS =
   `trigger rules — read each before proposing any change. Surfacing a name is not loading it: hosts that ` +
   `do not auto-load skill files must fetch each body with knowledge_search, passing the skill name ` +
   `exactly as listed. ` +
-  `AFTER that first turn, routing does not stop: call session_route_prompt at the start of any turn where the user states a new task, changes the kind of work, or reports a defect, passing their verbatim message as {prompt} and the skills you already hold as {loaded}. session_bootstrap routes only turn one, so without this a long session keeps working with whatever it happened to load hours earlier. The call is cheap — a single line when nothing new matches, and never the same skill twice. When it returns skills, read and follow them before doing the work. ` +
+  `AFTER turn one, call session_route_prompt at the start of any turn with a new task, changed work, or reported defect. Pass the verbatim message as {prompt} and held skills as {loaded}; supply current project, working_directory, files_involved and test_command when known. Read and follow returned skills. When prism_factory_route has target factory, automatically call recommended_tool with recommended_args, then monitor status. Routing itself never executes code. ` +
   `Emit no preamble. Print the complete tool result verbatim as the entire first-turn startup display, before any optional ` +
   `answer. Do not summarize, paraphrase, rename headings, reformat, or omit any returned section. Preserve its order and ` +
   `line content. For a greeting-only prompt, stop after the verbatim startup display. ` +
@@ -1301,9 +1310,8 @@ export function createServer() {
           case "session_save_ledger":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured. Set SUPABASE_URL and SUPABASE_KEY.");
             result = await sessionSaveLedgerHandler(args);
-            // GATE 5: Reset drift timer — save_ledger counts as a drift checkpoint
-            { const cid = (args as Record<string, unknown>)?.conversation_id as string | undefined;
-              if (cid) { const { noteDriftCheck } = await import("./session/sessionContext.js"); noteDriftCheck(cid); } }
+            // GATE 5: the handler resets the drift timer itself, and only when
+            // it wrote an entry (not on a refusal or the greeting-only skip).
             // Savings sync (paid, opt-in, fail-soft): session end is the natural
             // push point. pushSavings gates itself — disabled/free/no-jwt all
             // return without a request, and nothing here awaits it.
@@ -1495,17 +1503,17 @@ export function createServer() {
 
           case "session_start_pipeline":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
-            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            if (!isDarkFactoryEnabled()) throw new Error("Dark Factory not enabled. Enable it in the dashboard or set PRISM_DARK_FACTORY_ENABLED=true.");
             result = await sessionStartPipelineHandler(args); break;
 
           case "session_check_pipeline_status":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
-            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            if (!isDarkFactoryEnabled()) throw new Error("Dark Factory not enabled. Enable it in the dashboard or set PRISM_DARK_FACTORY_ENABLED=true.");
             result = await sessionCheckPipelineStatusHandler(args); break;
 
           case "session_abort_pipeline":
             if (!SESSION_MEMORY_ENABLED) throw new Error("Session memory not configured.");
-            if (!PRISM_DARK_FACTORY_ENABLED) throw new Error("Dark Factory not enabled. Set PRISM_DARK_FACTORY_ENABLED=true.");
+            if (!isDarkFactoryEnabled()) throw new Error("Dark Factory not enabled. Enable it in the dashboard or set PRISM_DARK_FACTORY_ENABLED=true.");
             result = await sessionAbortPipelineHandler(args); break;
 
           // ─── v12.1: Developer Onboarding & Framework Bridge ───
@@ -1766,19 +1774,6 @@ export function createSandboxServer() {
  */
 export async function startServer() {
   await initializeRuntime();
-
-  // Put the subscription key in process.env before anything asks whether the
-  // portal is reachable. `prism connect` copies it into the host's MCP env
-  // block only if it was in the environment when connect ran; otherwise it is
-  // in the settings store, and a paid subscriber's searches were failing on a
-  // Brave key in the server's own environment, which a host launched from the
-  // graphical shell does not carry.
-  // getSetting reads the cache initConfigStorage() just warmed, so this adds
-  // no I/O to the path the Initialize handshake waits on.
-  const portalSearchReady = await hydrateSynaluxCredentials(getSetting);
-  if (!portalSearchReady) {
-    debugLog("[Prism] no Synalux subscription key in the environment or the settings store — search falls back to BRAVE_API_KEY");
-  }
 
   const server = createServer();
   const transport = new StdioServerTransport();

@@ -22,6 +22,7 @@
  */
 
 import { supabaseRpc } from "../utils/supabaseApi.js";
+import { ACTR_AUTH_SQL } from "./actrSupabaseMigration.js";
 
 // ─── Migration Definitions ───────────────────────────────────────
 // Add new migrations here. The version number must be unique and
@@ -1044,6 +1045,25 @@ export const MIGRATIONS: Migration[] = [
     `
   },
 
+  {
+    version: 46,
+    name: "actr_authenticated_history",
+    sql: ACTR_AUTH_SQL,
+  },
+  {
+    // Both branches used version 40 for different migrations. Reapply the
+    // idempotent pipeline columns for installs that recorded ACT-R as v40.
+    version: 47,
+    name: "pipeline_orchestration_overrides_reconcile",
+    sql: `
+      ALTER TABLE public.verification_runs
+        ADD COLUMN IF NOT EXISTS gate_override INTEGER DEFAULT 0;
+      ALTER TABLE public.verification_runs
+        ADD COLUMN IF NOT EXISTS override_reason TEXT;
+
+      NOTIFY pgrst, 'reload schema';
+    `,
+  },
 ];
 /**
  * Current schema version — derived from the MIGRATIONS array.

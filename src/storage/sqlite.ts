@@ -2251,6 +2251,7 @@ export class SqliteStorage implements StorageBackend {
         FROM session_ledger r
         LEFT JOIN session_ledger a
           ON a.archived_at IS NOT NULL
+          AND a.deleted_at IS NULL
           AND a.project = r.project
           AND a.user_id = r.user_id
         WHERE r.user_id = ?
@@ -2603,7 +2604,7 @@ export class SqliteStorage implements StorageBackend {
               COUNT(*) AS total_entries,
               SUM(CASE WHEN is_rollup = 1 THEN 1 ELSE 0 END) AS total_rollups,
               -- rollup_count tracks how many raw entries each rollup replaced,
-              -- so we can show "X entries saved by compaction" in the dashboard.
+              -- so the dashboard reports how many originals were consolidated.
               SUM(CASE WHEN is_rollup = 1 THEN COALESCE(rollup_count, 0) ELSE 0 END) AS rollup_savings,
               COALESCE(AVG(LENGTH(summary)), 0) AS avg_summary_length
             FROM session_ledger
@@ -2643,7 +2644,7 @@ export class SqliteStorage implements StorageBackend {
     const sessionsByDay: Array<{ date: string; count: number }> = [];
     for (let i = 13; i >= 0; i--) {
       const date = new Date();
-      date.setDate(date.getDate() - i);
+      date.setUTCDate(date.getUTCDate() - i);
       const dateStr = date.toISOString().slice(0, 10);
       sessionsByDay.push({ date: dateStr, count: sparkMap.get(dateStr) || 0 });
     }
@@ -2716,7 +2717,8 @@ export class SqliteStorage implements StorageBackend {
               AND importance > 0
               AND event_type != 'session'
               AND created_at < datetime('now', '-30 days')
-              AND deleted_at IS NULL`,
+              AND deleted_at IS NULL
+              AND archived_at IS NULL`,
       args: [project, userId],
     });
     const decayed = decayResult.rowsAffected || 0;
@@ -2740,12 +2742,15 @@ export class SqliteStorage implements StorageBackend {
     delta: number,
     userId: string
   ): Promise<void> {
-    await this.db.execute({
+    const result = await this.db.execute({
       sql: `UPDATE session_ledger
             SET importance = MAX(0, importance + ?)
-            WHERE id = ? AND user_id = ?`,
+            WHERE id = ? AND user_id = ?
+              AND deleted_at IS NULL
+              AND archived_at IS NULL`,
       args: [delta, id, userId],
     });
+    if (result.rowsAffected !== 1) throw new Error('Memory entry not found');
     debugLog(`[SqliteStorage] Adjusted importance for ${id} by ${delta > 0 ? "+" : ""}${delta}`);
   }
 
@@ -2807,7 +2812,8 @@ export class SqliteStorage implements StorageBackend {
               AND event_type != 'session'
               AND created_at < datetime('now', '-' || ? || ' days')
               AND (last_accessed_at IS NULL OR last_accessed_at < datetime('now', '-' || ? || ' days'))
-              AND deleted_at IS NULL`,
+              AND deleted_at IS NULL
+              AND archived_at IS NULL`,
       args: [project, userId, decayDays, decayDays],
     });
     const decayed = result.rowsAffected || 0;
@@ -3691,11 +3697,11 @@ export class SqliteStorage implements StorageBackend {
   // ─── Dark Factory (v7.3) ───────────────────────────────────
 
   async savePipeline(state: PipelineState): Promise<void> {
-    const now = new Date().toISOString();
-    const updatedState = { ...state, updated_at: now };
-
     // Status Guard: prevent overwriting a terminated pipeline
     const existing = await this.getPipeline(state.id, state.user_id);
+    const clock = Date.now();
+    const prior = existing ? Date.parse(existing.updated_at) : 0;
+    const updatedState = { ...state, updated_at: new Date(Math.max(clock, prior + 1)).toISOString() };
     if (existing) {
       if (existing.status === 'ABORTED' || existing.status === 'COMPLETED') {
         throw new Error(`Cannot update pipeline ${state.id} because it is already ${existing.status}.`);
@@ -3710,7 +3716,7 @@ export class SqliteStorage implements StorageBackend {
       }
     }
 
-    await this.db.execute({
+    const result = await this.db.execute({
       sql: `
         INSERT INTO dark_factory_pipelines (id, project, user_id, status, current_step, iteration, eval_revisions, started_at, updated_at, spec, error, last_heartbeat, contract_payload, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3725,6 +3731,9 @@ export class SqliteStorage implements StorageBackend {
           last_heartbeat = excluded.last_heartbeat,
           contract_payload = excluded.contract_payload,
           notes = excluded.notes
+        WHERE dark_factory_pipelines.user_id = excluded.user_id
+          AND dark_factory_pipelines.updated_at = ?
+          AND dark_factory_pipelines.status NOT IN ('ABORTED', 'COMPLETED')
       `,
       args: [
         updatedState.id,
@@ -3740,9 +3749,14 @@ export class SqliteStorage implements StorageBackend {
         updatedState.error || null,
         updatedState.last_heartbeat || null,
         updatedState.contract_payload ? JSON.stringify(updatedState.contract_payload) : null,
-        updatedState.notes || null
+        updatedState.notes || null,
+        existing ? state.updated_at : null
       ]
     });
+    if (result.rowsAffected !== 1) {
+      throw new Error(`Pipeline ${state.id} changed concurrently or is no longer writable.`);
+    }
+    state.updated_at = updatedState.updated_at;
   }
 
   async getPipeline(id: string, userId: string): Promise<PipelineState | null> {

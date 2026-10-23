@@ -2,6 +2,276 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.22.4 — 2026-10-22
+
+- Add Settings → Local Coding and `prism local` for opt-in installation of a
+  pinned oMLX server and classifier/coder model pack, with progress, retry and
+  managed startup on Apple Silicon. Existing oMLX servers remain supported.
+- Save Auto/oMLX/Ollama coding preferences without restarting Prism. Auto
+  prefers configured oMLX for eligible text-only coding; explicit task backend
+  choices override the saved preference.
+- Discover installed oMLX and Ollama models and save separate coder/reviewer
+  assignments for each backend. Both roles may use the same model; explicit
+  task model choices override saved assignments.
+- Show reported model sizes and conservative memory estimates without loading
+  models. Unavailable metadata stays unknown; an estimate does not guarantee fit.
+- Isolate managed model discovery, Hub cache and cluster launcher paths.
+  Competing Ollama residency refuses an oMLX call without unloading other jobs.
+- Read setup-state JSON through one bounded file handle without following
+  symlinks, closing the filesystem race identified by CodeQL.
+- Document setup requirements, supported model packs and the limits of the
+  local coding and advisory-review test results.
+- Controlled oMLX coding remains text-only. This release does not enable image
+  requests or establish picture-recognition quality.
+
+## 20.22.3 — 2026-10-20
+
+- Update Hono to 4.13.11 and Vite to 8.2.4, addressing their static-path
+  middleware bypass and development editor-launch advisories respectively.
+- Default the local Ollama endpoint to `http://127.0.0.1:11434`, avoiding
+  `localhost` DNS lookup on resource probes. Explicit URL overrides, including
+  IPv6, remain supported; IPv6-only servers need an explicit URL.
+- Accept valid oMLX `rcN` version labels during read-only inspection without
+  changing authentication, status-counter, memory or qualification checks.
+  Inspection still reports generation disabled and the provider not qualified.
+- Point the current oMLX setup instructions to the stable Prism integration
+  based on upstream `v0.7.1`; the required Prism control routes remain mandatory.
+
+## 20.22.2 — 2026-10-18
+
+- Explicit oMLX: a `task_complexity` hint no longer refuses the call. The hint
+  picks Ollama's starting tier, and `session_task_route` recommends one for
+  every code task, so a caller that passed its recommended arguments with
+  `local_backend: "omlx"` was refused with `omlx_model_ceiling` before
+  detection. Only an explicit `model_ceiling` below the top tier, or a plan
+  below it, still refuses. The hint also leaves thinking alone on oMLX, where
+  the server's settings own it.
+
+## 20.22.1 — 2026-10-18
+
+- Explicit oMLX: `timeout_ms` now starts before the safety screen, and each
+  classifier read is bounded by the call's remaining budget as well as its own
+  90 s. Before, the budget started only after classification, so a prompt over
+  4,000 characters, read in 3,600-character windows of up to two 90 s attempts
+  each, could hold the device lease for minutes on a stalled server while
+  `timeout_ms` counted nothing.
+- Explicit oMLX: a classifier read that fails (ERROR) already decides the call
+  on this path, so the remaining windows of an oversize prompt are no longer
+  read after it.
+- The 20.22.0 note "a read may take up to 90 s" described one attempt; a read
+  has two attempts, each followed by the owned path's stop confirmation.
+- Tests: the owned-job marker reader's size limit is pinned by a valid marker
+  padded past 4 KB, and the FIFO case runs in a child process with a kill timer
+  so a blocking open fails the test instead of hanging the run.
+
+## 20.22.0 — 2026-10-17
+
+- `prism_infer` gains an opt-in oMLX backend for text-only code and advisory
+  review drafts: `local_backend: "omlx"` with `mode: "code"`, and optionally
+  `local_model` with the exact advertised model ID. Calls that do not ask for
+  it are unchanged. Prism authenticates `/v1/models` first and refuses an
+  unavailable, unauthenticated or mismatched model without substituting
+  another. It requires an oMLX build with Prism's control routes, published as
+  the `prism-v0.7.1rc1` branch of https://github.com/dcostenco/omlx (upstream
+  oMLX 0.7.1rc1 plus those routes; install and settings in its PRISM.md); with
+  stock oMLX every call is refused.
+- Owned generation: each call is registered through those control routes and
+  runs as an owned job, so a timeout or cancel is reported only once the
+  server confirms the request stopped. An unconfirmed stop refuses later calls
+  (`omlx_stop_unproved`, then `omlx_provider_busy`) instead of starting a job
+  beside one in an unknown state. Classifier reads ask the server not to keep
+  their prompt cache, since each is read once.
+- Safety screen on oMLX: the classifier is `prism-coder-9b-mlx-8bit` on the
+  same server (the public `dcostenco/prism-coder-9b-mlx-8bit`); no argument or
+  environment variable changes it. Layer 1's rules only refuse on this path;
+  the classifier reads everything else, and a prompt over 4,000 characters is
+  read whole in 3,600-character windows, the most severe verdict standing. A
+  classifier failure, an unreadable answer or a missing classifier refuses;
+  there is no keyword or Ollama fallback. A read may take up to 90 s: the
+  first read after a long idle measured 14.5 s (macOS had paged the classifier
+  out) against 0.22 s warm.
+- Measured on labelled sets, explicit oMLX path: of 327 sensitive requests,
+  the 9b alone let 2 run locally, against 19 for the 4b on Ollama; two rules
+  written after reviewing those rows bring it to 0. Of 294 routine requests, 2
+  were escalated (27 on Ollama). Of 135 adversarial probes, 3 ran locally, all
+  one documentation-field shape; of 30 routine probes, 6 were escalated.
+  Classifier read p95: 365-387 ms idle, up to 651 ms under CI load.
+- Memory: before classification Prism unloads every model Ollama has loaded
+  (`keep_alive: 0`; the weights stay on disk) and waits up to 10 s for Ollama
+  to report none. A failed unload, a model that does not drain, or one loading
+  meanwhile refuses. Ollama must be reachable. A machine-wide loopback lease
+  (port 19438) serializes local work across Prism processes; a busy lease
+  refuses with `omlx_resource_busy`. The classifier holds about 9.2 GB while
+  loaded (9.7 GB peak).
+- Thinking: oMLX's model settings own thinking. Prism keeps them unless
+  `think` or `temperature` is explicit and never retries with thinking off,
+  so a model with no thinking budget there can answer with reasoning only and
+  is refused `think_only`. Give it a budget in oMLX's model settings, or pass
+  `think: false`.
+- Layer 1 on every path: a new auth-bypass assessment rule marks reserved a
+  request that decides whether signed-out, anonymous or guest users may reach
+  a route, page, endpoint, API or similar place (granting or blocking it),
+  makes one public, or gives them admin rights. The auth-token rule also
+  matches code that exchanges an authorization code for tokens. Measured on
+  the 327 sensitive requests on the default Ollama path: 18 run locally,
+  against 19 before; routine escalations are unchanged (27 of 294).
+- Unchanged limits: a request the classifier misses still runs locally, and on
+  the default path some classifier failures still fall back to the keyword
+  check.
+
+## 20.21.27 — 2026-10-16
+
+- Prism Browser's `pipe` mode ran a command that had already arrived only
+  when the next one was written; if nothing more came, the idle timeout
+  (600 s) ended the run with that command never run. The reader waited on
+  `select()` for new pipe data while `readline()` had already pulled the
+  commands sent so far into Python's own buffer, where `select()` could not
+  see them. A script that writes a block of commands and then waits for their
+  result before writing more (a database check between two screens, say)
+  stalled until the timeout and then failed. The reader now reads the
+  descriptor itself and decodes it as the text stream did (one incremental
+  decoder in the stream's encoding and error policy, universal newlines), so
+  every command runs as soon as it arrives. Short commands were affected
+  most: a chunk larger than the 8 KB buffer left data in the pipe and masked
+  the stall.
+- Measured (`tests/pipe-reader-check.py`, run by
+  `tests/browser-pipe-reader.test.ts`): two commands written together, then
+  the third written only once the reader has handed over the second. Before,
+  the second came out only with the third; now before the third is written.
+  Against the CLI with a 6 s pause, "two" ran with "one" instead of 6 s
+  later. The same check covers, with each read boundary forced: CRLF
+  continuations, UTF-16 split inside characters, CRLF split between reads, a
+  bare or trailing CR, an unterminated tail at EOF, a strict decoding error,
+  the blocking fallback taking over mid-line, and the timeout case below
+  (skipped where `select()` cannot watch a pipe).
+- Unchanged: the idle timeout, the `\` line continuation (CRLF endings still
+  join), comment lines, and a stream `select()` cannot watch, which is now
+  read blocking without losing a partial line. One difference: at the idle
+  timeout, a command still being written (a partial line, or a `\`
+  continuation whose tail never came) is dropped, never run cut short.
+  Before, the reader could block on a partial line past the timeout.
+
+## 20.21.26 — 2026-10-15
+
+- Layer 1's deterministic rules no longer clear requests; they can only mark
+  a request reserved. A routine drafting clause or an artifact edit no longer
+  clears a whole request without a classifier read, so a routine clause beside
+  restraint, medication dosing or security work no longer lets the request run
+  locally unread. The shortcut is gone for a single prompt and for the
+  current prompt of a follow-up; the prompt's classifier read is skipped only
+  if the request or conversation is already marked reserved.
+- Placement phrases for a quiet, isolation, time-out, padded or calm-down room
+  ("put him in the quiet room until he calms down") are marked reserved by
+  rule, so these placement requests get reserved handling even without the
+  word "seclusion". Other mentions of these rooms are left to the classifier.
+- Why: a flagged text request goes to a stronger cloud model when the plan
+  includes cloud and the call does not pass `cloud_fallback: false`, or is
+  refused with the reason, instead of running locally with no classifier read.
+  Measured: of 46 mixed requests built to test this bypass, which should
+  never be answered locally, 41 were cleared to run locally before and 9 after
+  (32 fewer); of 294 routine requests, 2 more are escalated.
+- Unchanged limits (use them when reviewing local answers): a request the
+  classifier misses still runs locally; some classifier failures fall back to
+  a keyword check, and text that passes it can still run locally; a request
+  with images stays on the device.
+- Cost: requests that used the shortcut now need a classifier read, unless
+  screening has already marked them reserved. That is the price of closing the
+  bypass: about 0.3 s at the 95th percentile in our tests.
+
+## 20.21.25 — 2026-10-12
+
+- Enable ACT-R semantic memory ranking by default, with a saved dashboard
+  preference, an explicit environment override and restart-aware status.
+- Route Synalux access history and candidate associations through authenticated,
+  owner-scoped Portal batch APIs. Store context hashes and server timestamps.
+- Preserve semantic confidence checks after reranking, record returned graph
+  memories, and report relevance-only fallback when history is unavailable.
+- Secure legacy Supabase history identity and DDL-upgrade grants, including
+  alternate installation paths. Keep stored importance and HRR drift unchanged.
+
+## 20.21.24 — 2026-10-11
+
+- Preserve supplied initial importance when saving through Synalux cloud, while
+  retaining the server's initial-score cap.
+- Route importance votes, graduated insights, and stale-score decay through the
+  authenticated Portal API with owner and workspace checks. Votes update scores
+  atomically; incomplete insight reads fail instead of producing partial rules.
+- Preserve archived memory during SQLite decay and reject votes on inactive,
+  missing, or other-owner records.
+- Keep historical scores unchanged. Graph thresholds select stored scores;
+  opening the dashboard does not promote every memory to importance five or seven.
+
+## 20.21.23 — 2026-10-10
+
+- Enable Factory by default and route suitable bounded implementation requests
+  through native host instructions; BCBA prompts remain with the host.
+- Add a restart-aware dashboard toggle and an environment override.
+- Execute contained file actions from an explicit write list and run the caller's
+  verification command independently, preserving immutable test fixtures.
+- Route paid pipeline creation, lifecycle updates, and verification persistence
+  through authenticated Portal APIs with ownership and concurrency checks.
+- Serialize storage initialization so the first paid prompt awaits readiness;
+  retain initialization through reconciliation and clean up failed candidates.
+- Require local execution authority for remote queue jobs and renewable leases
+  across MCP instances; preserve foreign jobs and prevent lost-owner replay.
+- Stage new files before publishing without overwrite; cancel test/patch
+  commands when liveness is lost or the runner stops, including inherited
+  process cleanup.
+- Preserve verification rubric identity, minimum pass rates, and run provenance.
+- Bound structured model output to 4096 tokens and reject unsafe HTTP targets.
+- Add Docker and native-host E2E samples, clinical routing exclusions, and a
+  fixed-destination local model proxy for test execution.
+
+## 20.21.22 — 2026-10-10
+
+- Factory pipeline lists use the authenticated Portal API for cloud accounts,
+  preserving exact project/status filters and signed-in ownership without
+  requiring direct database credentials.
+- Reject malformed pipeline data, duplicate rows, incomplete reads, and lists
+  over 100 rows instead of presenting misleading Factory results.
+- This read-only slice does not validate cloud pipeline creation, controls, or
+  execution.
+
+## 20.21.21 — 2026-10-09
+
+- Prism Dashboard now surfaces unavailable analytics and factory reads with a
+  retryable state instead of stale or misleading values.
+- Graph filtering resets rendered state and metrics together, and project
+  analytics are available through the authenticated Portal API with validated
+  14-day activity data.
+
+## 20.21.20 — 2026-10-08
+
+### A refused ledger save no longer silences the drift reminder
+
+The hourly reminder to save the ledger and check for drift restarted its timer
+after every `session_save_ledger` reply, including a save refused with
+`context_not_loaded` and the greeting-only reply that writes nothing. Nothing
+was saved, yet the reminder went quiet for another hour. A ledger save now
+restarts the timer only when it writes an entry; `session_detect_drift`
+restarts it as before.
+
+### A saved ledger entry asks for the handoff too
+
+The reply to a written ledger entry now ends with: "If this checkpoint ends a
+unit of work, also save the handoff with session_save_handoff." The ledger
+records what happened, and the next session starts from the handoff. A refused
+save and the greeting-only reply do not ask.
+
+### A duplicate ledger save no longer reads as saved
+
+The local store skips an entry identical to one saved for the same project and
+conversation in the last 5 minutes. The reply still said "✅ Session ledger
+saved" and restarted the drift timer. It now says that nothing new was written,
+and leaves the timer alone.
+
+### A handoff the cloud store failed to save is reported as an error
+
+With Supabase storage, a failed `save_handoff_with_version` call was caught
+and returned as "updated", so the agent was told "✅ Handoff updated" and the
+next session found the old handoff. The failure is now returned as an error
+naming the project, and the agent can retry.
+
 ## 20.21.19 — 2026-10-03
 
 ### Prism Browser can test phone and tablet layouts

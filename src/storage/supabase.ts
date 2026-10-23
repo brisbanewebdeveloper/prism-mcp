@@ -50,6 +50,8 @@ import {
   hasEmbeddableLedgerContent,
   isEmbeddingRetryEligible,
 } from "../utils/ledgerEmbedding.js";
+import { ProjectAnalyticsSchema } from './portalContracts.js';
+import { DASHBOARD_READ_MESSAGES } from "../dashboard/readMessages.js";
 import { PRISM_USER_ID } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 import { runAutoMigrations } from "./supabaseMigrations.js";
@@ -221,11 +223,11 @@ export class SupabaseStorage implements StorageBackend {
         version: data?.version,
       };
     } catch (e) {
-      debugLog("[SupabaseStorage] saveHandoff RPC failed: " + (e instanceof Error ? e.message : String(e)));
-      return {
-        status: "updated",
-        version: handoff.version ?? 1,
-      };
+      // The write failed. Reporting "updated" here told the agent its handoff
+      // was saved when nothing was; the caller turns this into an error reply.
+      const message = e instanceof Error ? e.message : String(e);
+      debugLog("[SupabaseStorage] saveHandoff RPC failed: " + message);
+      throw new Error(`Handoff for project "${handoff.project}" was not saved: ${message}`);
     }
   }
 
@@ -663,6 +665,7 @@ export class SupabaseStorage implements StorageBackend {
       select: "project",
       user_id: `eq.${userId}`,
       "archived_at": "not.is.null",
+      deleted_at: "is.null",
     });
     const archivedProjects = new Set(
       (Array.isArray(archivedData) ? archivedData : [])
@@ -857,31 +860,32 @@ export class SupabaseStorage implements StorageBackend {
   // ─── v3.1: Memory Analytics ──────────────────────────────────
 
   async getAnalytics(project: string, userId: string): Promise<AnalyticsData> {
-    // Attempt to call a Supabase RPC. Falls back to zeroed struct if the RPC
-    // doesn't exist yet (avoids breaking users who haven't run the migration).
-    try {
-      const result = await supabaseRpc("get_project_analytics", {
-        p_project: project,
-        p_user_id: userId,
-      });
-      const data = Array.isArray(result) ? result[0] : result;
-      if (data) {
-        return {
-          totalEntries: data.total_entries || 0,
-          totalRollups: data.total_rollups || 0,
-          rollupSavings: data.rollup_savings || 0,
-          avgSummaryLength: data.avg_summary_length || 0,
-          sessionsByDay: data.sessions_by_day || [],
-        };
-      }
-    } catch {
-      debugLog("[SupabaseStorage] getAnalytics RPC unavailable — returning zeroed struct");
+    // An unavailable read must not look like a genuinely empty project.
+    const result = await supabaseRpc("get_project_analytics", {
+      p_project: project,
+      p_user_id: userId,
+    });
+    const data = Array.isArray(result) ? result[0] : result;
+    if (!data) {
+      throw new Error(DASHBOARD_READ_MESSAGES.analyticsUnavailable);
     }
-    // Graceful degradation: return zeroed struct so dashboard doesn't crash
-    return {
-      totalEntries: 0, totalRollups: 0, rollupSavings: 0,
-      avgSummaryLength: 0, sessionsByDay: [],
+    const analytics = {
+      totalEntries: data.total_entries, totalRollups: data.total_rollups,
+      rollupSavings: data.rollup_savings, avgSummaryLength: data.avg_summary_length,
+      sessionsByDay: data.sessions_by_day,
     };
+    if (analytics.totalEntries === 0 && analytics.totalRollups === 0 && analytics.rollupSavings === 0
+      && analytics.avgSummaryLength === 0 && Array.isArray(analytics.sessionsByDay) && analytics.sessionsByDay.length === 0) {
+      const now = new Date();
+      analytics.sessionsByDay = Array.from({ length: 14 }, (_, index) => {
+        const date = new Date(now);
+        date.setUTCDate(now.getUTCDate() - (13 - index));
+        return { date: date.toISOString().slice(0, 10), count: 0 };
+      });
+    }
+    const parsed = ProjectAnalyticsSchema.safeParse(analytics);
+    if (!parsed.success) throw new Error(DASHBOARD_READ_MESSAGES.analyticsUnavailable);
+    return parsed.data;
   }
 
   // ─── v3.1: TTL / Automated Data Retention ────────────────────
@@ -1582,7 +1586,7 @@ export class SupabaseStorage implements StorageBackend {
       return result;
     } catch (e: any) {
       debugLog(`[SupabaseStorage] getAccessLog fallback/no-op: ${e.message}`);
-      return result;
+      throw e;
     }
   }
 
@@ -1617,11 +1621,11 @@ export class SupabaseStorage implements StorageBackend {
   // ─── Dark Factory (v7.3) ───────────────────────────────────
 
   async savePipeline(state: PipelineState): Promise<void> {
-    const now = new Date().toISOString();
-    const updatedState = { ...state, updated_at: now };
-
     // Status Guard: prevent overwriting a terminated pipeline
     const existing = await this.getPipeline(state.id, state.user_id);
+    const clock = Date.now();
+    const prior = existing ? Date.parse(existing.updated_at) : 0;
+    const updatedState = { ...state, updated_at: new Date(Math.max(clock, prior + 1)).toISOString() };
     if (existing) {
       if (existing.status === 'ABORTED' || existing.status === 'COMPLETED') {
         throw new Error(`Cannot update pipeline ${state.id} because it is already ${existing.status}.`);
@@ -1637,7 +1641,30 @@ export class SupabaseStorage implements StorageBackend {
     }
 
     try {
-      await supabasePost(
+      if (existing) {
+        const result = await supabasePatch(
+          "dark_factory_pipelines",
+          {
+            user_id: updatedState.user_id,
+            status: updatedState.status,
+            current_step: updatedState.current_step,
+            iteration: updatedState.iteration,
+            updated_at: updatedState.updated_at,
+            spec: updatedState.spec,
+            error: updatedState.error || null,
+            last_heartbeat: updatedState.last_heartbeat || null,
+            eval_revisions: updatedState.eval_revisions ?? 0,
+            contract_payload: updatedState.contract_payload ? JSON.stringify(updatedState.contract_payload) : null,
+            notes: updatedState.notes || null,
+          },
+          { id: `eq.${state.id}`, user_id: `eq.${state.user_id}`, updated_at: `eq.${state.updated_at}`, status: `eq.${existing.status}` },
+          { Prefer: "return=representation" }
+        );
+        if (!Array.isArray(result) || result.length !== 1) throw new Error(`Pipeline ${state.id} changed concurrently or is no longer writable.`);
+        state.updated_at = updatedState.updated_at;
+        return;
+      }
+      const inserted = await supabasePost(
         "dark_factory_pipelines",
         {
           id: updatedState.id,
@@ -1659,13 +1686,14 @@ export class SupabaseStorage implements StorageBackend {
           notes: updatedState.notes || null,
         },
         { on_conflict: "id" },
-        { Prefer: "return=minimal,resolution=merge-duplicates" }
+        { Prefer: "return=representation" }
       );
+      if (!Array.isArray(inserted) || inserted.length !== 1) throw new Error(`Pipeline ${state.id} was not created.`);
     } catch (e: any) {
       // PGRST202 fallback if the table doesn't exist yet
       if (e.message?.includes("PGRST202") || e.message?.includes("Could not find the relation")) {
         debugLog("[SupabaseStorage] dark_factory_pipelines missing — please run migration 038");
-        return;
+        throw new Error(`Pipeline ${state.id} was not saved because dark_factory_pipelines is unavailable.`);
       }
       throw e;
     }
