@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Usage: merge.sh [source-branch] [target-branch] | merge.sh --resolve
-# Defaults: the other branch -> custom when exactly two local branches include
-# custom; otherwise, main -> custom. Explicit arguments override these defaults.
+# Defaults: the other local branch -> current branch when exactly two exist.
+# Otherwise, provide a source; detached HEAD requires both source and target.
 if (( $# > 2 )) || { [[ ${1:-} == --resolve ]] && (( $# != 1 )); }; then
     printf '%s\n' 'Usage: merge.sh [source-branch] [target-branch] | merge.sh --resolve' >&2
     exit 2
@@ -32,17 +32,30 @@ else
         exit 1
     fi
 
-    source_branch=${1:-main}
-    target_branch=${2:-custom}
-    if [[ -z ${1:-} ]]; then
+    current_branch=
+    if [[ -z ${1:-} || -z ${2:-} ]]; then
+        current_branch=$(git symbolic-ref --quiet --short HEAD) || {
+            printf '%s\n' 'Detached HEAD: provide explicit source and target branches.' >&2
+            exit 1
+        }
+    fi
+
+    source_branch=${1:-}
+    target_branch=${2:-$current_branch}
+    if [[ -z "$source_branch" ]]; then
         branch_list=$(git for-each-ref --format='%(refname:short)' refs/heads/) || exit $?
         mapfile -t local_branches <<< "$branch_list"
-        if (( ${#local_branches[@]} == 2 )); then
-            if [[ ${local_branches[0]} == custom ]]; then
-                source_branch=${local_branches[1]}
-            elif [[ ${local_branches[1]} == custom ]]; then
-                source_branch=${local_branches[0]}
-            fi
+        if (( ${#local_branches[@]} != 2 )); then
+            printf '%s\n' 'Cannot infer source: provide an explicit source branch unless exactly two local branches exist.' >&2
+            exit 1
+        fi
+        if [[ ${local_branches[0]} == "$target_branch" ]]; then
+            source_branch=${local_branches[1]}
+        elif [[ ${local_branches[1]} == "$target_branch" ]]; then
+            source_branch=${local_branches[0]}
+        else
+            printf 'Local branch not found: %s\n' "$target_branch" >&2
+            exit 1
         fi
     fi
 
