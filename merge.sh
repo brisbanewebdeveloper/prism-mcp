@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Usage: merge.sh [source-branch] [target-branch] | merge.sh --resolve
-# Defaults: main -> custom, regardless of the current branch or branch count.
+# Defaults: the other branch -> custom when exactly two local branches include
+# custom; otherwise, main -> custom. Explicit arguments override these defaults.
 if (( $# > 2 )) || { [[ ${1:-} == --resolve ]] && (( $# != 1 )); }; then
     printf '%s\n' 'Usage: merge.sh [source-branch] [target-branch] | merge.sh --resolve' >&2
     exit 2
@@ -33,6 +34,17 @@ else
 
     source_branch=${1:-main}
     target_branch=${2:-custom}
+    if [[ -z ${1:-} ]]; then
+        branch_list=$(git for-each-ref --format='%(refname:short)' refs/heads/) || exit $?
+        mapfile -t local_branches <<< "$branch_list"
+        if (( ${#local_branches[@]} == 2 )); then
+            if [[ ${local_branches[0]} == custom ]]; then
+                source_branch=${local_branches[1]}
+            elif [[ ${local_branches[1]} == custom ]]; then
+                source_branch=${local_branches[0]}
+            fi
+        fi
+    fi
 
     if [[ "$source_branch" == "$target_branch" ]]; then
         printf '%s\n' 'Source and target branches must be different.' >&2
