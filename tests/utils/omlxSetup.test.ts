@@ -1,10 +1,69 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile, lstat, unlink, chmod, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { OmlxSetupManager, OMLX_SETUP_COMMIT, OMLX_SETUP_MODELS, runSetupCommand } from "../../src/utils/omlxSetup.js";
+
+const PREVIOUS_MANAGED_COMMIT = "883fd6d00464d0193146a1cba20a64fb7cd8e116";
+const EXISTING_SERVER_SETTINGS = '{"sampling":{"max_context_window":16384}}';
+// A prior configured installation has operator-edited profiles. Upgrading
+// runtime must preserve these exact bytes, while the new empty-profile tests
+// above verify that opting into the pack adds only missing entries.
+const EXISTING_MODEL_SETTINGS = JSON.stringify({ version: 1, models: Object.fromEntries(OMLX_SETUP_MODELS.map(model => [model.id, { max_context_window: 8192, thinking_budget_tokens: 512 }])) });
+const PREVIOUS_RUNTIME_CONTENT = "previous runtime preserved";
+const SOURCE_ORIGIN = "https://github.com";
+const SOURCE_PATH = /^\/dcostenco\/omlx\/(?:commit|blob)\/([a-f0-9]{40})(?:\/|$)/;
+const MISLEADING_SOURCE_URLS = [
+    `https://example.invalid/https://github.com/dcostenco/omlx/blob/${OMLX_SETUP_COMMIT}/README.md`,
+    `https://example.invalid/#https://github.com/dcostenco/omlx/blob/${OMLX_SETUP_COMMIT}/README.md`,
+    `https://example.invalid/?next=https://github.com/dcostenco/omlx/blob/${OMLX_SETUP_COMMIT}/README.md`,
+    `https://github.com.example.invalid/dcostenco/omlx/blob/${OMLX_SETUP_COMMIT}/README.md`,
+];
+function sourceRevisions(guide: string): string[] {
+    const revisions: string[] = [];
+    for (const link of guide.split("](").slice(1)) {
+        let url: URL;
+        try { url = new URL(link.split(")")[0]); } catch { continue; }
+        if (url.origin !== SOURCE_ORIGIN) continue;
+        const match = url.pathname.match(SOURCE_PATH);
+        if (match) revisions.push(match[1]);
+    }
+    return revisions;
+}
+const markerFault = vi.hoisted(() => ({ root: "", rename: false }));
+const daemonCalls = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async importOriginal => {
+    const actual = await importOriginal<typeof import("node:child_process")>();
+    return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
+        if (Array.isArray(args[1]) && args[1].includes("serve")) daemonCalls.count++;
+        return actual.spawn(...args);
+    } };
+});
+vi.mock("node:fs/promises", async importOriginal => {
+    const actual = await importOriginal<typeof import("node:fs/promises")>();
+    return { ...actual,
+        writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+            const path = String(args[0]);
+            if (markerFault.root && !markerFault.rename && (path === join(markerFault.root, "runtime.json")
+                || (path.startsWith(join(markerFault.root, "runtime-")) && path.endsWith(".tmp")))) {
+                markerFault.root = "";
+                await actual.writeFile(args[0], "{", args[2]);
+                throw Object.assign(new Error("synthetic partial marker write"), { code: "ENOSPC" });
+            }
+            return actual.writeFile(...args);
+        },
+        rename: async (...args: Parameters<typeof actual.rename>) => {
+            if (markerFault.root && markerFault.rename && String(args[1]) === join(markerFault.root, "runtime.json")) {
+                markerFault.root = "";
+                throw Object.assign(new Error("synthetic marker rename failure"), { code: "EIO" });
+            }
+            return actual.rename(...args);
+        },
+    };
+});
+afterEach(() => { markerFault.root = ""; markerFault.rename = false; daemonCalls.count = 0; });
 
 async function fixture(overrides: Record<string, unknown> = {}) {
     const home = await mkdtemp(join(tmpdir(), "prism-omlx-setup-"));
@@ -25,11 +84,154 @@ async function fixture(overrides: Record<string, unknown> = {}) {
         return "";
     });
     const manager = new OmlxSetupManager({ home, platform: "darwin", arch: "arm64", release: "24.0.0", totalmem: 48 * 1024 ** 3,
-        freeDisk: async () => 60 * 1024 ** 3, leasePort: 0, run, inspect: async () => { throw new Error("not serving"); }, ...overrides });
+        freeDisk: async () => 60 * 1024 ** 3, leasePort: 0, run, acquireDevice: async () => async () => {}, inspect: async () => { throw new Error("not serving"); }, ...overrides });
     return { home, manager, commands, run };
 }
 
+async function previousInstallationFixture() {
+    const f = await fixture();
+    const previousExecutable = join(f.manager.root, "runtime-" + PREVIOUS_MANAGED_COMMIT.slice(0, 12), "bin", "omlx");
+    await mkdir(join(previousExecutable, ".."), { recursive: true });
+    await writeFile(previousExecutable, PREVIOUS_RUNTIME_CONTENT);
+    await writeFile(join(f.manager.root, "runtime.json"), JSON.stringify({ commit: PREVIOUS_MANAGED_COMMIT }));
+    for (const model of OMLX_SETUP_MODELS) {
+        const destination = join(f.manager.basePath, "models", model.id);
+        await mkdir(destination, { recursive: true });
+        await writeFile(join(destination, "config.json"), "{}");
+        await writeFile(join(destination, "model.safetensors"), "synthetic unit-test weights");
+        await writeFile(join(f.manager.root, model.id + ".json"), JSON.stringify({ revision: model.revision }));
+    }
+    await writeFile(join(f.manager.basePath, "settings.json"), EXISTING_SERVER_SETTINGS);
+    await writeFile(join(f.manager.basePath, "model_settings.json"), EXISTING_MODEL_SETTINGS);
+    return { ...f, previousExecutable };
+}
+
+async function modelBytes(manager: OmlxSetupManager) {
+    const bytes: Record<string, Buffer> = {};
+    for (const model of OMLX_SETUP_MODELS) for (const name of ["config.json", "model.safetensors"]) {
+        bytes[model.id + "/" + name] = await readFile(join(manager.basePath, "models", model.id, name));
+    }
+    return bytes;
+}
+
 describe("opt-in managed oMLX setup", () => {
+    it("adds missing starter profiles after server-only setup while preserving operator choices", async () => {
+        const f = await fixture();
+        await f.manager.install({ models: false }); await f.manager.waitForInstall();
+        const profilePath = join(f.manager.basePath, "model_settings.json");
+        expect(JSON.parse(await readFile(profilePath, "utf8")).models).toEqual({});
+        const operatorProfile = { is_default: true, max_context_window: 8192, custom: "operator" };
+        await writeFile(profilePath, JSON.stringify({ version: 1, models: { "operator/model": operatorProfile } }));
+        await f.manager.install(); await f.manager.waitForInstall();
+        const profiles = JSON.parse(await readFile(profilePath, "utf8")).models;
+        expect(profiles['operator/model']).toEqual(operatorProfile);
+        expect(profiles[OMLX_SETUP_MODELS[0].id]).toMatchObject({ is_default: false, max_context_window: 32768 });
+        expect(profiles[OMLX_SETUP_MODELS[1].id]).toMatchObject({ is_default: false, enable_thinking: true, thinking_budget_tokens: 2048 });
+        expect((await f.manager.status()).job?.state).toBe('complete');
+    });
+    it("configures the starter writer default when the server-only profile is empty", async () => {
+        const f = await fixture();
+        await f.manager.install({ models: false }); await f.manager.waitForInstall();
+        await f.manager.install(); await f.manager.waitForInstall();
+        const profiles = JSON.parse(await readFile(join(f.manager.basePath, 'model_settings.json'), 'utf8')).models;
+        expect(profiles[OMLX_SETUP_MODELS[1].id]).toMatchObject({ is_default: true, thinking_budget_tokens: 2048 });
+    });
+    it("installs runtime and configuration without downloading models when requested", async () => {
+        const f = await fixture({ totalmem: 8 * 1024 ** 3, freeDisk: async () => 20 * 1024 ** 3 });
+        await f.manager.install({ models: false }); await f.manager.waitForInstall();
+        expect(f.commands.some(command => command.args[0] === "download")).toBe(false);
+        const settings = JSON.parse(await readFile(join(f.manager.basePath, "settings.json"), "utf8"));
+        expect(settings.server.port).toBeGreaterThan(0);
+        expect(settings.model.model_dirs).toEqual([join(f.manager.basePath, "models")]);
+    });
+
+    it("refuses restart when a connected server is not proven managed-owned", async () => {
+        const f = await fixture({ inspect: async () => ({ url: "http://127.0.0.1:8001", advertised_models: [] }) });
+        await mkdir(f.manager.basePath, { recursive: true });
+        await writeFile(join(f.manager.basePath, "settings.json"), "{}", { mode: 0o600 });
+        await expect(f.manager.restart()).rejects.toThrow("ownership is not proven");
+    });
+    it.each(MISLEADING_SOURCE_URLS)("ignores a source URL belonging to another origin: %s", url => {
+        expect(sourceRevisions(`[source](${url})`)).toEqual([]);
+    });
+    it("keeps manual source installation and image prerequisites aligned with the managed pin", async () => {
+        const guide = await readFile(new URL("../../docs/omlx.md", import.meta.url), "utf8");
+        const revisions = sourceRevisions(guide);
+        expect(revisions.length).toBeGreaterThan(0);
+        expect(revisions.every(revision => revision === OMLX_SETUP_COMMIT)).toBe(true);
+        expect(guide).toContain("git checkout " + OMLX_SETUP_COMMIT);
+        expect(guide).not.toContain(PREVIOUS_MANAGED_COMMIT.slice(0, 8));
+        const imageSetup = guide.split("The server pin provides the image-input protocol.")[1].split("Terminal equivalents")[0];
+        expect(imageSetup).toMatch(/positive[\s\S]*context window/);
+        expect(imageSetup).toMatch(/qualifies model families by architecture/);
+        expect(imageSetup).toContain("explicitly restarted");
+        expect(imageSetup).toContain("~/.prism-mcp/omlx/server/models/<model-id>");
+    });
+    it("upgrades the prior runtime without replacing settings, downloaded models or the old runtime", async () => {
+        const f = await previousInstallationFixture();
+        const originalModels = await modelBytes(f.manager);
+        const before = await f.manager.status();
+        expect(before.installed).toBe(false);
+        expect(before.models.every(model => model.downloaded)).toBe(true);
+        await f.manager.install(); await f.manager.waitForInstall();
+        expect((await f.manager.status()).installed).toBe(true);
+        expect((await f.manager.status()).job?.state).toBe("complete");
+        expect(daemonCalls.count).toBe(0);
+        const pip = f.commands.find(command => command.args.includes("pip"))!;
+        expect(pip.args).toContain("git+https://github.com/dcostenco/omlx.git@" + OMLX_SETUP_COMMIT);
+        expect(f.commands.filter(command => command.args[0] === "download")).toEqual([]);
+        expect(JSON.parse(await readFile(join(f.manager.root, "runtime.json"), "utf8"))).toEqual({ commit: OMLX_SETUP_COMMIT });
+        expect(await readFile(join(f.manager.basePath, "settings.json"), "utf8")).toBe(EXISTING_SERVER_SETTINGS);
+        expect(await readFile(join(f.manager.basePath, "model_settings.json"), "utf8")).toBe(EXISTING_MODEL_SETTINGS);
+        expect(await readFile(f.previousExecutable, "utf8")).toBe(PREVIOUS_RUNTIME_CONTENT);
+        expect(await modelBytes(f.manager)).toEqual(originalModels);
+        expect(f.commands.every(command => !command.args.includes("serve"))).toBe(true);
+        expect((await f.manager.status()).server.connected).toBe(false);
+        expect(daemonCalls.count).toBe(0);
+    });
+    it("keeps a failed runtime upgrade retryable and preserves the previous installation", async () => {
+        const f = await previousInstallationFixture();
+        const originalModels = await modelBytes(f.manager);
+        const original = f.run.getMockImplementation()!;
+        f.run.mockImplementation(async (program, args) => {
+            if (args.includes("pip")) throw new Error("synthetic install failure");
+            return original(program, args);
+        });
+        await f.manager.install(); await f.manager.waitForInstall();
+        expect((await f.manager.status()).job?.state).toBe("failed");
+        expect(JSON.parse(await readFile(join(f.manager.root, "runtime.json"), "utf8"))).toEqual({ commit: PREVIOUS_MANAGED_COMMIT });
+        expect(await readFile(join(f.manager.basePath, "settings.json"), "utf8")).toBe(EXISTING_SERVER_SETTINGS);
+        expect(await readFile(join(f.manager.basePath, "model_settings.json"), "utf8")).toBe(EXISTING_MODEL_SETTINGS);
+        expect(await readFile(f.previousExecutable, "utf8")).toBe(PREVIOUS_RUNTIME_CONTENT);
+        expect((await f.manager.status()).models.every(model => model.downloaded)).toBe(true);
+        expect(await modelBytes(f.manager)).toEqual(originalModels);
+        f.run.mockImplementation(original);
+        await f.manager.install(); await f.manager.waitForInstall();
+        expect((await f.manager.status()).installed).toBe(true);
+        expect(f.commands.filter(command => command.args[0] === "download")).toEqual([]);
+        expect(await modelBytes(f.manager)).toEqual(originalModels);
+        expect(f.commands.every(command => !command.args.includes("serve"))).toBe(true);
+        expect((await f.manager.status()).server.connected).toBe(false);
+        expect(daemonCalls.count).toBe(0);
+    });
+    it.each([false, true])("preserves the old marker on a failed marker publication (rename=%s) and retries", async rename => {
+        const f = await previousInstallationFixture();
+        const originalModels = await modelBytes(f.manager);
+        markerFault.root = f.manager.root; markerFault.rename = rename;
+        await f.manager.install(); await f.manager.waitForInstall();
+        expect((await f.manager.status()).job?.state).toBe("failed");
+        expect(JSON.parse(await readFile(join(f.manager.root, "runtime.json"), "utf8"))).toEqual({ commit: PREVIOUS_MANAGED_COMMIT });
+        expect(await readFile(f.previousExecutable, "utf8")).toBe(PREVIOUS_RUNTIME_CONTENT);
+        expect(await readFile(join(f.manager.basePath, "settings.json"), "utf8")).toBe(EXISTING_SERVER_SETTINGS);
+        expect(await readFile(join(f.manager.basePath, "model_settings.json"), "utf8")).toBe(EXISTING_MODEL_SETTINGS);
+        expect(await modelBytes(f.manager)).toEqual(originalModels);
+        await f.manager.install(); await f.manager.waitForInstall();
+        expect((await f.manager.status()).installed).toBe(true);
+        expect(f.commands.filter(command => command.args[0] === "download")).toEqual([]);
+        expect(await modelBytes(f.manager)).toEqual(originalModels);
+        expect(f.commands.every(command => !command.args.includes("serve"))).toBe(true);
+        expect(daemonCalls.count).toBe(0);
+    });
     it("refuses symlinked state rather than reading outside the managed installation", async () => {
         const f = await fixture();
         await mkdir(f.manager.root, { recursive: true });

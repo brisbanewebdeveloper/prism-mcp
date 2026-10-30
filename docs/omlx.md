@@ -1,10 +1,114 @@
 # Local coding with oMLX
 
+## Quick setup
+
+Open `prism dashboard` → **Account & Settings → Local AI**:
+
+1. **Connection:** preview your existing server, or expand **Install or update a
+   Prism-managed server** and install the server only. Start it, preview the
+   connection, then choose **Use this server**. An empty model inventory is valid.
+   The preview covers coder, reviewer and image assignments. Switching preserves
+   saved IDs and overrides; an unavailable model is never silently substituted.
+2. **Models:** open the oMLX model manager to add models, then refresh inventory.
+   Assign discovered models independently for coder, reviewer and images. The same
+   model may serve multiple purposes. Save each form. The full coding starter pack
+   remains optional; oMLX coding and review require its text safety classifier,
+   while image requests screen with their selected vision model.
+3. **Test:** choose a backend and purpose, then **Test saved model**. This runs a
+   small local request with current account and resource checks, without cloud
+   fallback. The image diagnostic uses a built-in red square. A pass establishes
+   execution, not accuracy. Ollama image execution remains unavailable.
+
+![Local AI connection controls and optional managed-server setup](screenshots/local-ai-connection.png)
+
+*Development-build screenshots use isolated demo inventory and responses. They
+illustrate the controls; they are not live model-fit or accuracy results. An
+installed npm release may show an earlier interface.*
+
+For the full illustrated walkthrough, see
+[Local AI in the dashboard](../README.md#local-ai-in-the-dashboard).
+
+Image-test results separate **Reference facts** about the built-in diagnostic PNG
+from **AI observations** returned by the selected model. The reference includes
+the image dimensions and is bound to its bytes by a SHA-256 digest in the API
+response. A wrong model description does not change these facts. Starting another
+test or changing its backend or purpose clears the previous image result. This
+reference applies to the built-in diagnostic; user images are not assigned
+catalog facts by this feature.
+
+![Built-in image diagnostic with separate reference facts and model observations](screenshots/local-ai-image-results.png)
+
+The server status distinguishes **installed** and **running** revisions. Installing
+an update does not restart a server or switch connections. A managed restart
+requires matching process identity, private settings, loopback listener ownership,
+idle counters and an available device lease. If retirement or recovery cannot be
+proved, a durable maintenance marker blocks further local inference until operator
+recovery. Inspect `~/.prism-mcp/omlx/server.log` and the recorded process before
+resolving `maintenance.json`; do not remove it merely to bypass the block.
+
+[Latest upstream oMLX releases](https://github.com/jundot/omlx/releases) are linked
+for release notes. Setup installs the tested Prism-compatible revision below,
+which includes Prism's required control and image routes. Updating the Prism npm
+package does **not** update an external oMLX installation. For an external server,
+use the manual installation section below and restart it through its own launcher.
+
 Prism's **Auto** coding preference chooses configured oMLX for eligible text-only
 coding drafts on Apple Silicon; otherwise it chooses Ollama. You can save a
 different preference or override it for each task. The model runs locally;
 the host still inspects the output and runs its own checks. Explicit oMLX calls
 never substitute Ollama or cloud inference when admission or generation fails.
+
+## Image model preferences
+
+The independent image-preferences API stores backend-bound model choices under
+`local_image_config_v1`, separately from coder/reviewer preferences. It starts
+unset and accepts future model IDs without a code change. Its GET and POST path,
+`/api/local-coding/image-preferences`, uses the dashboard's existing access gates.
+Saving returns `selectionApplied: false`: these choices do not enable an
+inference model. In **Settings → Local AI → Models → Image model**, choose an image
+backend and an independently discovered model for each server, then select
+**Save image preference**. The same model may also be assigned to coding roles.
+Missing saved choices stay visible; an unreachable server is shown as unknown
+availability rather than an absent model. Refresh preserves unsaved choices.
+
+Discovery reads oMLX's authenticated model inventory and Ollama's installed and
+loaded model metadata. Ollama vision capability is inspected lazily for the exact
+selected ID, with at most two concurrent inventory calls followed by one show
+call, a six-second overall budget and bounded response sizes. There is no
+capability cache: replacement builds are inspected again. Names and size labels
+never establish vision capability. Advertisements show yes, no or unknown with
+their source; they are not controlled-image test results. Reported weights,
+loaded memory and server resident estimates are distinct. Image peak RAM remains
+unknown; available RAM is advisory. Refresh/save never downloads, loads, unloads
+or runs a model, and oMLX image requests use the selected vision model for their local image screen as well as generation.
+
+Image requests now resolve this independent choice before provider work. An
+explicit `image_backend`/`image_model` pair overrides saved settings; a partial
+override uses only the corresponding saved backend or model. These arguments
+require images and cannot be mixed with `local_backend`, `local_model` or
+`local_role`, even when values match. A missing required selection refuses
+instead of choosing a coding model. Saved-setting reads are bounded to one
+second or a shorter caller timeout; corrupt settings refuse with a sanitized
+reason.
+
+Selected oMLX requests require an authenticated server advertising the
+`owned-png-v1` input contract for that exact model. The server binds image
+admission to captured settings and an exclusive model lease. Changing settings,
+unsupported input, concurrent work or insufficient resources refuses the request.
+Only inline PNG input is supported by this contract: up to four images, 128 KiB
+per image, 192 KiB combined, and a 256 KiB serialized request envelope. The server
+also validates decoding and pixel limits. Image screening and generation receive
+the same prepared bytes; an inconclusive or failed screen refuses. Images and
+content derived from them remain local, including verification and route checks.
+A capability advertisement is not a visual-accuracy certification.
+Until model tiers have a trusted binding, selected oMLX image models require
+the top model ceiling from both the plan and caller, as selected coding models do.
+
+A selected Ollama request refuses with `local_image_backend_not_enabled`.
+With no active image backend or new image arguments, existing image routing
+retains its behavior. An explicit legacy `local_backend: "ollama"` also retains
+that routing and overrides the saved image choice. Text-only coding preferences
+remain independent. Saving a choice does not install, start or load a model.
 
 ## Before installing
 
@@ -26,7 +130,7 @@ never substitute Ollama or cloud inference when admission or generation fails.
 
 ## Dashboard setup and backend preference
 
-Open `prism dashboard`, then **Settings → Local Coding**. The panel provides:
+Open `prism dashboard`, then **Settings → Local AI**. The panel provides:
 
 - **Preferred coding backend:** Auto, oMLX, or Ollama. Auto prefers configured
   oMLX for text-only code calls with the top model ceiling. Explicit smaller
@@ -35,7 +139,7 @@ Open `prism dashboard`, then **Settings → Local Coding**. The panel provides:
 - **Coder and reviewer models:** independent selectors for oMLX and Ollama,
   populated automatically from the selected servers' installed inventories.
   The same model can serve both roles. Choose **Use backend default** to leave
-  a role unassigned. Replacing a model version requires a new selection and save,
+  a role unassigned and allow automatic selection. Replacing an assigned model version requires a new selection and save,
   with no code or skill edit.
 - **Memory information:** reported weight size, loaded memory when available,
   a conservative cold-load estimate and current available RAM. Missing metadata
@@ -61,6 +165,21 @@ an inventory inspection failure means availability is unknown, not that a model
 was removed. General inference, classifiers, embeddings and vision retain their
 existing selection paths.
 
+For an unassigned text coding role, Prism selects from the effective backend's
+discovered models. If Synalux is configured, it may request one optional model
+recommendation using only the backend and role, with existing Synalux
+authentication. Prompts, images, history, local provider credentials, paths,
+memory readings and installed-model inventory are excluded from that request.
+Explicit and saved model choices, including the configured oMLX provider
+default, skip this lookup. Unavailable, timed-out or
+unusable recommendations fall back to generic local selection on the same
+backend. Selection does not install a model or change saved settings.
+
+Automatic selection still requires model metadata and the normal account,
+context, memory and execution checks. It refuses when no eligible local model
+can be established. oMLX retains its top-ceiling requirement. These checks do
+not qualify image input or make a local reviewer an approval authority.
+
 Selected Ollama models must report completion capability, parameter count and
 the architecture metadata needed for memory estimates. Nominal parameter size
 is rounded to billions for the plan/caller ceiling; complexity hints do not
@@ -69,7 +188,7 @@ for generation and auxiliary calls. Unknown required metadata refuses admission
 rather than falling back to a named tier. The ordinary unassigned tier walk
 retains its existing behavior.
 
-For a new installation, choose **Install oMLX + recommended models**. It requires
+To install the optional full starter pack, choose **Install oMLX + recommended models**. It requires
 Apple Silicon, macOS 15+, Python 3.11–3.13, 32 GiB unified memory, and 40 GiB free
 disk. This optional starter pack downloads about 25 GB and does not restrict
 the installed models you can assign above. Review the linked model licenses
@@ -81,11 +200,37 @@ initial 40 GiB.
 
 The managed runtime and models live under `~/.prism-mcp/omlx/`, separate from
 `~/.omlx/`. It pins the source/model revisions below, uses generic kernels,
-loopback port 8001, a private API key, 32K context, 4K output, a 2K writer thinking
+an available loopback port (preferring 8001), a private API key, 32K context, 4K output, a 2K writer thinking
 budget, chunked prefill, idle eviction, and a 10 GB SSD cache cap. Speculative
-features stay disabled. After installation, select **Start managed oMLX**, then
-choose **Prism-managed installation** and save. Existing servers remain running;
+features stay disabled. After installation, select **Start managed server**, then
+preview **Prism-managed installation** and select **Use this server**. Existing servers remain running;
 an occupied port is an error, not permission to stop its owner.
+
+Managed setup and the source installation below pin
+[`620ad94a`](https://github.com/dcostenco/omlx/commit/620ad94a0aa5f5e315fa20e66ac289ff95a531d0),
+based on upstream v0.7.1 and including the idle-unload API and `owned-png-v1`.
+A changed managed
+server pin uses a separate Python runtime and preserves valid downloaded models
+and existing settings. A running server keeps its current runtime until an
+explicit restart after its active jobs finish; setup does not restart it.
+The server pin provides the image-input protocol. Choose a compatible installed
+vision model separately under **Image model**; its exact server advertisement
+must enable `owned-png-v1`, with a positive resolved context window. The server
+can resolve that window from model settings, native metadata or a global
+sampling fallback; an unresolved or invalid window disables the advertisement.
+The server also qualifies model families by architecture; an unqualified vision
+model reports not enabled regardless of its context window.
+Managed setup supplies a 32K global fallback. The recommended coding/classifier model pack does
+not establish image compatibility. The default managed model directory is
+`~/.prism-mcp/omlx/server/models/<model-id>`; use the configured directory if
+you have customized it. Vision-model weights need their own disk space. Assess
+RAM separately for the chosen model and current residency; the 32 GiB setup
+floor does not guarantee image-model fit. Discovery reports metadata, not a fit
+or accuracy guarantee.
+
+Refresh discovery after the upgraded server has been explicitly restarted;
+until then, the running server advertises its previous capabilities. Saving an
+image choice does not restart it or qualify model accuracy.
 
 Terminal equivalents after installing Prism:
 
@@ -105,6 +250,34 @@ advertisement or successful setup is not a coding-quality qualification.
 The dashboard workflow is tested with controlled downloads/provider state. A
 fresh-machine full download/install has not yet been qualified.
 
+## Upgrade an existing oMLX server
+
+Prism and oMLX are separate packages. Updating npm or restarting an MCP host
+updates the Prism client; it does not replace a server selected as **Existing
+oMLX server**. The image selector now checks the selected model's authenticated
+input contract during refresh and selection. **Server update required** means
+the advertised model's image-input route returned the server's standard missing
+route response. Authentication, network and malformed-response failures remain
+unknown; a disabled contract requires checking the model family and context.
+These observations are temporary. Inference repeats admission, ownership and
+resource checks, and the observation does not certify visual accuracy or RAM fit.
+
+For a separately installed server, upgrade its runtime through its original
+installation method. Preserve its settings, API key and model directories. Use
+the pinned integration revision below in a parallel Python environment so the
+previous environment remains available for rollback. Preserve compatible
+dependency pins and rebuild native kernels when their ABI changes. Verify the
+replacement on an unused loopback port with isolated settings before switching
+the service. Finish active requests, explicitly restart the service on the new
+runtime, then refresh the image selector and perform a controlled image test.
+No model download or saved model change is required merely to upgrade the server.
+
+**Install oMLX + recommended models** creates a separate managed installation
+and can download the starter pack. It does not upgrade an existing external
+server. A managed source-pin upgrade also requires an explicit restart; setup
+does not interrupt the running server. Use the managed installation workflow
+above only when that separate installation is intended.
+
 ## Install and configure
 
 For a new source installation, use an isolated Python environment:
@@ -112,7 +285,7 @@ For a new source installation, use an isolated Python environment:
 ```bash
 git clone https://github.com/dcostenco/omlx.git
 cd omlx
-git checkout 8fd50b6a2515adba2f0a740600a7b9ac056077cd
+git checkout 620ad94a0aa5f5e315fa20e66ac289ff95a531d0
 python3.11 -m venv .venv
 source .venv/bin/activate
 make install PYTHON="$VIRTUAL_ENV/bin/python"
@@ -121,7 +294,7 @@ make install PYTHON="$VIRTUAL_ENV/bin/python"
 Without full Xcode, use `make install-no-kernels` instead of `make install`.
 Some model families then use slower generic paths; do not compare that install's
 speed directly with a kernel-enabled result. See the integration's
-[installation notes](https://github.com/dcostenco/omlx/blob/8fd50b6a2515adba2f0a740600a7b9ac056077cd/README.md#from-source).
+[installation notes](https://github.com/dcostenco/omlx/blob/620ad94a0aa5f5e315fa20e66ac289ff95a531d0/README.md#from-source).
 
 Download the required classifier and the tested dense drafting model. These
 commands pin model revisions and use directory names matching the examples:
@@ -177,7 +350,7 @@ reconnect its MCP server after changing the environment. At
    context/KV cache and other applications. For Flash-Next on this integration,
    the tested variant uses PLE SSD and expert offload with PLE gather-ahead off.
 
-See the fork's [control-route and memory notes](https://github.com/dcostenco/omlx/blob/8fd50b6a2515adba2f0a740600a7b9ac056077cd/PRISM.md).
+See the fork's [control-route and memory notes](https://github.com/dcostenco/omlx/blob/620ad94a0aa5f5e315fa20e66ac289ff95a531d0/PRISM.md).
 The upstream retry/resumed-prefill output-loss condition described there has
 not been qualified as fixed by the stable upgrade.
 
@@ -326,9 +499,27 @@ one process share this lease. A busy lease refuses (`omlx_resource_busy`) before
 classification, and process exit releases it without lock-file
 cleanup. In-process inference and classification wait while an oMLX call owns
 the device. Unknown Ollama state, newly loaded Ollama weights, or available
-memory below a 2 GiB reserve aborts/withholds the generation. Model caches and
-daemons remain in place. Legacy/unmodified MCP processes do not honor the lease;
+memory below a 2 GiB reserve aborts/withholds the generation. Daemons and
+downloaded model files remain in place. Legacy/unmodified MCP processes do not honor the lease;
 their contention is observed and rejected by the watcher.
+
+Before a new classifier or generation starts, Prism reads oMLX's installed-model
+metadata. If a known, unloaded model's resident-size estimate plus the 2 GiB
+reserve exceeds the current RAM estimate, Prism requests idle-only unloading of
+other resident models, oldest first, and remeasures RAM before proceeding. It
+never adds advertised model sizes to a stale RAM sample. A warm requested model
+is protected and its weights are not counted again. Unknown sizes or unresolved
+aliases leave model-fit decisions to the native pool; they are not fit guarantees.
+
+Automatic reclamation requires the authenticated
+`POST /v1/models/{model_id}/unload-idle` API. Its pool lock protects pinned,
+loading, leased, active, scheduler-busy and indeterminate engines. A busy victim
+is skipped; unsupported endpoints, failed or unconfirmed unloads refuse the new
+generation. Prism never falls back to the manual unload API, which may abort
+active work. Older pinned server builds need this API update to reclaim models.
+The pressure watcher does not evict models during generation. A capacity RPC
+timeout does not prove teardown completion: the server retains its pool lock
+until teardown settles, and the client refuses the new generation.
 
 **Safety screen.** The classifier on this path is the public
 `dcostenco/prism-coder-9b-mlx-8bit`, installed under the name
